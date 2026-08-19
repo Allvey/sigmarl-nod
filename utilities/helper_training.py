@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 import math
+from typing import Optional
 
 # Tensordict modules
 from tensordict.tensordict import TensorDictBase, TensorDict
@@ -907,6 +908,8 @@ class Parameters:
         is_using_opponent_modeling: bool = False,  # Whether to use opponent modeling to predict the actions of other agents
         is_using_prioritized_marl: bool = False,  # Whether to use prioritized MARL and action propagation.
         prioritization_method: str = "marl",  # Which method to use for generating priority ranks (options: {"marl", "random"}). Applicable only for prioritized MARL scenarios.
+        use_opinion_marl: bool = False,
+        opinion_config: Optional[dict] = None,
     ):
 
         self.n_agents = n_agents
@@ -1027,6 +1030,8 @@ class Parameters:
         self.is_using_prioritized_marl = is_using_prioritized_marl
 
         self.prioritization_method = prioritization_method
+        self.use_opinion_marl = use_opinion_marl
+        self.opinion_config = opinion_config
 
         if (model_name is None) and (scenario_name is not None):
             self.model_name = get_model_name(self)

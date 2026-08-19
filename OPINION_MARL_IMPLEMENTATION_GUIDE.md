@@ -2,7 +2,7 @@
 
 > 最后核对日期：2026-08-19  
 > 当前仓库：`/Users/zhangxiaotong/Code/sigmarl-nod`  
-> 当前阶段：R0/M0、R1/M1 已完成；下一步执行 M2 Opinion 配置与入口骨架  
+> 当前阶段：R0/M0、R1/M1、M2 已完成；下一步执行 M3 纯数学模块  
 > 理论真源：`opinion_dynamics_marl_technical_route.md`  
 > 用途：让新的开发 Session 不依赖历史聊天，也能准确继续 Opinion Dynamics + MARL 的实现
 
@@ -35,13 +35,16 @@
 
 ### 0.1 当前最重要结论
 
-当前 `sigmarl-nod` 的核心代码与之前开始修改前的工程一致：
+`sigmarl-nod` 在开始修改前已确认与原始工程一致；当前已在此基础上完成
+R0/M0、R1/M1 和 M2：
 
-- 36 个 Python 源文件与原始对照版本一致；
-- `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py` 一致；
-- `utilities/mappo_cavs.py`、`utilities/helper_training.py`、`scenarios/road_traffic.py` 一致；
+- 原始 `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py`
+  仍保持兼容；
+- `utilities/mappo_cavs.py` 已加入 Base/TSC 门控；
+- `utilities/helper_training.py` 已加入默认关闭的 Opinion 配置字段；
+- `scenarios/road_traffic.py` 尚未为 Opinion 修改；
 - 理论路线文件已经存在且内容完整；
-- M0 runtime checker 与 M1 Base-MAPPO/TSC 基线均已恢复并通过验证；
+- M0 runtime checker、M1 基线和 M2 Opinion 配置入口均已通过验证；
 - 本文件是新仓库重新建立的工程实施真源。
 
 当前环境已经验证：
@@ -52,7 +55,7 @@ torch        2.1.0
 torchrl      0.2.1
 tensordict   0.2.1
 vmas         1.4.1
-现有测试      73 passed
+现有测试      136 passed
 pip check    无依赖冲突
 ```
 
@@ -61,7 +64,8 @@ pip check    无依赖冲突
 ```text
 R0：恢复并验证 M0 运行时检查（已完成）
 → R1：恢复并验证 M1 Base-MAPPO/TSC 基线（已完成）
-→ M2：开始 Opinion 配置与独立入口（当前下一步）
+→ M2：Opinion 配置与独立入口（已完成）
+→ M3：Evidence、Dynamics、Residual 纯数学模块（当前下一步）
 ```
 
 ---
@@ -341,7 +345,7 @@ sigmarl-nod/
 |---|---|---|
 | R0 / M0 运行环境基线 | 已完成 | runtime checker、依赖、TanhNormal、road rollout |
 | R1 / M1 Base/TSC 基线 | 已完成 | 纯 Base-MAPPO 与现有 TSC 可回归基线 |
-| M2 Opinion 配置/入口 | 未开始 | 强类型配置和独立入口骨架 |
+| M2 Opinion 配置/入口 | 已完成 | 强类型配置和独立入口骨架 |
 | M3 数学模块 | 未开始 | Evidence、Dynamics、Residual 纯张量实现 |
 | M4 ConflictGraph | 未开始 | 当前物理量到 pair data 的环境接口 |
 | M5 Opinion Policy | 未开始 | Base Actor + Opinion residual + TanhNormal |
@@ -698,7 +702,7 @@ find "$baseline_run_dir" -maxdepth 1 -type f -print | sort
 .venv/bin/python -m pip check
 ```
 
-当前预期分别为 `73 passed` 和 `No broken requirements found.`。
+当前完整工程预期分别为 `136 passed` 和 `No broken requirements found.`。
 
 #### 7.8.6 正式训练
 
@@ -737,7 +741,7 @@ tests/opinion/test_opinion_entrypoints.py
 
 ```python
 use_opinion_marl: bool = False
-opinion_config: dict | None = None
+opinion_config: Optional[dict] = None
 ```
 
 要求：
@@ -820,6 +824,111 @@ log_pair_diagnostics
 ```
 
 这些值只是数值稳定的第一轮起点，不是论文最终调参结果。
+
+### 8.5 已实现的配置合同
+
+`utilities/opinion/config.py` 当前提供：
+
+- 冻结的强类型 `OpinionConfig`；
+- `stage` 只允许 `base`、`evidence`、`joint`；
+- bool、正整数、有限浮点数和范围的严格校验；
+- 缺失字段和未知字段拒绝；
+- `rho_c = kappa / (nu * alpha)` 的派生计算；
+- `nu * alpha > kappa` 检查；
+- `0 < dt * eta * kappa < 2` 检查；
+- `n_candidates <= n_agents - 1` 检查；
+- resolved `to_dict()`，其中记录派生后的 `rho_c`；
+- Opinion 根配置与 Base-MAPPO 公共实验条件的一致性校验；
+- Opinion、opponent、priority、topology 开关的互斥隔离。
+
+原始 `config_opinion.json` 不允许手工填写 `rho_c`，避免派生值和动力学参数
+不一致；加载后的 resolved 配置会自动包含该值。推荐参数当前得到：
+
+```text
+rho_c = 1.0 / (1.0 * 2.0) = 0.5
+```
+
+### 8.6 使用方式
+
+所有命令必须从仓库根目录执行：
+
+```bash
+cd /Users/zhangxiaotong/Code/sigmarl-nod
+```
+
+只验证默认 Opinion 训练配置：
+
+```bash
+.venv/bin/python main_training_opinion.py --validate-only
+```
+
+只验证默认 Opinion 测试配置：
+
+```bash
+.venv/bin/python main_testing_opinion.py --validate-only
+```
+
+当前成功输出分别为：
+
+```text
+[PASS] Opinion training configuration valid: stage=base rho_c=0.5 source=...
+[PASS] Opinion testing configuration valid: stage=base rho_c=0.5 source=...
+```
+
+验证自定义配置：
+
+```bash
+.venv/bin/python main_training_opinion.py \
+  --config path/to/opinion_config.json \
+  --validate-only
+```
+
+配置合法时返回 0；配置非法时返回 1 并输出 `[FAIL]`。校验会在构造环境、
+网络或 collector 之前完成。
+
+当前若不带 `--validate-only`：
+
+```bash
+.venv/bin/python main_training_opinion.py
+.venv/bin/python main_testing_opinion.py
+```
+
+入口会先验证配置，然后输出 `[NOT IMPLEMENTED]` 并返回状态码 2。这个返回值是
+刻意设计的：M2 只完成配置和入口，不允许把 Base-MAPPO/TSC 训练冒充为
+Opinion-MARL。只有后续里程碑完成相应训练/测试核心后，默认入口才能返回成功。
+
+运行 M2 目标测试：
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/opinion/test_opinion_config.py \
+  tests/opinion/test_opinion_entrypoints.py
+```
+
+当前预期为 `63 passed`。完整回归：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+当前预期为 `136 passed`。
+
+### 8.7 完成边界
+
+M2 已完成配置、解析、隔离验证和 CLI 骨架，但仍未实现：
+
+```text
+EvidenceNet
+OpinionDynamics
+OpinionResidual
+ConflictGraph
+stateful collector
+sequence PPO
+真实 Opinion 训练和测试
+```
+
+因此 `--validate-only` 成功只表示配置合同成立，不表示 Opinion 方法已经训练、
+推理或产生性能结果。
 
 ---
 
@@ -1197,7 +1306,7 @@ Learned evidence + fixed dynamics（Full）
 
 - [x] R0/M0 runtime 基线已恢复并通过；
 - [x] R1/M1 Base-MAPPO/TSC 基线已恢复并通过；
-- [ ] 新 Opinion 入口不调用 TSC coordination 路径；
+- [x] 新 Opinion 入口不调用 TSC coordination 路径；
 - [ ] EvidenceNet 输出有界且不读取 `z/q`；
 - [ ] Dynamics 固定且无梯度；
 - [ ] `z` 按全局 agent ID 保存；
@@ -1319,6 +1428,48 @@ priority checkpoint。两个 run 的 snapshot、四组精确 2-iteration 指标�
 下一步：执行 M2，只建立 Opinion 强类型配置与独立入口骨架，不提前实现
 EvidenceNet、OpinionDynamics、Collector 或 PPO。
 
+### 2026-08-19：M2 Opinion 配置与独立入口骨架完成
+
+新增文件：
+
+- `utilities/opinion/__init__.py`；
+- `utilities/opinion/config.py`；
+- `config_opinion.json`；
+- `main_training_opinion.py`；
+- `main_testing_opinion.py`；
+- `tests/opinion/test_opinion_config.py`；
+- `tests/opinion/test_opinion_entrypoints.py`。
+
+修改文件：
+
+- `utilities/helper_training.py`：以 Python 3.9 兼容形式增加默认关闭的
+  `use_opinion_marl` 和 `opinion_config`。
+
+测试先行证据：
+
+- 首批测试因缺少 `utilities.opinion` 和两个 Opinion 入口得到预期的
+  2 个 collection errors；
+- 增加 resolved `rho_c` 记录接口前，单测得到预期 `AttributeError`；
+- M2 配置和入口目标测试：`63 passed`；
+- `.venv/bin/python -m pytest -q`：`136 passed, 13 warnings`；
+- `.venv/bin/python -m pip check`：`No broken requirements found`；
+- M2 新增文件的 `compileall` 检查通过。
+
+入口实测：
+
+- `main_training_opinion.py --validate-only`：返回 0，`stage=base`，
+  `rho_c=0.5`；
+- `main_testing_opinion.py --validate-only`：返回 0，`stage=base`，
+  `rho_c=0.5`；
+- 两个入口不带 `--validate-only`：均返回 2 并输出 `[NOT IMPLEMENTED]`；
+- 非法 TSC 开关会在任何环境或网络构造前返回 1 和 `[FAIL]`。
+
+M2 没有实现或调用 `mappo_cavs()`、EvidenceNet、OpinionDynamics、Collector
+或 PPO，也没有生成 Opinion 训练结果。
+
+下一步：执行 M3，只实现并测试 EvidenceNet、固定 OpinionDynamics 和
+OpinionResidual 三个纯张量数学模块；禁止接入环境、collector 或 PPO。
+
 ---
 
 ## 23. 可复制给新 Session 的提示词
@@ -1341,9 +1492,9 @@ TSC 只能作为工程参考和外部基线，Opinion 路径禁止依赖 priorit
 Stackelberg、topology labels、topology learner、action predictor 或 opponent modeling。
 
 先查看第 5 节里程碑状态和第 22 节验证记录。
-R0/M0 和 R1/M1 已完成。当前下一步是 M2：建立 Opinion 强类型配置与
-独立训练/测试入口骨架；不要提前实现 EvidenceNet、OpinionDynamics、
-Collector 或 PPO。
+R0/M0、R1/M1 和 M2 已完成。当前下一步是 M3：实现 EvidenceNet、固定
+OpinionDynamics 和 OpinionResidual 三个纯张量数学模块；本阶段禁止接入
+环境、collector 或 PPO。
 
 每一步必须先测试、再最小实现、运行全部回归、更新本指南验证记录，
 并报告修改文件、测试命令、实际结果和遗留问题。
