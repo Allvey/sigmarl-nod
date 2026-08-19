@@ -86,6 +86,26 @@ from utilities.topology_labels import (
 )
 import math
 
+
+def uses_tsc_components(parameters: Parameters) -> bool:
+    """Return whether this run needs the legacy TSC topology subsystem."""
+    return bool(
+        getattr(parameters, "is_using_opponent_modeling", False)
+        or getattr(parameters, "use_topology_neighbor_selection", False)
+        or float(getattr(parameters, "topology_loss_weight", 0.0)) > 0.0
+    )
+
+
+def _build_topology_manager(
+    parameters: Parameters,
+    scenario,
+    factory=TopologyManager,
+):
+    if not uses_tsc_components(parameters):
+        return None
+    return factory(parameters=parameters, scenario=scenario)
+
+
 def _generate_seed() -> int:
     return int.from_bytes(os.urandom(8), byteorder="big", signed=False)
 
@@ -282,7 +302,7 @@ def mappo_cavs(parameters: Parameters):
     else:
         priority_module = None
 
-    topology_manager = TopologyManager(parameters=parameters, scenario=scenario)
+    topology_manager = _build_topology_manager(parameters, scenario)
 
     # Check if the directory defined to store the model exists and create it if not
     if not os.path.exists(parameters.where_to_save):
@@ -329,7 +349,7 @@ def mappo_cavs(parameters: Parameters):
 
                 # 加载最终拓扑模型权重（如果存在）
                 PATH_TOPOLOGY_FINAL = parameters.where_to_save + "final_topology.pth"
-                if os.path.exists(PATH_TOPOLOGY_FINAL):
+                if topology_manager is not None and os.path.exists(PATH_TOPOLOGY_FINAL):
                     # 通过一次极短 rollout 推断维度后实例化并加载
                     probe_out = env.rollout(
                         max_steps=1,
@@ -426,7 +446,7 @@ def mappo_cavs(parameters: Parameters):
                 PATH_TOPOLOGY = (
                     parameters.where_to_save + parameters.model_name + "_topology.pth"
                 )
-                if os.path.exists(PATH_TOPOLOGY):
+                if topology_manager is not None and os.path.exists(PATH_TOPOLOGY):
                     try:
                         probe_out = env.rollout(
                             max_steps=1,
@@ -624,54 +644,20 @@ def mappo_cavs(parameters: Parameters):
                     target_params=priority_module.loss_module.target_critic_params,
                 )
 
-        # ---- 拓扑分支：生成 e_ij 标签并进行一次 BCE 验证训练 ----
-        # 从 scenario.info() 中取出预置的结构化输入
-        ego_obs = tensordict_data.get(("agents", "info", "ego_observation"))
-        neighbors_flat = tensordict_data.get(
-            ("agents", "info", "neighbors_observation_flat")
-        )
-        relative_feats = tensordict_data.get(("agents", "info", "relative_features"))
-
-        ref_local_flat = tensordict_data.get(("agents", "info", "ref_local"))
-        ref_neighbors_flat = tensordict_data.get(
-            ("agents", "info", "ref_neighbors_local")
-        )
-        neighbors_distance = tensordict_data.get(
-            ("agents", "info", "neighbors_distance")
-        )
-        neighbors_mask_distance = tensordict_data.get(
-            ("agents", "info", "neighbors_mask_distance")
-        )
-
-        # Infer dimensions
-        K = parameters.n_nearing_agents_observed
-        D_ego = ego_obs.shape[-1]
-        D_nei = neighbors_flat.shape[-1] // K if neighbors_flat is not None else 0
-        d_rel = relative_feats.shape[-1]
-
-        topology_manager.ensure_initialized(ego_obs, neighbors_flat, relative_feats, K)
-
-        # 邻居观测重塑：按通用样本维（时间、环境、代理）进行 view，保证与 K 对齐
-        if neighbors_flat is not None:
-            sample_shape = neighbors_flat.shape[:-1]  # e.g., [T, E, A]
-            neighbors_obs = neighbors_flat.contiguous().view(*sample_shape, K, D_nei)
-        else:
-            neighbors_obs = None
-
-        # 展平所有样本维为单一批量维 B_total，便于送入解码器与 BCE
-        sample_shape_ego = ego_obs.shape[:-1]
-        B_total = math.prod(sample_shape_ego)
-
-        ego_obs_b = ego_obs.contiguous().view(B_total, D_ego)
-        neighbors_obs_b = (
-            neighbors_obs.contiguous().view(B_total, K, D_nei)
-            if neighbors_obs is not None
-            else None
-        )
-        relative_feats_b = relative_feats.contiguous().view(B_total, K, d_rel)
-
-        # 注意：拓扑 BCE 已在下方的 PPO 小批次训练中融合，这里不再单独反传/更新，避免重复训练。
-        # 若需要在此处做全批量的拓扑验证，可在下方 wandb 日志汇总阶段进行。
+        if topology_manager is not None:
+            ego_obs = tensordict_data.get(("agents", "info", "ego_observation"))
+            neighbors_flat = tensordict_data.get(
+                ("agents", "info", "neighbors_observation_flat")
+            )
+            relative_feats = tensordict_data.get(
+                ("agents", "info", "relative_features")
+            )
+            topology_manager.ensure_initialized(
+                ego_obs,
+                neighbors_flat,
+                relative_feats,
+                parameters.n_nearing_agents_observed,
+            )
 
         # Update sample priorities
         if parameters.is_prb:
@@ -711,7 +697,7 @@ def mappo_cavs(parameters: Parameters):
                 topo_weight = float(getattr(parameters, "topology_loss_weight", 0.1))
                 last_topology_bce_value = None
 
-                if topo_weight > 0.0:
+                if topology_manager is not None and topo_weight > 0.0:
                     ego_obs_mb = mini_batch_data.get(
                         ("agents", "info", "ego_observation")
                     )
@@ -1449,7 +1435,8 @@ def mappo_cavs(parameters: Parameters):
 
                 # 反传：同时更新 PPO 与拓扑分支参数
                 optim.zero_grad()
-                topology_manager.zero_grad()
+                if topology_manager is not None:
+                    topology_manager.zero_grad()
                 combined_loss.backward()
 
                 # Track last loss value for logging（包含拓扑项）
@@ -1460,12 +1447,13 @@ def mappo_cavs(parameters: Parameters):
                 )  # Optional
 
                 optim.step()
-                topology_manager.step(topo_weight)
+                if topology_manager is not None:
+                    topology_manager.step(topo_weight)
                 optim.zero_grad()
 
                 # ---- 独立训练：邻居动作预测分支 ----
                 last_action_pred_loss_value = None
-                if (
+                if topology_manager is not None and (
                     topology_manager.action_predictor is not None
                     and topology_manager.action_optim is not None
                 ):
@@ -1576,8 +1564,16 @@ def mappo_cavs(parameters: Parameters):
                         critic=critic,
                         priority_policy=priority_module.policy,
                         priority_critic=priority_module.critic,
-                        topology_model=topology_manager.learner,
-                        topology_action_predictor=topology_manager.action_predictor,
+                        topology_model=(
+                            topology_manager.learner
+                            if topology_manager is not None
+                            else None
+                        ),
+                        topology_action_predictor=(
+                            topology_manager.action_predictor
+                            if topology_manager is not None
+                            else None
+                        ),
                     )
                 else:
                     save(
@@ -1585,8 +1581,16 @@ def mappo_cavs(parameters: Parameters):
                         save_data=save_data,
                         policy=policy,
                         critic=critic,
-                        topology_model=topology_manager.learner,
-                        topology_action_predictor=topology_manager.action_predictor,
+                        topology_model=(
+                            topology_manager.learner
+                            if topology_manager is not None
+                            else None
+                        ),
+                        topology_action_predictor=(
+                            topology_manager.action_predictor
+                            if topology_manager is not None
+                            else None
+                        ),
                     )
             else:
                 # Save only the mean episode reward list and parameters
@@ -1657,7 +1661,10 @@ def mappo_cavs(parameters: Parameters):
                 and last_action_pred_loss_value is not None
             ):
                 log_payload["loss/action_pred_mse"] = last_action_pred_loss_value
-                if topology_manager.action_optim is not None:
+                if (
+                    topology_manager is not None
+                    and topology_manager.action_optim is not None
+                ):
                     log_payload["optim_action/lr"] = float(
                         topology_manager.action_optim.param_groups[0]["lr"]
                     )
@@ -1669,19 +1676,16 @@ def mappo_cavs(parameters: Parameters):
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
     # Save final topology model if available
-    if "topology_manager" in locals() and topology_manager.learner is not None:
-        try:
+    if topology_manager is not None and topology_manager.learner is not None:
+        torch.save(
+            topology_manager.learner.state_dict(),
+            parameters.where_to_save + "final_topology.pth",
+        )
+        if topology_manager.action_predictor is not None:
             torch.save(
-                topology_manager.learner.state_dict(),
-                parameters.where_to_save + "final_topology.pth",
+                topology_manager.action_predictor.state_dict(),
+                parameters.where_to_save + "final_action_predictor.pth",
             )
-            if topology_manager.action_predictor is not None:
-                torch.save(
-                    topology_manager.action_predictor.state_dict(),
-                    parameters.where_to_save + "final_action_predictor.pth",
-                )
-        except Exception:
-            pass
 
     if (
         parameters.is_using_prioritized_marl
