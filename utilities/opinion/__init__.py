@@ -8,6 +8,13 @@ from utilities.opinion.config import (
     OpinionConfig,
     load_opinion_experiment_config,
 )
+from utilities.opinion.dynamics import (
+    OpinionDynamics,
+    gather_candidate_opinions,
+    scatter_candidate_opinions,
+)
+from utilities.opinion.evidence_net import EvidenceOutput, OpinionEvidenceNet, swap_roles
+from utilities.opinion.residual import OpinionResidual, ResidualOutput
 
 __all__ = (
     "DEFAULT_OPINION_CONFIG_PATH",
@@ -15,5 +22,13 @@ __all__ = (
     "OPINION_STAGES",
     "LoadedOpinionExperimentConfig",
     "OpinionConfig",
+    "OpinionDynamics",
+    "OpinionEvidenceNet",
+    "OpinionResidual",
+    "EvidenceOutput",
+    "ResidualOutput",
+    "gather_candidate_opinions",
     "load_opinion_experiment_config",
+    "scatter_candidate_opinions",
+    "swap_roles",
 )

@@ -48,8 +48,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print(f"[OK] Opinion testing configuration valid: {summary}")
     print(
-        "[NOT IMPLEMENTED] M2 only provides the Opinion testing configuration "
-        "and entrypoint skeleton; testing starts in later milestones.",
+        "[NOT IMPLEMENTED] M2 configuration and M3 math modules are available, "
+        "but Opinion testing integration starts in later milestones.",
         file=sys.stderr,
     )
     return NOT_IMPLEMENTED_EXIT_CODE

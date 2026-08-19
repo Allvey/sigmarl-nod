@@ -2,7 +2,7 @@
 
 > 最后核对日期：2026-08-19  
 > 当前仓库：`/Users/zhangxiaotong/Code/sigmarl-nod`  
-> 当前阶段：R0/M0、R1/M1、M2 已完成；下一步执行 M3 纯数学模块  
+> 当前阶段：R0/M0、R1/M1、M2、M3 已完成；下一步执行 M4 ConflictGraph  
 > 理论真源：`opinion_dynamics_marl_technical_route.md`  
 > 用途：让新的开发 Session 不依赖历史聊天，也能准确继续 Opinion Dynamics + MARL 的实现
 
@@ -36,7 +36,7 @@
 ### 0.1 当前最重要结论
 
 `sigmarl-nod` 在开始修改前已确认与原始工程一致；当前已在此基础上完成
-R0/M0、R1/M1 和 M2：
+R0/M0、R1/M1、M2 和 M3：
 
 - 原始 `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py`
   仍保持兼容；
@@ -44,7 +44,7 @@ R0/M0、R1/M1 和 M2：
 - `utilities/helper_training.py` 已加入默认关闭的 Opinion 配置字段；
 - `scenarios/road_traffic.py` 尚未为 Opinion 修改；
 - 理论路线文件已经存在且内容完整；
-- M0 runtime checker、M1 基线和 M2 Opinion 配置入口均已通过验证；
+- M0 runtime checker、M1 基线、M2 配置入口和 M3 数学模块均已通过验证；
 - 本文件是新仓库重新建立的工程实施真源。
 
 当前环境已经验证：
@@ -55,7 +55,7 @@ torch        2.1.0
 torchrl      0.2.1
 tensordict   0.2.1
 vmas         1.4.1
-现有测试      136 passed
+现有测试      164 passed
 pip check    无依赖冲突
 ```
 
@@ -65,7 +65,8 @@ pip check    无依赖冲突
 R0：恢复并验证 M0 运行时检查（已完成）
 → R1：恢复并验证 M1 Base-MAPPO/TSC 基线（已完成）
 → M2：Opinion 配置与独立入口（已完成）
-→ M3：Evidence、Dynamics、Residual 纯数学模块（当前下一步）
+→ M3：Evidence、Dynamics、Residual 纯数学模块（已完成）
+→ M4：ConflictGraph 当前物理量接口（当前下一步）
 ```
 
 ---
@@ -346,7 +347,7 @@ sigmarl-nod/
 | R0 / M0 运行环境基线 | 已完成 | runtime checker、依赖、TanhNormal、road rollout |
 | R1 / M1 Base/TSC 基线 | 已完成 | 纯 Base-MAPPO 与现有 TSC 可回归基线 |
 | M2 Opinion 配置/入口 | 已完成 | 强类型配置和独立入口骨架 |
-| M3 数学模块 | 未开始 | Evidence、Dynamics、Residual 纯张量实现 |
+| M3 数学模块 | 已完成 | Evidence、Dynamics、Residual 纯张量实现 |
 | M4 ConflictGraph | 未开始 | 当前物理量到 pair data 的环境接口 |
 | M5 Opinion Policy | 未开始 | Base Actor + Opinion residual + TanhNormal |
 | M6 Stateful Collector | 未开始 | 全局 ID 状态、单步更新、reset |
@@ -702,7 +703,7 @@ find "$baseline_run_dir" -maxdepth 1 -type f -print | sort
 .venv/bin/python -m pip check
 ```
 
-当前完整工程预期分别为 `136 passed` 和 `No broken requirements found.`。
+当前完整工程预期分别为 `164 passed` 和 `No broken requirements found.`。
 
 #### 7.8.6 正式训练
 
@@ -911,7 +912,7 @@ Opinion-MARL。只有后续里程碑完成相应训练/测试核心后，默认�
 .venv/bin/python -m pytest -q
 ```
 
-当前预期为 `136 passed`。
+当前预期为 `164 passed`。
 
 ### 8.7 完成边界
 
@@ -967,6 +968,109 @@ utilities/opinion/residual.py
 - Dynamics 参数不参与梯度。
 
 完成后达到 Gate A。
+
+### 9.1 已实现接口
+
+`utilities/opinion/evidence_net.py`：
+
+- `swap_roles()` 交换车辆角色并反转 antisymmetric context；
+- `OpinionEvidenceNet` 使用同一个 shared scorer 分别计算双方评分；
+- `raw_b = b_max * tanh((s_i-s_j)/b_temperature)`；
+- `b = raw_b * urgency * confidence * mask`；
+- 被 mask 的 padding 即使含 NaN 也会在进入网络前安全归零；
+- 有效边上的非有限特征或越界 gate 会明确失败；
+- forward 接口不接受 `z` 或 `q`。
+
+`utilities/opinion/dynamics.py`：
+
+- `OpinionDynamics` 以 `dt/n_substeps` 做固定 Euler 子步更新；
+- 每个子步后将状态裁剪到 `[-z_clip,z_clip]`；
+- invalid edge 不注入证据或自强化，只进行自然衰减；
+- 类中没有 `nn.Parameter`，但梯度可从 `z_next` 传播到 `b`；
+- `gather_candidate_opinions()` 按 global neighbor ID 读取 dense state；
+- `scatter_candidate_opinions()` 返回新的 dense state 并强制 diagonal 为零；
+- active 越界 ID、自环和重复 candidate 会明确失败。
+
+`utilities/opinion/residual.py`：
+
+- `q = tanh(z/z0)`；
+- urgency 在 candidate 维归一化；
+- 使用 `[−1,1]` 内的 signed direction 聚合；
+- 最终通过 `residual_scale * tanh(aggregate)` 保证绝对上界；
+- 无有效边时 `q`、权重和 residual 严格为零；
+- 候选车辆数量增加不会放大理论上界。
+
+三个模块可直接从 `utilities.opinion` 导入：
+
+```python
+from utilities.opinion import (
+    OpinionDynamics,
+    OpinionEvidenceNet,
+    OpinionResidual,
+    gather_candidate_opinions,
+    scatter_candidate_opinions,
+    swap_roles,
+)
+```
+
+### 9.2 张量接口约定
+
+Evidence 输入采用统一 batch 前缀：
+
+```text
+ego_features             [..., K, D_individual]
+neighbor_features        [..., K, D_individual]
+symmetric_context        [..., K, D_symmetric]
+antisymmetric_context    [..., K, D_antisymmetric]
+urgency/confidence/mask  [..., K]
+raw_b/b                  [..., K]
+```
+
+Dynamics 对 `z_prev`、`b`、`urgency`、`mask` 做逐边同形更新。
+
+全局 ID 状态转换采用：
+
+```text
+z_dense          [..., n_agents, n_agents]
+candidate_ids    [..., n_agents, n_candidates]
+candidate_mask   [..., n_agents, n_candidates]
+candidate_z      [..., n_agents, n_candidates]
+```
+
+Residual 在最后一个 candidate 维聚合：
+
+```text
+z/urgency/direction/mask  [..., K]
+residual                  [...]
+```
+
+当前 `direction` 是 Opinion 对速度均值的有符号标量方向。M5 才负责把该标量
+只加到 `loc[...,0]`；M3 不接 Actor 或动作分布。
+
+### 9.3 验证方式和完成边界
+
+只运行 M3 测试：
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/opinion/test_evidence_net.py \
+  tests/opinion/test_dynamics.py \
+  tests/opinion/test_residual.py \
+  tests/opinion/test_math_pipeline.py
+```
+
+当前预期为 `28 passed`。Opinion 测试全集和完整工程回归分别为：
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion
+.venv/bin/python -m pytest -q
+```
+
+当前预期分别为 `91 passed` 和 `164 passed`。
+
+M3 已达到 Gate A，但仍未连接 ConflictGraph、环境、collector、Actor、PPO 或
+checkpoint。`main_training_opinion.py` 不带 `--validate-only` 时仍必须返回
+`[NOT IMPLEMENTED]` 和状态码 2。
 
 ---
 
@@ -1307,8 +1411,8 @@ Learned evidence + fixed dynamics（Full）
 - [x] R0/M0 runtime 基线已恢复并通过；
 - [x] R1/M1 Base-MAPPO/TSC 基线已恢复并通过；
 - [x] 新 Opinion 入口不调用 TSC coordination 路径；
-- [ ] EvidenceNet 输出有界且不读取 `z/q`；
-- [ ] Dynamics 固定且无梯度；
+- [x] EvidenceNet 输出有界且不读取 `z/q`；
+- [x] Dynamics 固定且无梯度；
 - [ ] `z` 按全局 agent ID 保存；
 - [ ] `z` 每物理步只更新一次；
 - [ ] partial/full reset 正确；
@@ -1470,6 +1574,52 @@ M2 没有实现或调用 `mappo_cavs()`、EvidenceNet、OpinionDynamics、Collec
 下一步：执行 M3，只实现并测试 EvidenceNet、固定 OpinionDynamics 和
 OpinionResidual 三个纯张量数学模块；禁止接入环境、collector 或 PPO。
 
+### 2026-08-19：M3 纯数学模块完成
+
+新增文件：
+
+- `utilities/opinion/evidence_net.py`；
+- `utilities/opinion/dynamics.py`；
+- `utilities/opinion/residual.py`；
+- `tests/opinion/test_evidence_net.py`；
+- `tests/opinion/test_dynamics.py`；
+- `tests/opinion/test_residual.py`；
+- `tests/opinion/test_math_pipeline.py`。
+
+修改文件：
+
+- `utilities/opinion/__init__.py`：公开 M3 类、输出类型和状态转换函数。
+
+测试先行证据：
+
+- 只加入 M3 测试时，因缺少 `evidence_net`、`dynamics`、`residual` 得到
+  预期的 3 个 collection errors；
+- 三个模块首轮目标测试：`27 passed`；
+- 加入完整数学链梯度测试后，M3 目标测试：`28 passed`；
+- Opinion 测试全集：`91 passed`；
+- `.venv/bin/python -m pytest -q`：`164 passed, 13 warnings`；
+- `.venv/bin/python -m pip check`：`No broken requirements found`；
+- M3 模块和测试的 `compileall` 检查通过。
+
+关键验证结果：
+
+- `EvidenceNet` trainable parameters：497；
+- `OpinionDynamics` trainable parameters：0；
+- `OpinionResidual` trainable parameters：0；
+- `rho_c=0.5`；
+- 角色交换后 `raw_b` 和 `b` 精确反号；
+- `rho<rho_c` 时小扰动回零，`rho>rho_c` 时进入正负分支；
+- `b=-0.5` 可以翻转已建立的正意见；
+- residual 不超过 `residual_scale`；
+- `EvidenceNet → Dynamics → Residual` 端到端梯度有限且只更新 EvidenceNet；
+- M3 源文件不引用 road traffic、collector、PPO 或 TSC 组件。
+
+M3 没有修改 `scenarios/road_traffic.py`，没有持久保存跨时间 `z`，也没有解除
+Opinion 训练/测试入口的 `[NOT IMPLEMENTED]` 状态。
+
+下一步：执行 M4，建立只依赖当前物理量的 ConflictGraph 和 road-traffic
+环境信息接口；环境禁止保存或更新 `z`，禁止调用 EvidenceNet。
+
 ---
 
 ## 23. 可复制给新 Session 的提示词
@@ -1492,9 +1642,9 @@ TSC 只能作为工程参考和外部基线，Opinion 路径禁止依赖 priorit
 Stackelberg、topology labels、topology learner、action predictor 或 opponent modeling。
 
 先查看第 5 节里程碑状态和第 22 节验证记录。
-R0/M0、R1/M1 和 M2 已完成。当前下一步是 M3：实现 EvidenceNet、固定
-OpinionDynamics 和 OpinionResidual 三个纯张量数学模块；本阶段禁止接入
-环境、collector 或 PPO。
+R0/M0、R1/M1、M2 和 M3 已完成。当前下一步是 M4：实现只依赖当前物理量
+的 ConflictGraph 与 road-traffic 环境信息接口；环境禁止保存/更新 `z`，
+禁止调用 EvidenceNet，也不能依赖 TSC topology selection。
 
 每一步必须先测试、再最小实现、运行全部回归、更新本指南验证记录，
 并报告修改文件、测试命令、实际结果和遗留问题。
