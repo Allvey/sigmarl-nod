@@ -1,8 +1,8 @@
 # Opinion Dynamics + MARL：实施方案与跨 Session 交接指南
 
-> 最后核对日期：2026-08-19  
+> 最后核对日期：2026-08-20  
 > 当前仓库：`/Users/zhangxiaotong/Code/sigmarl-nod`  
-> 当前阶段：R0/M0、R1/M1、M2、M3、M4 已完成；下一步执行 M5 Opinion Policy  
+> 当前阶段：R0/M0、R1/M1、M2、M3、M4、M5 已完成；下一步执行 M6 Stateful Collector  
 > 理论真源：`opinion_dynamics_marl_technical_route.md`  
 > 用途：让新的开发 Session 不依赖历史聊天，也能准确继续 Opinion Dynamics + MARL 的实现
 
@@ -36,7 +36,7 @@
 ### 0.1 当前最重要结论
 
 `sigmarl-nod` 在开始修改前已确认与原始工程一致；当前已在此基础上完成
-R0/M0、R1/M1、M2、M3 和 M4：
+R0/M0、R1/M1、M2、M3、M4 和 M5：
 
 - 原始 `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py`
   仍保持兼容；
@@ -45,8 +45,8 @@ R0/M0、R1/M1、M2、M3 和 M4：
 - `scenarios/road_traffic.py` 仅在 `use_opinion_marl=true` 时输出 M4
   current-physics ConflictGraph 信息；
 - 理论路线文件已经存在且内容完整；
-- M0 runtime checker、M1 基线、M2 配置入口、M3 数学模块和 M4 环境接口
-  均已通过验证；
+- M0 runtime checker、M1 基线、M2 配置入口、M3 数学模块、M4 环境接口和
+  M5 单步 Policy 均已通过验证；
 - 本文件是新仓库重新建立的工程实施真源。
 
 当前环境已经验证：
@@ -57,7 +57,7 @@ torch        2.1.0
 torchrl      0.2.1
 tensordict   0.2.1
 vmas         1.4.1
-现有测试      184 passed
+现有测试      201 passed
 pip check    无依赖冲突
 ```
 
@@ -69,7 +69,8 @@ R0：恢复并验证 M0 运行时检查（已完成）
 → M2：Opinion 配置与独立入口（已完成）
 → M3：Evidence、Dynamics、Residual 纯数学模块（已完成）
 → M4：ConflictGraph 当前物理量接口（已完成）
-→ M5：OpinionAugmentedPolicy（当前下一步）
+→ M5：OpinionAugmentedPolicy（已完成）
+→ M6：Stateful Opinion Collector（当前下一步）
 ```
 
 ---
@@ -352,7 +353,7 @@ sigmarl-nod/
 | M2 Opinion 配置/入口 | 已完成 | 强类型配置和独立入口骨架 |
 | M3 数学模块 | 已完成 | Evidence、Dynamics、Residual 纯张量实现 |
 | M4 ConflictGraph | 已完成 | 当前物理量到 pair data 的环境接口 |
-| M5 Opinion Policy | 未开始 | Base Actor + Opinion residual + TanhNormal |
+| M5 Opinion Policy | 已完成 | Base Actor + Opinion residual + TanhNormal |
 | M6 Stateful Collector | 未开始 | 全局 ID 状态、单步更新、reset |
 | M7 Sequence Buffer | 未开始 | 保留连续时间的 chunk 数据 |
 | M8 Sequence PPO | 未开始 | chunk 内重算意见和 log-prob |
@@ -706,7 +707,7 @@ find "$baseline_run_dir" -maxdepth 1 -type f -print | sort
 .venv/bin/python -m pip check
 ```
 
-当前完整工程预期分别为 `184 passed` 和 `No broken requirements found.`。
+当前完整工程预期分别为 `201 passed` 和 `No broken requirements found.`。
 
 #### 7.8.6 正式训练
 
@@ -915,7 +916,7 @@ Opinion-MARL。只有后续里程碑完成相应训练/测试核心后，默认�
 .venv/bin/python -m pytest -q
 ```
 
-当前预期为 `184 passed`。
+当前预期为 `201 passed`。
 
 ### 8.7 完成边界
 
@@ -1066,7 +1067,7 @@ residual                  [...]
 .venv/bin/python -m pytest -q
 ```
 
-当前预期分别为 `111 passed` 和 `184 passed`。
+当前预期分别为 `128 passed` 和 `201 passed`。
 
 M3 已达到 Gate A，M4 已达到 Gate B，但仍未连接 collector、Actor、PPO 或
 checkpoint。`main_training_opinion.py` 不带 `--validate-only` 时仍必须返回
@@ -1204,7 +1205,7 @@ ConflictGraph 的构造和输出不读取 `use_topology_neighbor_selection` 或
 .venv/bin/python -m pip check
 ```
 
-当前预期分别为 `111 passed`、`184 passed, 13 warnings` 和
+当前预期分别为 `128 passed`、`201 passed, 13 warnings` 和
 `No broken requirements found`。
 
 ### 10.5 完成边界
@@ -1228,34 +1229,156 @@ M4 已达到 Gate B，但没有保存/更新 `z`，没有调用 EvidenceNet，�
 
 ## 11. M5：OpinionAugmentedPolicy
 
-新增：
+M5 已完成。新增：
 
 ```text
 utilities/opinion/policy.py
+tests/opinion/test_policy.py
 ```
 
-模块：
+### 11.1 模块和职责
 
 ```text
 BaseGaussianActor
+    共享参数的分散式 MLP，输出 base loc/scale
+
+PairInteractionEncoder
+    将 M4 的 12 维 pair feature 拆成角色明确的 EvidenceNet 输入
+
 OpinionEvidenceNet
+    生成 raw_b 和经过 urgency/confidence/mask 门控的 b
+
 OpinionDynamics
+    单步执行 z_prev → z_next，但不持有跨步状态
+
 OpinionResidual
+    聚合有向意见并输出有界标量速度 residual
+
 OpinionAugmentedPolicyCore
-ProbabilisticActor/TanhNormal wrapper
+    组合 Base Actor、Evidence、Dynamics 和 Residual，先生成 final loc
+
+OpinionTanhNormalPolicy
+    使用 final loc 和原 scale 构造 TanhNormal，采样或重算 log-prob
 ```
 
-关键测试：
+M5 没有修改旧 `mappo_cavs.py`，也没有接管 `z_dense`。Base/TSC 继续使用原有
+Policy；Opinion Policy 是独立模块。
+
+### 11.2 InteractionEncoder 固定映射
+
+M4 的 12 维特征全部保留，并按 EvidenceNet 的相对评分接口拆分：
+
+```text
+ego_features [1]:
+  ego_speed
+
+neighbor_features [1]:
+  neighbor_speed
+
+symmetric_context [5]:
+  distance
+  closing_speed
+  time_to_closest_approach
+  distance_at_closest_approach
+  heading_difference_cos
+
+antisymmetric_context [5]:
+  relative_position_longitudinal
+  relative_position_lateral
+  relative_velocity_longitudinal
+  relative_velocity_lateral
+  heading_difference_sin
+```
+
+EvidenceNet 仍使用同一个 scorer 做角色交换差分，因此网络不能读取 `z/q`，
+且瞬时证据继续满足有界和 mask 合同。
+
+### 11.3 单步 Policy 因果顺序
+
+```text
+observation ───────────────→ BaseGaussianActor → base_loc, scale
+pair_features → InteractionEncoder → EvidenceNet → b
+z_prev + b + urgency ──────→ OpinionDynamics → z_next
+z_next + urgency ──────────→ OpinionResidual → residual
+base_loc[...,0] + residual → final_loc[...,0]
+base_loc[...,1] ───────────→ final_loc[...,1]（原样）
+final_loc + 原 scale ──────→ TanhNormal → action/log_prob
+```
+
+固定约束：
 
 - Base stage residual 严格为零；
-- sample/log-prob 有限；
+- Base stage 不调用 EvidenceNet，并输出全零 `b/z_next`；
 - residual 只改变速度 loc；
 - 转向 loc 和 scale 不变；
+- 必须先修改 loc，再构造 TanhNormal；
+- `residual_scale=0` 是精确 Base Policy 消融；
 - `z_next` 有限；
-- invalid mask 不改变意见；
-- 同一输入和状态可重复计算相同分布参数。
+- invalid/padding 输入不能改变动作；
+- `direction` 默认固定为 `+1`，即正意见增加前进倾向、负意见降低前进倾向；
+- 相同输入和 `z_prev` 必须重算出相同 loc/scale/log-prob；
+- VMAS 的 `[N,A]` per-agent action bounds 和普通 `[A]` bounds 均支持。
 
-完成后达到 Gate C。
+### 11.4 直接构造方式
+
+```python
+core = OpinionAugmentedPolicyCore.from_config(
+    observation_dim=observation.shape[-1],
+    action_dim=2,
+    config=opinion_config,
+    dt=parameters.dt,
+)
+
+policy = OpinionTanhNormalPolicy(
+    core=core,
+    action_low=action_spec.space.low,
+    action_high=action_spec.space.high,
+)
+
+result = policy(
+    observation=observation,
+    pair_features=pair_features,
+    urgency=urgency,
+    confidence=confidence,
+    pair_mask=pair_mask,
+    z_prev=z_prev,
+    residual_scale=current_residual_scale,
+)
+```
+
+输出包括：
+
+```text
+action、log_prob
+base_loc、final_loc、scale
+raw_b、b、z_next、q
+normalized_weights、aggregate、residual
+```
+
+如果传入 rollout 已保存的 `action`，wrapper 不重新采样，而是使用同一个
+final distribution 重算 log-prob；这为 M8 PPO ratio 重算提供单步基础。
+
+### 11.5 验证方式
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion/test_policy.py
+.venv/bin/python -m pytest -q tests/opinion
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pip check
+```
+
+当前预期分别为 `17 passed`、`128 passed`、`201 passed, 13 warnings` 和
+`No broken requirements found`。
+
+### 11.6 完成边界
+
+M5 已达到 Gate C，但仍然只是单步纯 Policy。它要求调用方显式传入
+`z_prev [E,N,K]` 并返回 `z_next`；当前没有模块持有 `[E,N,N]` 的跨时间状态，
+也没有处理 global neighbor ID gather/scatter、done/reset、rollout buffer、PPO、
+optimizer 或 checkpoint。
+
+因此 Opinion 训练/测试入口仍必须返回 `[NOT IMPLEMENTED]` 和状态码 2。下一步
+M6 由 Stateful Collector 成为 `z_dense` 生命周期的唯一拥有者。
 
 ---
 
@@ -1783,6 +1906,68 @@ M4 没有保存或更新 `z`，没有调用 EvidenceNet，没有改 Actor、coll
 下一步：执行 M5，实现单步 `OpinionAugmentedPolicy`，保证 residual 只修改速度
 通道的分布均值，并在修改 loc 后构造 TanhNormal 和计算 log-prob。
 
+### 2026-08-20：M5 OpinionAugmentedPolicy 完成
+
+新增文件：
+
+- `utilities/opinion/policy.py`；
+- `tests/opinion/test_policy.py`。
+
+修改文件：
+
+- `utilities/opinion/__init__.py`：公开 M5 Actor、Encoder、Core、wrapper 和输出类型；
+- `main_training_opinion.py`、`main_testing_opinion.py`：继续保持状态码 2，并将
+  `[NOT IMPLEMENTED]` 边界说明更新到 M5；
+- `OPINION_MARL_IMPLEMENTATION_GUIDE.md`：记录 M5 接口、映射、用法和验证证据。
+
+测试先行证据：
+
+- 首轮 M5 测试因缺少 `utilities.opinion.policy` 得到预期
+  `ModuleNotFoundError`；
+- 真实 VMAS smoke 首次发现 action bounds 是 `[N,A]` 而非仅 `[A]`，加入
+  per-agent bounds 测试后旧实现按预期失败，再扩展为严格 broadcast 合同；
+- Base-stage 非法 residual scale 测试首次得到预期 `4 failed`，随后将严格
+  scale 验证移动到所有 stage 的公共入口；
+- M5 目标测试：`17 passed`；
+- Opinion 测试全集：`128 passed`；
+- `.venv/bin/python -m pytest -q`：`201 passed, 13 warnings`；
+- `.venv/bin/python -m pip check`：`No broken requirements found`；
+- M5 源码和测试 `compileall` 通过。
+
+真实环境单步 smoke：
+
+```text
+num_envs=2
+n_agents=4
+observation=[2,4,32]
+pair_features=[2,4,3,12]
+action=[2,4,2]
+log_prob=[2,4]
+EvidenceNet trainable parameters=18305
+max |residual|=0.0001648313（随机初始化单步样本）
+VMAS next observation finite
+```
+
+关键验证结果：
+
+- Base stage 精确复现 Base Actor 的 loc/scale，且不调用 EvidenceNet；
+- joint/evidence stage 的 residual 只加到 `loc[...,0]`；
+- steering `loc[...,1]` 和全部 scale 精确不变；
+- invalid/padding NaN 被隔离，不产生 evidence、opinion 或 residual；
+- 采样 action 和 log-prob 有限且位于动作边界；
+- 使用保存 action 重算得到相同 loc/scale 和容差内相同 log-prob；
+- Actor loss 路径可向 EvidenceNet 产生有限非零梯度；
+- Dynamics 和 Residual 仍无可训练参数；
+- M5 没有依赖 TSC topology、priority、opponent modeling 或 action predictor。
+
+M5 没有持有跨物理步状态，也没有实现 collector、sequence buffer、PPO、trainer、
+checkpoint 或 evaluation。Opinion 训练/测试入口仍保持 `[NOT IMPLEMENTED]`
+和状态码 2。
+
+下一步：执行 M6，让 Stateful Collector 独占 `[E,N,N]` 的 `z_dense` 生命周期，
+完成 global-ID gather/scatter、每步恰好一次更新、整环境/单 agent reset，以及
+neighbor 消失时的自然衰减。
+
 ---
 
 ## 23. 可复制给新 Session 的提示词
@@ -1805,11 +1990,11 @@ TSC 只能作为工程参考和外部基线，Opinion 路径禁止依赖 priorit
 Stackelberg、topology labels、topology learner、action predictor 或 opponent modeling。
 
 先查看第 5 节里程碑状态和第 22 节验证记录。
-R0/M0、R1/M1、M2、M3 和 M4 已完成。当前下一步是 M5：实现单步
-OpinionAugmentedPolicy。M4 已提供只依赖当前物理量的 pair_features、global
-neighbor_ids、pair_mask、urgency、confidence 和 agent_reset_mask；M5 必须复用
-现有 M3 数学模块，residual 只修改速度 loc，转向 loc 和 scale 保持不变，且
-必须先得到最终 loc 再构造 TanhNormal/采样/计算 log-prob。
+R0/M0、R1/M1、M2、M3、M4 和 M5 已完成。当前下一步是 M6：实现 Stateful
+Opinion Collector。M5 已提供单步 OpinionAugmentedPolicy，但不拥有跨步状态；
+M6 必须成为 `z_dense [E,N,N]` 的唯一拥有者，按 global neighbor ID gather/scatter，
+每个物理步只更新一次，正确处理 environment done、single-agent reset、neighbor
+换槽/消失/重现，并让非候选旧边自然衰减。禁止把 z 放进 environment callback。
 
 每一步必须先测试、再最小实现、运行全部回归、更新本指南验证记录，
 并报告修改文件、测试命令、实际结果和遗留问题。

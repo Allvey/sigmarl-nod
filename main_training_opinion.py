@@ -48,9 +48,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print(f"[OK] Opinion training configuration valid: {summary}")
     print(
-        "[NOT IMPLEMENTED] M2 configuration, M3 math modules, and the M4 "
-        "ConflictGraph environment interface are available, but Opinion policy "
-        "and training integration start in later milestones.",
+        "[NOT IMPLEMENTED] M2-M5 configuration, math, ConflictGraph, and "
+        "single-step policy components are available, but stateful collection "
+        "and Opinion training integration start in later milestones.",
         file=sys.stderr,
     )
     return NOT_IMPLEMENTED_EXIT_CODE
