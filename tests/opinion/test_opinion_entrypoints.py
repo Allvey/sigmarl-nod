@@ -25,24 +25,52 @@ def test_testing_validate_only_reports_config_without_starting_rollout(capsys):
     assert not hasattr(main_testing_opinion, "mappo_cavs")
 
 
-def test_training_entrypoint_returns_distinct_not_implemented_status(capsys):
+def test_training_entrypoint_runs_validated_trainer(monkeypatch, tmp_path, capsys):
+    class FakeEnv:
+        def close(self):
+            pass
+
+    class FakeTrainer:
+        env = FakeEnv()
+
+        def fit(self):
+            return tmp_path / "final_opinion.pt"
+
+    monkeypatch.setattr(
+        "utilities.opinion.trainer.build_opinion_trainer",
+        lambda loaded, smoke, output_dir: FakeTrainer(),
+    )
     result = main_training_opinion.main([])
 
     captured = capsys.readouterr()
-    assert result == 2
-    assert "[NOT IMPLEMENTED]" in captured.err
-    assert "M2" in captured.err
-    assert "training" in captured.err.lower()
+    assert result == 0
+    assert "[PASS]" in captured.out
+    assert "final_opinion.pt" in captured.out
 
 
-def test_testing_entrypoint_returns_distinct_not_implemented_status(capsys):
+def test_testing_entrypoint_requires_checkpoint(capsys):
     result = main_testing_opinion.main([])
 
     captured = capsys.readouterr()
-    assert result == 2
-    assert "[NOT IMPLEMENTED]" in captured.err
-    assert "M2" in captured.err
-    assert "testing" in captured.err.lower()
+    assert result == 1
+    assert "[FAIL]" in captured.err
+    assert "--checkpoint" in captured.err
+
+
+def test_testing_entrypoint_runs_checkpoint_evaluation(monkeypatch, tmp_path, capsys):
+    checkpoint = tmp_path / "opinion.pt"
+    checkpoint.touch()
+    monkeypatch.setattr(
+        "utilities.opinion.evaluation.evaluate_opinion_checkpoint",
+        lambda *args, **kwargs: {"reward_mean": 1.0},
+    )
+
+    result = main_testing_opinion.main(["--checkpoint", str(checkpoint), "--smoke"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "[PASS]" in captured.out
+    assert "reward_mean" in captured.out
 
 
 def test_entrypoint_rejects_invalid_config_before_any_runtime_construction(

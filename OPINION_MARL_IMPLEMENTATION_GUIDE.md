@@ -2,7 +2,7 @@
 
 > 最后核对日期：2026-08-20  
 > 当前仓库：`/Users/zhangxiaotong/Code/sigmarl-nod`  
-> 当前阶段：R0/M0、R1/M1、M2、M3、M4、M5 已完成；下一步执行 M6 Stateful Collector  
+> 当前阶段：R0/M0、R1/M1、M2–M10 已完成；下一步执行 M11 消融与正式实验  
 > 理论真源：`opinion_dynamics_marl_technical_route.md`  
 > 用途：让新的开发 Session 不依赖历史聊天，也能准确继续 Opinion Dynamics + MARL 的实现
 
@@ -36,7 +36,7 @@
 ### 0.1 当前最重要结论
 
 `sigmarl-nod` 在开始修改前已确认与原始工程一致；当前已在此基础上完成
-R0/M0、R1/M1、M2、M3、M4 和 M5：
+R0/M0、R1/M1 和 M2–M10：
 
 - 原始 `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py`
   仍保持兼容；
@@ -45,8 +45,9 @@ R0/M0、R1/M1、M2、M3、M4 和 M5：
 - `scenarios/road_traffic.py` 仅在 `use_opinion_marl=true` 时输出 M4
   current-physics ConflictGraph 信息；
 - 理论路线文件已经存在且内容完整；
-- M0 runtime checker、M1 基线、M2 配置入口、M3 数学模块、M4 环境接口和
-  M5 单步 Policy 均已通过验证；
+- M0 runtime checker、M1 基线以及 M2–M10 的配置、数学模块、环境接口、
+  Policy、Stateful Collector、Sequence PPO、三阶段 Trainer、Checkpoint 和
+  evaluation 均已通过验证；
 - 本文件是新仓库重新建立的工程实施真源。
 
 当前环境已经验证：
@@ -57,7 +58,7 @@ torch        2.1.0
 torchrl      0.2.1
 tensordict   0.2.1
 vmas         1.4.1
-现有测试      201 passed
+现有测试      224 passed
 pip check    无依赖冲突
 ```
 
@@ -70,7 +71,12 @@ R0：恢复并验证 M0 运行时检查（已完成）
 → M3：Evidence、Dynamics、Residual 纯数学模块（已完成）
 → M4：ConflictGraph 当前物理量接口（已完成）
 → M5：OpinionAugmentedPolicy（已完成）
-→ M6：Stateful Opinion Collector（当前下一步）
+→ M6：Stateful Opinion Collector（已完成）
+→ M7：Sequence Buffer（已完成）
+→ M8：Sequence PPO（已完成）
+→ M9：三阶段 Trainer/Checkpoint（已完成）
+→ M10：测试入口与诊断（已完成）
+→ M11：消融与正式实验（当前下一步）
 ```
 
 ---
@@ -321,7 +327,8 @@ sigmarl-nod/
 │       ├── ppo_loss.py
 │       ├── trainer.py
 │       ├── checkpoint.py
-│       └── diagnostics.py
+│       ├── diagnostics.py
+│       └── evaluation.py
 └── tests/
     ├── test_runtime_environment_check.py
     ├── test_baseline_config.py
@@ -337,7 +344,9 @@ sigmarl-nod/
         ├── test_collector.py
         ├── test_sequence_buffer.py
         ├── test_ppo_loss.py
-        └── test_checkpoint.py
+        ├── test_checkpoint.py
+        ├── test_trainer.py
+        └── test_diagnostics.py
 ```
 
 模块职责必须单一。不要把所有 Opinion 逻辑塞进 `mappo_cavs.py` 或 `road_traffic.py`。
@@ -354,11 +363,11 @@ sigmarl-nod/
 | M3 数学模块 | 已完成 | Evidence、Dynamics、Residual 纯张量实现 |
 | M4 ConflictGraph | 已完成 | 当前物理量到 pair data 的环境接口 |
 | M5 Opinion Policy | 已完成 | Base Actor + Opinion residual + TanhNormal |
-| M6 Stateful Collector | 未开始 | 全局 ID 状态、单步更新、reset |
-| M7 Sequence Buffer | 未开始 | 保留连续时间的 chunk 数据 |
-| M8 Sequence PPO | 未开始 | chunk 内重算意见和 log-prob |
-| M9 Trainer/Checkpoint | 未开始 | 三阶段训练和恢复 |
-| M10 测试/诊断 | 未开始 | 测试入口、日志和可解释指标 |
+| M6 Stateful Collector | 已完成 | 全局 ID 状态、单步更新、reset |
+| M7 Sequence Buffer | 已完成 | 保留连续时间的 chunk 数据 |
+| M8 Sequence PPO | 已完成 | chunk 内重算意见和 log-prob |
+| M9 Trainer/Checkpoint | 已完成 | 三阶段训练和恢复 |
+| M10 测试/诊断 | 已完成 | 测试入口、日志和可解释指标 |
 | M11 消融/完整实验 | 未开始 | 多 seed 和方法比较 |
 
 状态只能使用：`未开始`、`进行中`、`已完成`、`阻塞`。每完成一个里程碑必须更新本表及对应验证记录。
@@ -707,7 +716,7 @@ find "$baseline_run_dir" -maxdepth 1 -type f -print | sort
 .venv/bin/python -m pip check
 ```
 
-当前完整工程预期分别为 `201 passed` 和 `No broken requirements found.`。
+当前完整工程预期分别为 `224 passed` 和 `No broken requirements found.`。
 
 #### 7.8.6 正式训练
 
@@ -891,16 +900,16 @@ cd /Users/zhangxiaotong/Code/sigmarl-nod
 配置合法时返回 0；配置非法时返回 1 并输出 `[FAIL]`。校验会在构造环境、
 网络或 collector 之前完成。
 
-当前若不带 `--validate-only`：
+M2 骨架阶段若不带 `--validate-only`：
 
 ```bash
 .venv/bin/python main_training_opinion.py
 .venv/bin/python main_testing_opinion.py
 ```
 
-入口会先验证配置，然后输出 `[NOT IMPLEMENTED]` 并返回状态码 2。这个返回值是
-刻意设计的：M2 只完成配置和入口，不允许把 Base-MAPPO/TSC 训练冒充为
-Opinion-MARL。只有后续里程碑完成相应训练/测试核心后，默认入口才能返回成功。
+入口当时会先验证配置，然后输出 `[NOT IMPLEMENTED]` 并返回状态码 2。这个边界
+曾用于防止把 Base-MAPPO/TSC 训练冒充为 Opinion-MARL。M9/M10 已完成后该限制
+已经解除；当前训练/测试命令以第 15、16 节为准。
 
 运行 M2 目标测试：
 
@@ -916,7 +925,7 @@ Opinion-MARL。只有后续里程碑完成相应训练/测试核心后，默认�
 .venv/bin/python -m pytest -q
 ```
 
-当前预期为 `201 passed`。
+当前预期为 `224 passed`。
 
 ### 8.7 完成边界
 
@@ -929,8 +938,8 @@ sequence PPO
 真实 Opinion 训练和测试
 ```
 
-因此 `--validate-only` 成功只表示配置合同成立，不表示 Opinion 方法已经训练、
-推理或产生性能结果。
+`--validate-only` 始终只表示配置合同成立，不表示 checkpoint 已经训练、测试或
+产生有效性能结果；完整链路需按第 15、16 节运行。
 
 ---
 
@@ -1067,11 +1076,10 @@ residual                  [...]
 .venv/bin/python -m pytest -q
 ```
 
-当前预期分别为 `128 passed` 和 `201 passed`。
+当前预期分别为 `151 passed` 和 `224 passed`。
 
-M3 已达到 Gate A，M4 已达到 Gate B，但仍未连接 collector、Actor、PPO 或
-checkpoint。`main_training_opinion.py` 不带 `--validate-only` 时仍必须返回
-`[NOT IMPLEMENTED]` 和状态码 2。
+M3 达到 Gate A。上述边界描述对应 M3 完成时的历史状态；当前 M4–M10 已连接
+collector、Actor、Sequence PPO、checkpoint 和 evaluation。
 
 ---
 
@@ -1205,7 +1213,7 @@ ConflictGraph 的构造和输出不读取 `use_topology_neighbor_selection` 或
 .venv/bin/python -m pip check
 ```
 
-当前预期分别为 `128 passed`、`201 passed, 13 warnings` 和
+当前预期分别为 `151 passed`、`224 passed, 13 warnings` 和
 `No broken requirements found`。
 
 ### 10.5 完成边界
@@ -1221,9 +1229,8 @@ ConflictGraph 的构造和输出不读取 `use_topology_neighbor_selection` 或
 稳定全局 ID、直接 single-agent reset、自动 partial reset、未来 reference
 隔离、TSC 开关隔离和 Base 路径零新增输出。
 
-M4 已达到 Gate B，但没有保存/更新 `z`，没有调用 EvidenceNet，没有改变 Actor
-或动作分布，也没有解除训练/测试入口的 `[NOT IMPLEMENTED]`。这些属于 M5/M6
-及后续里程碑。
+M4 自身只负责环境接口，不保存/更新 `z`，也不调用 EvidenceNet 或改变 Actor；
+这些职责现已由 M5–M10 的独立模块实现。
 
 ---
 
@@ -1367,154 +1374,255 @@ final distribution 重算 log-prob；这为 M8 PPO ratio 重算提供单步基�
 .venv/bin/python -m pip check
 ```
 
-当前预期分别为 `17 passed`、`128 passed`、`201 passed, 13 warnings` 和
+当前预期分别为 `17 passed`、`151 passed`、`224 passed, 13 warnings` 和
 `No broken requirements found`。
 
 ### 11.6 完成边界
 
-M5 已达到 Gate C，但仍然只是单步纯 Policy。它要求调用方显式传入
-`z_prev [E,N,K]` 并返回 `z_next`；当前没有模块持有 `[E,N,N]` 的跨时间状态，
-也没有处理 global neighbor ID gather/scatter、done/reset、rollout buffer、PPO、
-optimizer 或 checkpoint。
-
-因此 Opinion 训练/测试入口仍必须返回 `[NOT IMPLEMENTED]` 和状态码 2。下一步
-M6 由 Stateful Collector 成为 `z_dense` 生命周期的唯一拥有者。
+M5 Policy 本身仍保持无状态：调用方显式传入 `z_prev [E,N,K]` 并取得 `z_next`。
+跨时间 `[E,N,N]`、global-ID gather/scatter、done/reset、rollout、PPO、optimizer
+和 checkpoint 现分别由 M6–M10 管理；不要把这些职责重新塞回 Policy。
 
 ---
 
 ## 12. M6：Stateful Opinion Collector
 
-新增：
+M6 已完成。新增：
 
 ```text
 utilities/opinion/collector.py
+tests/opinion/test_collector.py
 ```
 
-Collector 是 `z` 生命周期的唯一拥有者：
+`OpinionStatefulCollector` 是执行/采样期间 `z_dense [E,N,N]` 生命周期的唯一
+拥有者。每个物理步严格执行：
 
-- 初始化 `[E,N,N]`；
-- 每个物理步更新一次；
-- rollout 保存 `z_prev`、`z_next`、`b`、candidate IDs/mask；
-- done/reset 后正确清零；
-- 不跨环境共享状态。
+```text
+environment done / agent reset
+→ 清零对应环境，或该 agent 的入边和出边
+→ 按 global neighbor ID 从 z_dense gather z_prev
+→ 调用 M5 Policy 一次
+→ 全部旧边先以 b=0、urgency=0 自然衰减
+→ 按 global ID scatter 当前候选边的 z_next
+→ 保存 detached rollout 输出
+```
 
-必须测试异步环境结束、agent partial reset、neighbor 换槽、neighbor 消失和重新出现。
+关键合同：
 
-完成后达到 Gate D。
+- candidate 槽位只是临时排序，状态身份由全局 agent ID 决定；
+- `step_id` 必须严格递增，重复调用同一物理步会报错；
+- 候选边消失时不会立刻删除，而是自然衰减；重新出现时取回同一全局边状态；
+- full environment done 清空该环境；partial reset 同时清空对应车辆的入边和出边；
+- Collector rollout 在 `torch.no_grad()` 下采样，训练梯度由 M8 的序列重放恢复。
+
+验证：
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion/test_collector.py
+```
+
+当前结果：`5 passed`。异步 reset、global-ID 换槽、非候选边衰减和重复更新保护
+均有测试覆盖。M6 达到 Gate D。
 
 ---
 
 ## 13. M7：Sequence Buffer
 
-新增：
+M7 已完成。新增：
 
 ```text
 utilities/opinion/sequence_buffer.py
+tests/opinion/test_sequence_buffer.py
 ```
 
-标准 MAPPO 可以展平 rollout，但本方法的 `z` 有时序依赖，因此必须按连续 chunk 采样：
+`OpinionSequenceBuffer` 先按 `[T,E,...]` 保存 rollout，然后按“单一环境、单一
+episode、连续时间”切分 chunk：
 
 ```text
 rollout [T,E,N,...]
-→ 连续 chunk [B_chunk,L,N,...]
-→ 保存每个 chunk 的 z_init
+→ 每个环境分别按 done 切 episode segment
+→ 每段按 chunk_length 切连续 chunk [L,N,...]
+→ 使用该 chunk 第一帧的 z_dense_prev 作为 z_init.detach()
 → chunk 内顺序重放
 ```
 
-约束：
+实现约束：
 
-- `chunk_length > 0`；
+- 所有 transition 字段必须是以 `[E]` 开头的 tensor，字段集合保持一致；
+- `done` 必须是 `bool [E]`，`z_dense_prev` 必须是 `[E,N,N]`；
+- `advantage`、`returns` 可在 rollout 完成后按 `[T,E,...]` 附加；
 - chunk 不跨 done 边界；
 - `z_init.detach()` 截断 chunk 之前的梯度；
 - chunk 内梯度保持；
-- 重新拼接能恢复原时间顺序。
+- 不把不同环境混入同一递归意见链。
+
+验证：
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion/test_sequence_buffer.py
+```
+
+当前结果：`4 passed`。
 
 ---
 
 ## 14. M8：Sequence PPO 重算与梯度隔离
 
-新增：
+M8 已完成。新增：
 
 ```text
 utilities/opinion/ppo_loss.py
+tests/opinion/test_ppo_loss.py
 ```
 
-PPO 更新时不能只读取 rollout 中存好的 `z`。必须从 `z_init` 开始在 chunk 内重新计算：
+`OpinionSequencePPOLoss` 不把 rollout 中的 `z_next` 当作常量使用，而是从
+`z_init.detach()` 开始逐步重算：
 
 ```text
-pair features
-→ EvidenceNet
-→ b_t
-→ Dynamics(z_{t-1}, b_t)
-→ residual
-→ loc_t
-→ log_prob_t
+pair_features_t → EvidenceNet → b_t
+z_{t-1} + b_t → fixed OpinionDynamics → z_t
+z_t → bounded residual → final loc_t
+saved action_t + final distribution → new log_prob_t
 ```
 
-必须验证：
+当前损失包含 clipped PPO actor loss、价值 MSE、entropy estimate、neutral loss 和
+magnitude loss。`OpinionCentralizedCritic` 只在训练期间使用；即使配置允许它读取
+`z_dense`，该输入也会先 `detach()`。
+
+已验证：
 
 - 参数未更新时，重算 log-prob 与 rollout log-prob 在容差内一致；
 - Actor loss backward 后 EvidenceNet 有非零梯度；
 - Critic loss backward 后 EvidenceNet 无梯度；
-- Dynamics 参数无梯度；
+- Dynamics 无可训练参数，也不进入 optimizer；
 - 早期证据能影响 chunk 后期状态和 loss；
-- invalid/padding/done 部分不产生梯度污染。
+- reset/done 由 chunk 边界和逐步 reset mask 隔离。
 
-完成后达到 Gate E。
+验证：
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion/test_ppo_loss.py
+```
+
+当前结果：`4 passed`。M8 达到 Gate E。
 
 ---
 
 ## 15. M9：三阶段 Trainer 与 Checkpoint
 
-新增：
+M9 已完成。新增：
 
 ```text
 utilities/opinion/trainer.py
 utilities/opinion/checkpoint.py
+tests/opinion/test_checkpoint.py
 ```
 
-训练阶段：
+三阶段的实际 optimizer 合同为：
 
 ```text
-Stage base:
-  residual = 0
-  训练 Base Actor/Critic
-
-Stage evidence:
-  可冻结或低学习率更新 Base Actor
-  主要训练 EvidenceNet
-  residual 从 0 warm-up
-
-Stage joint:
-  Actor、EvidenceNet、Critic 使用独立学习率联合微调
+base:      Actor + Critic；EvidenceNet 冻结；residual 恒为 0
+evidence:  EvidenceNet + Critic；Base Actor 冻结；residual 按迭代 warm-up
+joint:     Actor + EvidenceNet + Critic；三个独立 optimizer
 ```
 
-Optimizer 约束：
+Dynamics 参数不在任何 optimizer；三个参数集合互不重叠；每个模块独立 gradient
+clipping。Trainer 每轮采集真实 `road_traffic` rollout，使用 `gamma`、`lmbda` 和
+截断末端 bootstrap 计算 GAE/returns，再用 M7 chunk 和 M8 loss 优化。
+`chunks_per_minibatch` 决定一次梯度更新聚合的连续 chunk 数，而
+`chunk_length` 决定截断反向传播长度。
 
-- Actor、Evidence、Critic 参数集合明确且不重复；
-- Dynamics 参数不在任何 optimizer；
-- Critic optimizer 不包含 EvidenceNet；
-- gradient clipping 分模块执行；
-- checkpoint 保存 schema version、配置、stage、网络和 optimizer；
-- 第一版不要求恢复 collector 中间 `z`，但必须明确 episode 边界恢复规则。
+### 15.1 Checkpoint 合同
 
-完成后达到 Gate F。
+`final_opinion.pt` 保存：
+
+```text
+schema_version、stage、iteration、resolved_config
+policy_state、critic_state、optimizer_states
+episode_boundary_resume=true
+```
+
+第一版 checkpoint 是“episode 边界阶段初始化”，不恢复一半 episode 内的
+`z_dense`。`--resume` 加载网络权重并重新清空 collector；跨阶段允许链为：
+
+```text
+base → evidence → joint
+```
+
+同阶段 base/evidence/joint 也可作为新的 episode-boundary 初始化。阶段会在改写
+模型参数之前校验；不合法的 base → joint 直接拒绝。跨阶段默认建立新的 optimizer，
+不会错误继承上一阶段的动量状态。
+
+### 15.2 推荐运行方式
+
+先用 smoke 验证完整三阶段链，输出到彼此隔离的目录：
+
+```bash
+.venv/bin/python main_training_opinion.py \
+  --smoke --stage base --output-dir outputs/opinion_smoke/base
+
+.venv/bin/python main_training_opinion.py \
+  --smoke --stage evidence \
+  --resume outputs/opinion_smoke/base/final_opinion.pt \
+  --output-dir outputs/opinion_smoke/evidence
+
+.venv/bin/python main_training_opinion.py \
+  --smoke --stage joint \
+  --resume outputs/opinion_smoke/evidence/final_opinion.pt \
+  --output-dir outputs/opinion_smoke/joint
+```
+
+`--smoke` 固定使用 CPU 配置的 2 个短迭代、2 个 VMAS 环境和每环境 4 步，只用于
+链路验证，不代表算法性能。正式训练移除 `--smoke`：
+
+```bash
+.venv/bin/python main_training_opinion.py \
+  --stage base --output-dir outputs/opinion/base
+
+.venv/bin/python main_training_opinion.py \
+  --stage evidence \
+  --resume outputs/opinion/base/final_opinion.pt \
+  --output-dir outputs/opinion/evidence
+
+.venv/bin/python main_training_opinion.py \
+  --stage joint \
+  --resume outputs/opinion/evidence/final_opinion.pt \
+  --output-dir outputs/opinion/joint
+```
+
+正式参数来自 `config_opinion.json`；运行前可先执行：
+
+```bash
+.venv/bin/python main_training_opinion.py --validate-only
+```
+
+验证 checkpoint/optimizer 合同：
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion/test_checkpoint.py
+```
+
+当前结果：`6 passed`。相同输入和 `z` 在保存/加载前后产生完全相同的
+`final_loc` 和 `scale`。M9 达到 Gate F。
 
 ---
 
 ## 16. M10：测试入口和诊断日志
 
-新增：
+M10 已完成。新增：
 
 ```text
 main_testing_opinion.py
 utilities/opinion/diagnostics.py
+utilities/opinion/evaluation.py
+tests/opinion/test_diagnostics.py
 ```
 
-至少记录：
+训练每轮写入 `<output-dir>/metrics.json`；测试可通过 `--output` 写一个独立 JSON。
+当前诊断包括：
 
 - reward；
-- agent/lane/total collision rate；
+- agent/lane/total collision rate，其中 total 使用二者事件并集；
 - `raw_b`、`b` 均值/方差/饱和率；
 - `z` 均值/方差/绝对值/翻转率；
 - opinion residual 幅值和饱和率；
@@ -1524,7 +1632,50 @@ utilities/opinion/diagnostics.py
 - Actor/Critic 梯度范数；
 - 不同 stage 当前 residual scale。
 
-测试 checkpoint 保存/加载后，相同输入和 `z` 产生相同 distribution 参数。
+加载训练好的 checkpoint 进行测试：
+
+```bash
+.venv/bin/python main_testing_opinion.py \
+  --smoke --stage joint \
+  --checkpoint outputs/opinion_smoke/joint/final_opinion.pt \
+  --output outputs/opinion_smoke/joint/evaluation.json
+```
+
+正式测试移除 `--smoke`，可用 `--steps` 指定正整数步数：
+
+```bash
+.venv/bin/python main_testing_opinion.py \
+  --stage joint \
+  --checkpoint outputs/opinion/joint/final_opinion.pt \
+  --steps 128 \
+  --output outputs/opinion/joint/evaluation.json
+```
+
+测试入口不调用中央 Critic 生成动作，不更新任何参数，并拒绝配置 stage 与
+checkpoint stage 不一致。若未传 `--checkpoint`，会明确失败并返回状态码 1。
+
+### 16.1 M6–M10 当前验证结果
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pip check
+.venv/bin/python -m compileall -q \
+  utilities/opinion main_training_opinion.py main_testing_opinion.py
+```
+
+当前结果：
+
+```text
+Opinion tests   151 passed
+Full tests      224 passed, 13 warnings
+pip check       No broken requirements found
+compileall      passed
+```
+
+三阶段串联真实 smoke 和最终 Joint evaluation 均已通过；输出包含每阶段
+`final_opinion.pt`、`metrics.json`，以及最终 `evaluation.json`。现有 13 个 warning
+来自上游 matplotlib/pyparsing 弃用提示，不是 Opinion 数值错误。
 
 ---
 
@@ -1964,9 +2115,51 @@ M5 没有持有跨物理步状态，也没有实现 collector、sequence buffer�
 checkpoint 或 evaluation。Opinion 训练/测试入口仍保持 `[NOT IMPLEMENTED]`
 和状态码 2。
 
-下一步：执行 M6，让 Stateful Collector 独占 `[E,N,N]` 的 `z_dense` 生命周期，
-完成 global-ID gather/scatter、每步恰好一次更新、整环境/单 agent reset，以及
-neighbor 消失时的自然衰减。
+### 2026-08-20：M6–M10 训练闭环完成
+
+新增文件：
+
+- `utilities/opinion/collector.py` 与 `tests/opinion/test_collector.py`；
+- `utilities/opinion/sequence_buffer.py` 与 `tests/opinion/test_sequence_buffer.py`；
+- `utilities/opinion/ppo_loss.py` 与 `tests/opinion/test_ppo_loss.py`；
+- `utilities/opinion/trainer.py`、`utilities/opinion/checkpoint.py` 与
+  `tests/opinion/test_checkpoint.py`、`tests/opinion/test_trainer.py`；
+- `utilities/opinion/diagnostics.py`、`utilities/opinion/evaluation.py` 与
+  `tests/opinion/test_diagnostics.py`。
+
+修改文件：
+
+- `main_training_opinion.py`：启用真实训练、三阶段选择、smoke、输出目录和
+  episode-boundary `--resume`；
+- `main_testing_opinion.py`：启用 checkpoint-backed evaluation 和 JSON 输出；
+- `utilities/opinion/__init__.py`：公开 M6–M10 的稳定接口；
+- `tests/opinion/test_opinion_entrypoints.py`：覆盖训练/测试 CLI 成功和失败边界。
+
+关键验证：
+
+- Stateful Collector 按 global ID 保持状态且每步只更新一次；
+- Sequence Buffer 不跨环境或 done 边界，chunk 起点 `z_init` 截断历史梯度；
+- PPO 重放 log-prob 与采样时一致，Actor loss 可训练 EvidenceNet，Critic loss
+  无法训练 EvidenceNet，早期证据梯度可穿过后续意见状态；
+- Trainer 使用 terminal-aware、truncated-bootstrap GAE，并按
+  `chunks_per_minibatch` 聚合连续 chunk；
+- Base、Evidence、Joint optimizer 参数组互斥，固定 Dynamics 不在 optimizer；
+- checkpoint 加载前校验 stage，保存/加载后相同输入和 `z` 得到相同分布参数；
+- total collision 使用 agent/lane collision 的事件并集；所有诊断值强制有限；
+- Base → Evidence → Joint 串联 smoke 与最终 Joint evaluation 均真实通过。
+
+最终验证：
+
+```text
+tests/opinion                     151 passed
+完整 pytest                        224 passed, 13 warnings
+pip check                          No broken requirements found
+compileall                         passed
+```
+
+下一步：M11。先冻结一套正式实验配置与 seed 清单，再按同一环境预算运行
+Base-MAPPO、TSC、Opinion Full 及理论路线规定的消融。M11 开始前不要仅凭 smoke
+指标宣称新方法优于基线。
 
 ---
 
@@ -1990,11 +2183,15 @@ TSC 只能作为工程参考和外部基线，Opinion 路径禁止依赖 priorit
 Stackelberg、topology labels、topology learner、action predictor 或 opponent modeling。
 
 先查看第 5 节里程碑状态和第 22 节验证记录。
-R0/M0、R1/M1、M2、M3、M4 和 M5 已完成。当前下一步是 M6：实现 Stateful
-Opinion Collector。M5 已提供单步 OpinionAugmentedPolicy，但不拥有跨步状态；
-M6 必须成为 `z_dense [E,N,N]` 的唯一拥有者，按 global neighbor ID gather/scatter，
-每个物理步只更新一次，正确处理 environment done、single-agent reset、neighbor
-换槽/消失/重现，并让非候选旧边自然衰减。禁止把 z 放进 environment callback。
+R0/M0、R1/M1 和 M2–M10 已完成。Stateful Collector、Sequence Buffer、Sequence
+PPO、三阶段 Trainer、versioned Checkpoint、真实 evaluation 和诊断均已实现；完整
+回归为 224 passed。当前下一步是 M11：消融与正式实验。
+
+开始 M11 前先核对第 17 节，并冻结统一实验合同：训练预算、评估场景、seed、
+checkpoint 选择规则和输出目录。至少比较 Base-MAPPO、TSC、Direct evidence、EMA、
+Linear dynamics、GRU、handcrafted evidence 和 Full Opinion。所有方法必须使用相同
+物理环境、观测/action 合同和评估指标；不要因 smoke 能运行就下性能结论，也不要
+把 TSC priority/topology/action predictor 引入 Opinion 路径。
 
 每一步必须先测试、再最小实现、运行全部回归、更新本指南验证记录，
 并报告修改文件、测试命令、实际结果和遗留问题。

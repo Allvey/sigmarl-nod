@@ -1,6 +1,7 @@
 """Validate the independent Opinion-MARL testing configuration."""
 
 import argparse
+from dataclasses import replace
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -8,10 +9,8 @@ from typing import Optional, Sequence
 from utilities.opinion.config import (
     DEFAULT_OPINION_CONFIG_PATH,
     load_opinion_experiment_config,
+    OPINION_STAGES,
 )
-
-
-NOT_IMPLEMENTED_EXIT_CODE = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +21,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_OPINION_CONFIG_PATH,
         help="Opinion experiment JSON (default: config_opinion.json)",
     )
+    parser.add_argument(
+        "--stage",
+        choices=OPINION_STAGES,
+        default=None,
+        help="override opinion_config.stage to match the checkpoint",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Opinion checkpoint produced by main_training_opinion.py",
+    )
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
         "--validate-only",
         action="store_true",
@@ -34,6 +48,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         loaded = load_opinion_experiment_config(args.config)
+        if args.stage is not None:
+            loaded = replace(loaded, opinion=replace(loaded.opinion, stage=args.stage))
     except Exception as error:
         print(f"[FAIL] Opinion testing configuration: {error}", file=sys.stderr)
         return 1
@@ -46,14 +62,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[PASS] Opinion testing configuration valid: {summary}")
         return 0
 
+    if args.checkpoint is None:
+        print("[FAIL] Opinion testing requires --checkpoint", file=sys.stderr)
+        return 1
     print(f"[OK] Opinion testing configuration valid: {summary}")
-    print(
-        "[NOT IMPLEMENTED] M2-M5 configuration, math, ConflictGraph, and "
-        "single-step policy components are available, but stateful rollout and "
-        "Opinion testing integration start in later milestones.",
-        file=sys.stderr,
-    )
-    return NOT_IMPLEMENTED_EXIT_CODE
+    try:
+        from utilities.opinion.evaluation import evaluate_opinion_checkpoint
+
+        metrics = evaluate_opinion_checkpoint(
+            loaded,
+            checkpoint=args.checkpoint,
+            steps=args.steps,
+            smoke=args.smoke,
+            output_path=args.output,
+        )
+    except Exception as error:
+        print(f"[FAIL] Opinion testing: {error}", file=sys.stderr)
+        return 1
+    print(f"[PASS] Opinion testing metrics={metrics}")
+    return 0
 
 
 if __name__ == "__main__":
