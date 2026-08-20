@@ -8,6 +8,11 @@ from utilities.opinion.config import (
     OpinionConfig,
     load_opinion_experiment_config,
 )
+from utilities.opinion.conflict_graph import (
+    PAIR_FEATURE_NAMES,
+    ConflictGraph,
+    ConflictGraphOutput,
+)
 from utilities.opinion.dynamics import (
     OpinionDynamics,
     gather_candidate_opinions,
@@ -22,11 +27,14 @@ __all__ = (
     "OPINION_STAGES",
     "LoadedOpinionExperimentConfig",
     "OpinionConfig",
+    "ConflictGraph",
+    "ConflictGraphOutput",
     "OpinionDynamics",
     "OpinionEvidenceNet",
     "OpinionResidual",
     "EvidenceOutput",
     "ResidualOutput",
+    "PAIR_FEATURE_NAMES",
     "gather_candidate_opinions",
     "load_opinion_experiment_config",
     "scatter_candidate_opinions",

@@ -2,7 +2,7 @@
 
 > 最后核对日期：2026-08-19  
 > 当前仓库：`/Users/zhangxiaotong/Code/sigmarl-nod`  
-> 当前阶段：R0/M0、R1/M1、M2、M3 已完成；下一步执行 M4 ConflictGraph  
+> 当前阶段：R0/M0、R1/M1、M2、M3、M4 已完成；下一步执行 M5 Opinion Policy  
 > 理论真源：`opinion_dynamics_marl_technical_route.md`  
 > 用途：让新的开发 Session 不依赖历史聊天，也能准确继续 Opinion Dynamics + MARL 的实现
 
@@ -36,15 +36,17 @@
 ### 0.1 当前最重要结论
 
 `sigmarl-nod` 在开始修改前已确认与原始工程一致；当前已在此基础上完成
-R0/M0、R1/M1、M2 和 M3：
+R0/M0、R1/M1、M2、M3 和 M4：
 
 - 原始 `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py`
   仍保持兼容；
 - `utilities/mappo_cavs.py` 已加入 Base/TSC 门控；
 - `utilities/helper_training.py` 已加入默认关闭的 Opinion 配置字段；
-- `scenarios/road_traffic.py` 尚未为 Opinion 修改；
+- `scenarios/road_traffic.py` 仅在 `use_opinion_marl=true` 时输出 M4
+  current-physics ConflictGraph 信息；
 - 理论路线文件已经存在且内容完整；
-- M0 runtime checker、M1 基线、M2 配置入口和 M3 数学模块均已通过验证；
+- M0 runtime checker、M1 基线、M2 配置入口、M3 数学模块和 M4 环境接口
+  均已通过验证；
 - 本文件是新仓库重新建立的工程实施真源。
 
 当前环境已经验证：
@@ -55,7 +57,7 @@ torch        2.1.0
 torchrl      0.2.1
 tensordict   0.2.1
 vmas         1.4.1
-现有测试      164 passed
+现有测试      184 passed
 pip check    无依赖冲突
 ```
 
@@ -66,7 +68,8 @@ R0：恢复并验证 M0 运行时检查（已完成）
 → R1：恢复并验证 M1 Base-MAPPO/TSC 基线（已完成）
 → M2：Opinion 配置与独立入口（已完成）
 → M3：Evidence、Dynamics、Residual 纯数学模块（已完成）
-→ M4：ConflictGraph 当前物理量接口（当前下一步）
+→ M4：ConflictGraph 当前物理量接口（已完成）
+→ M5：OpinionAugmentedPolicy（当前下一步）
 ```
 
 ---
@@ -348,7 +351,7 @@ sigmarl-nod/
 | R1 / M1 Base/TSC 基线 | 已完成 | 纯 Base-MAPPO 与现有 TSC 可回归基线 |
 | M2 Opinion 配置/入口 | 已完成 | 强类型配置和独立入口骨架 |
 | M3 数学模块 | 已完成 | Evidence、Dynamics、Residual 纯张量实现 |
-| M4 ConflictGraph | 未开始 | 当前物理量到 pair data 的环境接口 |
+| M4 ConflictGraph | 已完成 | 当前物理量到 pair data 的环境接口 |
 | M5 Opinion Policy | 未开始 | Base Actor + Opinion residual + TanhNormal |
 | M6 Stateful Collector | 未开始 | 全局 ID 状态、单步更新、reset |
 | M7 Sequence Buffer | 未开始 | 保留连续时间的 chunk 数据 |
@@ -703,7 +706,7 @@ find "$baseline_run_dir" -maxdepth 1 -type f -print | sort
 .venv/bin/python -m pip check
 ```
 
-当前完整工程预期分别为 `164 passed` 和 `No broken requirements found.`。
+当前完整工程预期分别为 `184 passed` 和 `No broken requirements found.`。
 
 #### 7.8.6 正式训练
 
@@ -912,17 +915,14 @@ Opinion-MARL。只有后续里程碑完成相应训练/测试核心后，默认�
 .venv/bin/python -m pytest -q
 ```
 
-当前预期为 `164 passed`。
+当前预期为 `184 passed`。
 
 ### 8.7 完成边界
 
 M2 已完成配置、解析、隔离验证和 CLI 骨架，但仍未实现：
 
 ```text
-EvidenceNet
-OpinionDynamics
-OpinionResidual
-ConflictGraph
+OpinionAugmentedPolicy
 stateful collector
 sequence PPO
 真实 Opinion 训练和测试
@@ -1066,9 +1066,9 @@ residual                  [...]
 .venv/bin/python -m pytest -q
 ```
 
-当前预期分别为 `91 passed` 和 `164 passed`。
+当前预期分别为 `111 passed` 和 `184 passed`。
 
-M3 已达到 Gate A，但仍未连接 ConflictGraph、环境、collector、Actor、PPO 或
+M3 已达到 Gate A，M4 已达到 Gate B，但仍未连接 collector、Actor、PPO 或
 checkpoint。`main_training_opinion.py` 不带 `--validate-only` 时仍必须返回
 `[NOT IMPLEMENTED]` 和状态码 2。
 
@@ -1076,26 +1076,138 @@ checkpoint。`main_training_opinion.py` 不带 `--validate-only` 时仍必须返
 
 ## 10. M4：ConflictGraph 环境接口
 
-新增：
+M4 已完成。新增：
 
 ```text
 utilities/opinion/conflict_graph.py
+tests/opinion/test_conflict_graph.py
+tests/opinion/test_road_traffic_conflict_info.py
 ```
 
 修改：
 
 ```text
 scenarios/road_traffic.py
+utilities/opinion/__init__.py
 ```
 
-环境只负责输出当前物理量和固定几何计算：
+### 10.1 当前物理量与候选边
 
-- pair features；
-- global neighbor ID；
-- pair mask；
-- urgency；
-- confidence；
-- agent reset mask。
+`ConflictGraph` 是无状态纯张量模块。输入为：
+
+```text
+positions:       [E, N, 2]
+velocities:      [E, N, 2]
+headings:        [E, N]
+visibility_mask: [E, N, N]，bool，方向为 ego i → neighbor j
+```
+
+它只利用当前 `pos/vel/rot` 做 constant-velocity closest-approach 几何计算：
+
+```text
+r_ij     = p_j - p_i
+v_ij     = v_j - v_i
+t_cpa    = clamp(-<r_ij,v_ij> / ||v_ij||², 0, ttc_horizon)
+d_cpa    = ||r_ij + t_cpa v_ij||
+```
+
+这里的 CPA 是从当前物理量得到的解析量，不读取仿真器未来状态、真实未来轨迹、
+short-term reference path 或 topology label。
+
+每条 pair feature 固定为 12 维，顺序由
+`utilities.opinion.conflict_graph.PAIR_FEATURE_NAMES` 唯一定义：
+
+```text
+0  relative_position_longitudinal（ego 坐标系）
+1  relative_position_lateral
+2  relative_velocity_longitudinal
+3  relative_velocity_lateral
+4  distance
+5  closing_speed
+6  time_to_closest_approach
+7  distance_at_closest_approach
+8  heading_difference_sin
+9  heading_difference_cos
+10 ego_speed
+11 neighbor_speed
+```
+
+候选排序是确定性的：`urgency` 降序、当前距离升序、global agent ID 升序。
+无效槽位统一输出 `neighbor_id=-1`、`pair_mask=false`，其 features、urgency、
+confidence 均为 0。当前仿真器使用精确状态，因此可见有效 pair 的
+`confidence=1`，不可见/填充 pair 为 0。
+
+### 10.2 urgency 定义
+
+仅当车辆正在接近，或当前距离已经不大于 `safe_distance` 时激活冲突：
+
+```text
+time_score     = exp(-t_cpa / urgency_time_scale)
+distance_score = sigmoid((safe_distance - d_cpa)
+                         / urgency_distance_temperature)
+urgency        = active_conflict * time_score * distance_score * confidence
+```
+
+输出严格位于 `[0,1]`。平行同速和明确背离车辆在安全距离外的 urgency 为 0；
+迎面、交叉和接近静止车辆可得到正 urgency。
+
+### 10.3 road_traffic info 合同
+
+仅当 `parameters.use_opinion_marl=true` 时，`road_traffic.info(agent)` 增加：
+
+```text
+pair_features:    raw per agent [E,K,12] → TorchRL [E,N,K,12]
+neighbor_ids:     raw per agent [E,K]    → TorchRL [E,N,K]
+pair_mask:        raw per agent [E,K]    → TorchRL [E,N,K]
+urgency:          raw per agent [E,K]    → TorchRL [E,N,K]
+confidence:       raw per agent [E,K]    → TorchRL [E,N,K]
+agent_reset_mask: raw per agent [E]      → TorchRL [E,N,1]
+```
+
+`environment_done [E]` 继续使用 VMAS/TorchRL 顶层 `done/terminated`，不在每个
+agent 的 info 中重复复制；M6 必须同时读取顶层 done 和上述 partial reset mask。
+
+抽象方法接口中的 reset mask 仍是 `[E,N]`；TorchRL 0.2.1 会自动为标量 info
+增加最后一个 metric 维度，因此环境 TensorDict 中实际为 `[E,N,1]`，M5/M6
+读取时应对最后一维执行 `squeeze(-1)`。
+
+全局 ID 在纯模块和 raw scenario info 中为 `int64`。TorchRL 0.2.1 的
+`read_info()` 会把全部 info 转成 float32，因此后续从 TensorDict 读取
+`neighbor_ids` 时必须显式 `.long()`，不能把候选槽位号当成车辆 ID。
+
+reset 事件满足：
+
+- 全环境 reset 标记该环境全部 agent；
+- 直接 single-agent reset 只标记对应全局 ID；
+- `done()` 内部的 partial reset 会在 reset 前一条 transition 的 info 中报告；
+- 该事件只报告一次，不会在物理 reset 后重复报告。
+
+Base-MAPPO/TSC 在开关关闭时既不构造 `ConflictGraph`，也不增加上述 info key。
+ConflictGraph 的构造和输出不读取 `use_topology_neighbor_selection` 或
+`n_topology_nearing_agents_observed`。
+
+### 10.4 验证方式
+
+只运行 M4 测试：
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/opinion/test_conflict_graph.py \
+  tests/opinion/test_road_traffic_conflict_info.py
+```
+
+当前预期：`20 passed`。Opinion 全集和完整回归：
+
+```bash
+.venv/bin/python -m pytest -q tests/opinion
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pip check
+```
+
+当前预期分别为 `111 passed`、`184 passed, 13 warnings` 和
+`No broken requirements found`。
+
+### 10.5 完成边界
 
 环境禁止：
 
@@ -1104,9 +1216,13 @@ scenarios/road_traffic.py
 - 使用未来真实轨迹生成执行期输入；
 - 依赖 TSC topology selection 开关。
 
-测试场景：迎面接近、平行同速、背离、交叉接近、静止邻车、不可见邻车、单 agent reset。
+已覆盖：迎面接近、平行同速、背离、交叉接近、静止邻车、不可见邻车、
+稳定全局 ID、直接 single-agent reset、自动 partial reset、未来 reference
+隔离、TSC 开关隔离和 Base 路径零新增输出。
 
-完成后达到 Gate B。
+M4 已达到 Gate B，但没有保存/更新 `z`，没有调用 EvidenceNet，没有改变 Actor
+或动作分布，也没有解除训练/测试入口的 `[NOT IMPLEMENTED]`。这些属于 M5/M6
+及后续里程碑。
 
 ---
 
@@ -1620,6 +1736,53 @@ Opinion 训练/测试入口的 `[NOT IMPLEMENTED]` 状态。
 下一步：执行 M4，建立只依赖当前物理量的 ConflictGraph 和 road-traffic
 环境信息接口；环境禁止保存或更新 `z`，禁止调用 EvidenceNet。
 
+### 2026-08-19：M4 ConflictGraph 环境接口完成
+
+新增文件：
+
+- `utilities/opinion/conflict_graph.py`；
+- `tests/opinion/test_conflict_graph.py`；
+- `tests/opinion/test_road_traffic_conflict_info.py`。
+
+修改文件：
+
+- `scenarios/road_traffic.py`：增加默认关闭的 current-physics info 路径和
+  agent reset 事件接口；
+- `utilities/opinion/__init__.py`：公开 ConflictGraph 接口；
+- `main_training_opinion.py`、`main_testing_opinion.py`：保持状态码 2，仅将
+  `[NOT IMPLEMENTED]` 边界说明更新到 M4；
+- `OPINION_MARL_IMPLEMENTATION_GUIDE.md`：记录接口、维度、使用方式和验证证据。
+
+测试先行证据：
+
+- 纯模块测试首次运行因缺少 `utilities.opinion.conflict_graph` 得到预期
+  `ModuleNotFoundError`；
+- 环境接口测试首次运行得到预期 `5 failed, 1 passed`，失败原因为 info key、
+  graph builder 和 reset mask 尚未实现；
+- M4 目标测试：`20 passed`；
+- Opinion 测试全集：`111 passed`；
+- `.venv/bin/python -m pytest -q`：`184 passed, 13 warnings`；
+- `.venv/bin/python -m pip check`：`No broken requirements found`；
+- 2 个并行环境的真实 Opinion VMAS random rollout 连续 5 步通过，所有新增
+  浮点 info 有限且形状稳定。
+
+关键验证结果：
+
+- pair feature 固定为 12 维，并由 `PAIR_FEATURE_NAMES` 明确语义和顺序；
+- 候选 global ID 稳定，padding ID 为 `-1`；
+- head-on、crossing 和 approaching-stationary 得到正 urgency；
+- parallel-same-speed、diverging 和 invisible pair 不产生有效冲突证据；
+- 修改 short-term reference future points 不改变任何 ConflictGraph 输出；
+- 切换 TSC topology selection 参数不改变 ConflictGraph 输出；
+- direct single-agent reset 和 `done()` 自动 partial reset 均只报告一次；
+- Base/TSC 开关关闭时不构造 graph、不增加 M4 info key。
+
+M4 没有保存或更新 `z`，没有调用 EvidenceNet，没有改 Actor、collector、PPO
+或 checkpoint。Opinion 训练/测试入口仍保持 `[NOT IMPLEMENTED]` 和状态码 2。
+
+下一步：执行 M5，实现单步 `OpinionAugmentedPolicy`，保证 residual 只修改速度
+通道的分布均值，并在修改 loc 后构造 TanhNormal 和计算 log-prob。
+
 ---
 
 ## 23. 可复制给新 Session 的提示词
@@ -1642,9 +1805,11 @@ TSC 只能作为工程参考和外部基线，Opinion 路径禁止依赖 priorit
 Stackelberg、topology labels、topology learner、action predictor 或 opponent modeling。
 
 先查看第 5 节里程碑状态和第 22 节验证记录。
-R0/M0、R1/M1、M2 和 M3 已完成。当前下一步是 M4：实现只依赖当前物理量
-的 ConflictGraph 与 road-traffic 环境信息接口；环境禁止保存/更新 `z`，
-禁止调用 EvidenceNet，也不能依赖 TSC topology selection。
+R0/M0、R1/M1、M2、M3 和 M4 已完成。当前下一步是 M5：实现单步
+OpinionAugmentedPolicy。M4 已提供只依赖当前物理量的 pair_features、global
+neighbor_ids、pair_mask、urgency、confidence 和 agent_reset_mask；M5 必须复用
+现有 M3 数学模块，residual 只修改速度 loc，转向 loc 和 scale 保持不变，且
+必须先得到最终 loc 再构造 TanhNormal/采样/计算 log-prob。
 
 每一步必须先测试、再最小实现、运行全部回归、更新本指南验证记录，
 并报告修改文件、测试命令、实际结果和遗留问题。

@@ -103,7 +103,34 @@ class ScenarioRoadTraffic(BaseScenario):
         self._init_params(batch_dim, device, **kwargs)
         world = self._init_world(batch_dim, device)
         self._init_agents(world)
+        self._init_opinion_conflict_graph(batch_dim, device)
         return world
+
+    def _init_opinion_conflict_graph(self, batch_dim, device):
+        """Create the stateless M4 geometry path only for Opinion-MARL."""
+        if not bool(getattr(self.parameters, "use_opinion_marl", False)):
+            return
+
+        from utilities.opinion.config import OpinionConfig
+        from utilities.opinion.conflict_graph import ConflictGraph
+
+        opinion = OpinionConfig.from_dict(self.parameters.opinion_config)
+        self.conflict_graph = ConflictGraph(
+            n_candidates=opinion.n_candidates,
+            ttc_horizon=opinion.ttc_horizon,
+            safe_distance=opinion.safe_distance,
+            urgency_time_scale=opinion.urgency_time_scale,
+            urgency_distance_temperature=opinion.urgency_distance_temperature,
+        )
+        self._opinion_agent_reset_mask = torch.zeros(
+            (batch_dim, self.n_agents), device=device, dtype=torch.bool
+        )
+        # A reset detected from the current transition is reported by info()
+        # before VMAS calls done(). This mask prevents reporting that same reset
+        # a second time after done() performs the physical partial reset.
+        self._opinion_preannounced_reset_mask = torch.zeros_like(
+            self._opinion_agent_reset_mask
+        )
 
     def _init_params(self, batch_dim, device, **kwargs):
         """
@@ -1069,6 +1096,96 @@ class ScenarioRoadTraffic(BaseScenario):
             )
             world.add_agent(agent)
 
+    def _record_opinion_reset(self, env_index=None, agent_index=None):
+        """Record a reset event without storing any opinion state."""
+        if not hasattr(self, "_opinion_agent_reset_mask"):
+            return
+
+        env_selector = slice(None) if env_index is None else int(env_index)
+        agent_selector = slice(None) if agent_index is None else int(agent_index)
+        preannounced = self._opinion_preannounced_reset_mask[
+            env_selector, agent_selector
+        ]
+        pending = self._opinion_agent_reset_mask[env_selector, agent_selector]
+        self._opinion_agent_reset_mask[env_selector, agent_selector] = (
+            pending | ~preannounced
+        )
+        self._opinion_preannounced_reset_mask[env_selector, agent_selector] = False
+
+    def _preannounce_opinion_reset(self, env_index, agent_index):
+        if hasattr(self, "_opinion_preannounced_reset_mask"):
+            self._opinion_preannounced_reset_mask[
+                int(env_index), int(agent_index)
+            ] = True
+
+    def _imminent_opinion_agent_reset_mask(self):
+        """Mirror done()'s partial-reset decision before VMAS invokes done()."""
+        if not hasattr(self, "_opinion_agent_reset_mask"):
+            return None
+
+        is_max_steps_reached = self.timer.step == (self.parameters.max_steps - 1)
+        collision_agents = self.collisions.with_agents.view(
+            self.world.batch_dim, -1
+        ).any(dim=-1)
+        collision_lanelets = self.collisions.with_lanelets.any(dim=-1)
+        if self.parameters.is_testing_mode:
+            environment_done = is_max_steps_reached
+            partial_reset = (
+                self.collisions.with_agents.any(dim=-1)
+                | self.collisions.with_lanelets
+                | self.collisions.with_entry_segments
+                | self.collisions.with_exit_segments
+            )
+        elif self.parameters.scenario_type != "CPM_entire":
+            environment_done = (
+                is_max_steps_reached | collision_agents | collision_lanelets
+            )
+            partial_reset = (
+                self.collisions.with_entry_segments
+                | self.collisions.with_exit_segments
+            )
+        else:
+            environment_done = (
+                is_max_steps_reached | collision_agents | collision_lanelets
+            )
+            partial_reset = torch.zeros_like(self._opinion_agent_reset_mask)
+
+        return partial_reset & ~environment_done.unsqueeze(-1)
+
+    def _consume_opinion_reset_for_agent(self, agent_index):
+        """Return one per-agent reset event and consume only its stored column."""
+        pending = self._opinion_agent_reset_mask[:, agent_index].clone()
+        imminent = self._imminent_opinion_agent_reset_mask()[:, agent_index]
+        self._opinion_agent_reset_mask[:, agent_index] = False
+        return pending | imminent
+
+    def _build_opinion_visibility_mask(self):
+        positions = torch.stack([agent.state.pos for agent in self.world.agents], dim=1)
+        distances = torch.cdist(positions, positions)
+        visible = ~torch.eye(
+            self.n_agents, device=self.world.device, dtype=torch.bool
+        ).unsqueeze(0)
+        visible = visible.expand(self.world.batch_dim, -1, -1).clone()
+        if self.parameters.is_partial_observation and self.parameters.is_apply_mask:
+            visible &= distances < self.thresholds.distance_mask_agents
+        return visible
+
+    def _build_opinion_conflict_graph(self):
+        """Build all directed candidates from current simulator state only."""
+        if not hasattr(self, "conflict_graph"):
+            raise RuntimeError("Opinion ConflictGraph is not enabled")
+        positions = torch.stack([agent.state.pos for agent in self.world.agents], dim=1)
+        velocities = torch.stack([agent.state.vel for agent in self.world.agents], dim=1)
+        headings = torch.stack(
+            [agent.state.rot.squeeze(-1) for agent in self.world.agents], dim=1
+        )
+        return self.conflict_graph(
+            positions,
+            velocities,
+            headings,
+            self._build_opinion_visibility_mask(),
+        )
+
     def reset_world_at(self, env_index: int = None, agent_index: int = None):
         """
         This function resets the world at the specified env_index and the specified agent_index.
@@ -1079,6 +1196,8 @@ class ScenarioRoadTraffic(BaseScenario):
         :param agent_index: index of the agent to reset. If None all agents in the specified environment will be reset.
         """
         agents = self.world.agents
+
+        self._record_opinion_reset(env_index, agent_index)
 
         is_reset_single_agent = agent_index is not None
 
@@ -2999,6 +3118,7 @@ class ScenarioRoadTraffic(BaseScenario):
                 agents_reset_indices[0], agents_reset_indices[1]
             ):
                 if not is_done[env_idx]:
+                    self._preannounce_opinion_reset(env_idx, agent_idx)
                     self.reset_world_at(env_index=env_idx, agent_index=agent_idx)
         else:
             is_done = (
@@ -3022,6 +3142,7 @@ class ScenarioRoadTraffic(BaseScenario):
                 ):
                     if not is_done[env_idx]:
                         # Skip envs with done flag since later they will be reset anyway
+                        self._preannounce_opinion_reset(env_idx, agent_idx)
                         self.reset_world_at(env_index=env_idx, agent_index=agent_idx)
                         # print(f"Reset agent {agent_idx} in env {env_idx}")
             else:
@@ -3537,6 +3658,20 @@ class ScenarioRoadTraffic(BaseScenario):
                 B, K_topo * T_points * 2
             )
 
+        opinion_info = {}
+        if hasattr(self, "conflict_graph"):
+            graph = self._build_opinion_conflict_graph()
+            opinion_info = {
+                "pair_features": graph.pair_features[:, agent_index],
+                "neighbor_ids": graph.neighbor_ids[:, agent_index],
+                "pair_mask": graph.pair_mask[:, agent_index],
+                "urgency": graph.urgency[:, agent_index],
+                "confidence": graph.confidence[:, agent_index],
+                "agent_reset_mask": self._consume_opinion_reset_for_agent(
+                    agent_index
+                ),
+            }
+
         info = {
             "pos": agent.state.pos / self.normalizers.pos_world,
             "rot": angle_eliminate_two_pi(agent.state.rot) / self.normalizers.rot,
@@ -3619,6 +3754,8 @@ class ScenarioRoadTraffic(BaseScenario):
             ),
             # 策略分支使用的 K 个近邻编号（用于对比）
             "neighbors_indices": neighbor_idx_local,
+            # Independent Opinion-MARL current-physics interface (M4).
+            **opinion_info,
         }
 
         return info
