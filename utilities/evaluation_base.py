@@ -55,46 +55,6 @@ from utilities.constants import SCENARIOS, AGENTS
 from utilities.colors import Color, colors
 
 
-class TimedPolicy:
-    """
-    Wrap a policy callable and measure only its forward-call wall time.
-    Environment stepping, rendering, logging, and metric computation are excluded.
-    """
-
-    def __init__(self, policy):
-        self.policy = policy
-        self.total_time_s = 0.0
-        self.num_calls = 0
-        self.latencies_s = []
-        self._sync_cuda = self._uses_cuda(policy)
-
-    @staticmethod
-    def _uses_cuda(policy):
-        try:
-            return any(param.is_cuda for param in policy.parameters())
-        except AttributeError:
-            return torch.cuda.is_available()
-
-    def __call__(self, tensordict):
-        if self._sync_cuda:
-            torch.cuda.synchronize()
-
-        start = time.perf_counter()
-        out = self.policy(tensordict)
-
-        if self._sync_cuda:
-            torch.cuda.synchronize()
-
-        latency_s = time.perf_counter() - start
-        self.total_time_s += latency_s
-        self.latencies_s.append(latency_s)
-        self.num_calls += 1
-        return out
-
-    def __getattr__(self, name):
-        return getattr(self.policy, name)
-
-
 class Evaluation:
     """
     A class for handling the evaluation of simulation outputs.
@@ -126,13 +86,6 @@ class Evaluation:
             "is_show_different_collisions", True
         )
 
-        self.collision_efficiency_penalty = kwargs.pop(
-            "collision_efficiency_penalty", 2.0
-        )
-        self.collision_smoothness_penalty = kwargs.pop(
-            "collision_smoothness_penalty", 1.0
-        )
-
         self.x_tick_label_rotation = kwargs.pop("x_tick_label_rotation", 0)
 
         self.fig_sizes = kwargs.pop(
@@ -142,7 +95,6 @@ class Evaluation:
                 "collision_rate": (3.5, 2.0),
                 "centerline_deviation": (3.5, 2.0),
                 "average_speed": (3.5, 2.0),
-                "smoothness": (3.5, 2.0),
             },
         )
 
@@ -153,13 +105,8 @@ class Evaluation:
                 "collision_rate": [0, 100],
                 "centerline_deviation": [0, 100],
                 "average_speed": [0, 100],
-                "smoothness": [0, 100],
             },
         )
-
-        self.smoothness_beta = kwargs.pop("smoothness_beta", 0.5)
-        self.u_lon_max = kwargs.pop("u_lon_max", 1.0)
-        self.u_steer_max = kwargs.pop("u_steer_max", 1.0)
 
         self.where_to_save_logging = kwargs.pop("where_to_save_logging", "log.txt")
 
@@ -170,9 +117,6 @@ class Evaluation:
         self.num_simulations_per_model = kwargs.pop("num_simulations_per_model", 32)
         self.num_agents = kwargs.pop("num_agents", 15)
         self.simulation_steps = kwargs.pop("simulation_steps", 15)
-        self.is_measure_policy_inference_time = kwargs.pop(
-            "is_measure_policy_inference_time", False
-        )
 
         self.is_render = kwargs.pop("is_render", True)
         self.is_save_simulation_video = kwargs.pop("is_save_simulation_video", False)
@@ -271,23 +215,9 @@ class Evaluation:
 
         num_steps = positions.shape[1]
 
-        v_norm = velocities.norm(dim=-1)
-
-        ever_collide = is_collide.squeeze(-1).any(dim=1)
-        safe_mask = ~ever_collide
-
-        safe_counts_agents = safe_mask.sum(dim=-1)
-        has_safe = safe_counts_agents > 0
-
-        uncond_mean_speed = v_norm.mean(dim=(1, 2))
-
-        safe_sum = (v_norm * safe_mask.unsqueeze(1)).sum(dim=(1, 2))
-        safe_denom = safe_counts_agents * num_steps
-        safe_mean_speed = safe_sum / torch.clamp_min(safe_denom, 1)
-
-        mean_speed = torch.where(has_safe, safe_mean_speed, uncond_mean_speed)
-
-        self.average_speed[self.model_idx, :] = mean_speed
+        self.average_speed[self.model_idx, :] = velocities.norm(dim=-1).mean(
+            dim=(-2, -1)
+        )
         self.collision_rate_with_agents[self.model_idx, :] = (
             is_collision_with_agents.squeeze(-1).any(dim=-1).sum(dim=-1) / num_steps
         )
@@ -297,25 +227,6 @@ class Evaluation:
         self.distance_ref_average[self.model_idx, :] = distance_ref.squeeze(-1).mean(
             dim=(-2, -1)
         )
-
-        actions = out_td["agents", "action"]
-        u_lon = actions[..., 0]
-        u_steer = actions[..., 1]
-        du_lon = u_lon[:, 1:, :] - u_lon[:, :-1, :]
-        du_steer = u_steer[:, 1:, :] - u_steer[:, :-1, :]
-        du_lon_norm = (du_lon.abs() / self.u_lon_max).clamp(0.0, 1.0)
-        du_steer_norm = (du_steer.abs() / self.u_steer_max).clamp(0.0, 1.0)
-        beta = self.smoothness_beta
-        jerk = beta * du_lon_norm + (1.0 - beta) * du_steer_norm
-        jerk_mean = jerk.mean(dim=(1, 2))
-        jerk_lon_mean = du_lon_norm.mean(dim=(1, 2))
-        jerk_steer_mean = du_steer_norm.mean(dim=(1, 2))
-        smoothness_score = jerk_mean.clamp(0.0, 1.0) * 100.0
-        smoothness_lon_score = jerk_lon_mean.clamp(0.0, 1.0) * 100.0
-        smoothness_lat_score = jerk_steer_mean.clamp(0.0, 1.0) * 100.0
-        self.smoothness[self.model_idx, :] = smoothness_score
-        self.smoothness_lon[self.model_idx, :] = smoothness_lon_score
-        self.smoothness_lat[self.model_idx, :] = smoothness_lat_score
 
     def _get_simulation_outputs(self):
         # Load the model with the highest reward
@@ -328,24 +239,12 @@ class Evaluation:
             + self.parameters.model_name
             + f"_out_td_{self.parameters.scenario_type}.pth"
         )
-        # Load simulation outputs if exist; otherwise run simulation.
-        # Measuring inference time requires a fresh rollout, because cached
-        # TensorDicts do not execute the policy.
-        should_load_cached_out_td = (
-            os.path.exists(path_eval_out_td)
-            and (not self.is_render)
-            and (not self.is_measure_policy_inference_time)
-        )
-        if should_load_cached_out_td:
+        # Load simulation outputs if exist; otherwise run simulation
+        if os.path.exists(path_eval_out_td) & (not self.is_render):
             cprint("[INFO] Simulation outputs exist and will be loaded.", "grey")
             out_td = torch.load(path_eval_out_td)
         else:
             env, policy, priority_module, _ = mappo_cavs(parameters=self.parameters)
-            rollout_policy = (
-                TimedPolicy(policy)
-                if self.is_measure_policy_inference_time
-                else policy
-            )
 
             cprint("[INFO] Run simulation...", "grey")
             sim_begin = time.time()
@@ -354,7 +253,7 @@ class Evaluation:
                 with torch.no_grad():
                     out_td, frame_list = env.rollout(
                         max_steps=self.parameters.max_steps - 1,
-                        policy=rollout_policy,
+                        policy=policy,
                         priority_module=priority_module,
                         callback=lambda env, _: env.render(
                             mode="rgb_array", visualize_when_rgb=False
@@ -378,7 +277,7 @@ class Evaluation:
                 with torch.no_grad():
                     out_td = env.rollout(
                         max_steps=self.parameters.max_steps - 1,
-                        policy=rollout_policy,
+                        policy=policy,
                         priority_module=priority_module,
                         callback=(lambda env, _: env.render(mode="human"))
                         if self.parameters.num_vmas_envs == 1
@@ -388,9 +287,6 @@ class Evaluation:
                         is_save_simulation_video=False,
                     )
                 sim_end = time.time() - sim_begin
-
-            if self.is_measure_policy_inference_time:
-                self._record_policy_inference_time(rollout_policy)
 
             # Save simulation outputs
             torch.save(out_td, path_eval_out_td)
@@ -410,40 +306,6 @@ class Evaluation:
             # )
 
         return out_td
-
-    def _record_policy_inference_time(self, timed_policy):
-        total_s = float(timed_policy.total_time_s)
-        num_calls = int(timed_policy.num_calls)
-        num_agent_calls = max(
-            1, num_calls * self.parameters.num_vmas_envs * self.num_agents
-        )
-        latency_ms = np.asarray(timed_policy.latencies_s, dtype=float) * 1000.0
-        if latency_ms.size > 0:
-            ms_per_call = float(latency_ms.mean())
-            ms_per_call_std = float(latency_ms.std(ddof=0))
-            ms_per_call_p95 = float(np.percentile(latency_ms, 95))
-        else:
-            ms_per_call = float("nan")
-            ms_per_call_std = float("nan")
-            ms_per_call_p95 = float("nan")
-        us_per_agent_call = total_s / num_agent_calls * 1_000_000.0
-
-        self.policy_inference_total_s[self.model_idx] = total_s
-        self.policy_inference_num_calls[self.model_idx] = float(num_calls)
-        self.policy_inference_ms_per_call[self.model_idx] = ms_per_call
-        self.policy_inference_ms_per_call_std[self.model_idx] = ms_per_call_std
-        self.policy_inference_ms_per_call_p95[self.model_idx] = ms_per_call_p95
-        self.policy_inference_us_per_agent_call[self.model_idx] = us_per_agent_call
-
-        cprint(
-            "[TIME] Policy inference only: "
-            f"total={total_s:.6f}s, calls={num_calls}, "
-            f"ms/call mean={ms_per_call:.4f}, "
-            f"std={ms_per_call_std:.4f}, "
-            f"p95={ms_per_call_p95:.4f}, "
-            f"us/agent-call={us_per_agent_call:.4f}",
-            "blue",
-        )
 
     @staticmethod
     def smooth_data(data, window_size=5):
@@ -684,14 +546,6 @@ class Evaluation:
             fig_name="average_speed",
         )
 
-        self._boxplot(
-            figsize=self.fig_sizes["smoothness"],
-            data=self.smoothness,
-            y_limits=self.y_limits["smoothness"],
-            y_label=r"Smoothness [$\%$]",
-            fig_name="smoothness",
-        )
-
     def _boxplot(self, figsize, data, y_label, fig_name, y_limits: None):
         plt.clf()
         fig, ax = plt.subplots(figsize=figsize)
@@ -777,43 +631,10 @@ class Evaluation:
             device=self.parameters.device,
             dtype=torch.float32,
         )
-        self.smoothness = torch.zeros(
-            (self.num_models, self.parameters.num_vmas_envs),
-            device=self.parameters.device,
-            dtype=torch.float32,
-        )
-        self.smoothness_lon = torch.zeros(
-            (self.num_models, self.parameters.num_vmas_envs),
-            device=self.parameters.device,
-            dtype=torch.float32,
-        )
-        self.smoothness_lat = torch.zeros(
-            (self.num_models, self.parameters.num_vmas_envs),
-            device=self.parameters.device,
-            dtype=torch.float32,
-        )
         self.episode_reward = torch.zeros(
             (self.num_models, self.parameters.n_iters),
             device=self.parameters.device,
             dtype=torch.float32,
-        )
-        self.policy_inference_total_s = torch.full(
-            (self.num_models,), float("nan"), dtype=torch.float64
-        )
-        self.policy_inference_num_calls = torch.zeros(
-            (self.num_models,), dtype=torch.float64
-        )
-        self.policy_inference_ms_per_call = torch.full(
-            (self.num_models,), float("nan"), dtype=torch.float64
-        )
-        self.policy_inference_ms_per_call_std = torch.full(
-            (self.num_models,), float("nan"), dtype=torch.float64
-        )
-        self.policy_inference_ms_per_call_p95 = torch.full(
-            (self.num_models,), float("nan"), dtype=torch.float64
-        )
-        self.policy_inference_us_per_agent_call = torch.full(
-            (self.num_models,), float("nan"), dtype=torch.float64
         )
 
     def run_evaluation(self):
@@ -853,11 +674,25 @@ class Evaluation:
             self.plot()
 
     def compute_performance_metrics(
-        self, is_remove_max_min: bool = False, is_relative_values: bool = True
+        self, is_remove_max_min: bool = True, is_relative_values: bool = True
     ):
         """
         This function computes the three performance metrices related to safety, lane following, and traffic efficienty.
         """
+        # Remove the best and the worst to eliminate the influence of the stochastic nature of the randomness
+
+        if is_remove_max_min:
+            self.collision_rate_with_agents = self.remove_max_min(
+                self.collision_rate_with_agents
+            )
+            self.collision_rate_with_lanelets = self.remove_max_min(
+                self.collision_rate_with_lanelets
+            )
+
+            self.distance_ref_average = self.remove_max_min(self.distance_ref_average)
+
+            self.average_speed = self.remove_max_min(self.average_speed)
+
         if is_relative_values:
             # Use relative values
             self.distance_ref_average = (
@@ -883,54 +718,13 @@ class Evaluation:
         # Relative average speed [%]
         self.AS_avg = self.average_speed.mean(dim=-1)
 
-        self.SM_avg = self.smoothness.mean(dim=-1)
-        self.SM_lon_avg = self.smoothness_lon.mean(dim=-1)
-        self.SM_lat_avg = self.smoothness_lat.mean(dim=-1)
-
-        penalty_eff = getattr(self, "collision_efficiency_penalty", 0.0)
-        if penalty_eff != 0.0:
-            penalty_tensor_eff = torch.zeros_like(self.average_speed)
-            has_collision_env = self.collision_rate_sum > 0
-            penalty_tensor_eff[has_collision_env] = (
-                penalty_eff * self.collision_rate_sum[has_collision_env]
-            )
-            self.average_speed_penalized = self.average_speed - penalty_tensor_eff
-            self.AS_penalized_avg = self.average_speed_penalized.mean(dim=-1)
-        else:
-            self.average_speed_penalized = self.average_speed
-            self.AS_penalized_avg = self.AS_avg
-
-        penalty_sm = getattr(self, "collision_smoothness_penalty", 0.0)
-        beta = self.smoothness_beta
-        if penalty_sm != 0.0:
-            penalty_tensor_sm = torch.zeros_like(self.smoothness)
-            has_collision_env = self.collision_rate_sum > 0
-            penalty_tensor_sm[has_collision_env] = (
-                penalty_sm * self.collision_rate_sum[has_collision_env]
-            )
-            self.smoothness_lon_penalized = self.smoothness_lon + penalty_tensor_sm
-            self.smoothness_lat_penalized = self.smoothness_lat + penalty_tensor_sm
-            self.SM_lon_penalized_avg = self.smoothness_lon_penalized.mean(dim=-1)
-            self.SM_lat_penalized_avg = self.smoothness_lat_penalized.mean(dim=-1)
-        else:
-            self.smoothness_lon_penalized = self.smoothness_lon
-            self.smoothness_lat_penalized = self.smoothness_lat
-            self.SM_lon_penalized_avg = self.SM_lon_avg
-            self.SM_lat_penalized_avg = self.SM_lat_avg
-
-        self.smoothness_penalized = (
-            beta * self.smoothness_lon_penalized
-            + (1.0 - beta) * self.smoothness_lat_penalized
-        )
-        self.SM_penalized_avg = self.smoothness_penalized.mean(dim=-1)
-
         # Compute composite score
         w1 = 1 / self.CR_total_avg.mean()
         w2 = 1 / self.CD_avg.mean()
-        w3 = 1 / self.AS_penalized_avg.mean()
+        w3 = 1 / self.AS_avg.mean()
         # composite score = - w1 * CR_total_avg - w2 * CD_avg + w3 * AS_avg
         self.composite_score = (
-            -w1 * self.CR_total_avg - w2 * self.CD_avg + w3 * self.AS_penalized_avg
+            -w1 * self.CR_total_avg - w2 * self.CD_avg + w3 * self.AS_avg
         )
 
         print(f"composite_score: {self.composite_score}")
@@ -938,177 +732,43 @@ class Evaluation:
         self._log()
 
     def _log(self):
-        CR_AA_std = self.collision_rate_with_agents.std(dim=-1, unbiased=False)
-        CR_AA_min = self.collision_rate_with_agents.min(dim=-1).values
-        CR_AA_max = self.collision_rate_with_agents.max(dim=-1).values
-        CR_AL_std = self.collision_rate_with_lanelets.std(dim=-1, unbiased=False)
-        CR_AL_min = self.collision_rate_with_lanelets.min(dim=-1).values
-        CR_AL_max = self.collision_rate_with_lanelets.max(dim=-1).values
-        CR_total_std = self.collision_rate_sum.std(dim=-1, unbiased=False)
-        CR_total_min = self.collision_rate_sum.min(dim=-1).values
-        CR_total_max = self.collision_rate_sum.max(dim=-1).values
+        # Collision rate [%]
+        self.CR_AA_median = self.collision_rate_with_agents.median(dim=-1).values
+        self.CR_AL_median = self.collision_rate_with_lanelets.median(dim=-1).values
+        self.CR_total_median = self.collision_rate_sum.median(dim=-1).values
 
-        CD_std = self.distance_ref_average.std(dim=-1, unbiased=False)
-        CD_min = self.distance_ref_average.min(dim=-1).values
-        CD_max = self.distance_ref_average.max(dim=-1).values
+        # Relative centerline deviation [%]
+        self.CD_median = self.distance_ref_average.median(dim=-1).values
 
-        AS_std = self.average_speed.std(dim=-1, unbiased=False)
-        AS_min = self.average_speed.min(dim=-1).values
-        AS_max = self.average_speed.max(dim=-1).values
-        AS_penalized_std = self.average_speed_penalized.std(dim=-1, unbiased=False)
+        # Relative average speed [%]
+        self.AS_median = self.average_speed.median(dim=-1).values
 
-        SM_std = self.smoothness.std(dim=-1, unbiased=False)
-        SM_min = self.smoothness.min(dim=-1).values
-        SM_max = self.smoothness.max(dim=-1).values
-        SM_penalized_std = self.smoothness_penalized.std(dim=-1, unbiased=False)
-        SM_lon_std = self.smoothness_lon.std(dim=-1, unbiased=False)
-        SM_lon_min = self.smoothness_lon.min(dim=-1).values
-        SM_lon_max = self.smoothness_lon.max(dim=-1).values
-        SM_lon_penalized_std = self.smoothness_lon_penalized.std(
-            dim=-1, unbiased=False
-        )
-        SM_lat_std = self.smoothness_lat.std(dim=-1, unbiased=False)
-        SM_lat_min = self.smoothness_lat.min(dim=-1).values
-        SM_lat_max = self.smoothness_lat.max(dim=-1).values
-        SM_lat_penalized_std = self.smoothness_lat_penalized.std(
-            dim=-1, unbiased=False
-        )
-
-        log_CR_AA = (
-            "[LOG] Agent-agent collision rate [%]: "
-            f"mean={self.format_array(self.CR_AA_avg.numpy())}, "
-            f"std={self.format_array(CR_AA_std.numpy())}, "
-            f"min={self.format_array(CR_AA_min.numpy())}, "
-            f"max={self.format_array(CR_AA_max.numpy())}"
-        )
-        log_CR_AL = (
-            "[LOG] Agent-lanelet collision rate [%]: "
-            f"mean={self.format_array(self.CR_AL_avg.numpy())}, "
-            f"std={self.format_array(CR_AL_std.numpy())}, "
-            f"min={self.format_array(CR_AL_min.numpy())}, "
-            f"max={self.format_array(CR_AL_max.numpy())}"
-        )
-        log_CR_total = (
-            "[LOG] Total collision rate [%]: "
-            f"mean={self.format_array(self.CR_total_avg.numpy())}, "
-            f"std={self.format_array(CR_total_std.numpy())}, "
-            f"min={self.format_array(CR_total_min.numpy())}, "
-            f"max={self.format_array(CR_total_max.numpy())}"
-        )
-        log_CD = (
-            "[LOG] Relative centerline deviation [%]: "
-            f"mean={self.format_array(self.CD_avg.numpy())}, "
-            f"std={self.format_array(CD_std.numpy())}, "
-            f"min={self.format_array(CD_min.numpy())}, "
-            f"max={self.format_array(CD_max.numpy())}"
-        )
-        log_AS = (
-            "[LOG] Relative average speed [%]: "
-            f"mean={self.format_array(self.AS_avg.numpy())}, "
-            f"std={self.format_array(AS_std.numpy())}, "
-            f"min={self.format_array(AS_min.numpy())}, "
-            f"max={self.format_array(AS_max.numpy())}"
-        )
-        log_AS_penalized = (
-            "[LOG] Relative average speed with collision penalty [%]: "
-            f"mean={self.format_array(self.AS_penalized_avg.numpy())}, "
-            f"std={self.format_array(AS_penalized_std.numpy())}"
-        )
-        log_SM = (
-            "[LOG] Smoothness [%]: "
-            f"mean={self.format_array(self.SM_avg.numpy())}, "
-            f"std={self.format_array(SM_std.numpy())}, "
-            f"min={self.format_array(SM_min.numpy())}, "
-            f"max={self.format_array(SM_max.numpy())}"
-        )
-
-        log_SM_penalized = (
-            "[LOG] Smoothness with collision penalty [%]: "
-            f"mean={self.format_array(self.SM_penalized_avg.numpy())}, "
-            f"std={self.format_array(SM_penalized_std.numpy())}"
-        )
-
-        log_SM_lon = (
-            "[LOG] Smoothness longitudinal [%]: "
-            f"mean={self.format_array(self.SM_lon_avg.numpy())}, "
-            f"std={self.format_array(SM_lon_std.numpy())}, "
-            f"min={self.format_array(SM_lon_min.numpy())}, "
-            f"max={self.format_array(SM_lon_max.numpy())}"
-        )
-
-        log_SM_lon_penalized = (
-            "[LOG] Smoothness longitudinal with collision penalty [%]: "
-            f"mean={self.format_array(self.SM_lon_penalized_avg.numpy())}, "
-            f"std={self.format_array(SM_lon_penalized_std.numpy())}"
-        )
-
-        log_SM_lat = (
-            "[LOG] Smoothness lateral [%]: "
-            f"mean={self.format_array(self.SM_lat_avg.numpy())}, "
-            f"std={self.format_array(SM_lat_std.numpy())}, "
-            f"min={self.format_array(SM_lat_min.numpy())}, "
-            f"max={self.format_array(SM_lat_max.numpy())}"
-        )
-
-        log_SM_lat_penalized = (
-            "[LOG] Smoothness lateral with collision penalty [%]: "
-            f"mean={self.format_array(self.SM_lat_penalized_avg.numpy())}, "
-            f"std={self.format_array(SM_lat_penalized_std.numpy())}"
-        )
+        # Log messages
+        log_CR_AA_median = f"[LOG] Agent-agent collision rate [%]: {self.format_array(self.CR_AA_median.numpy())}"
+        log_CR_AL_median = f"[LOG] Agent-lanelet collision rate [%]: {self.format_array(self.CR_AL_median.numpy())}"
+        log_CR_total_median = f"[LOG] Total collision rate [%]: {self.format_array(self.CR_total_median.numpy())}"
+        log_CD_median = f"[LOG] Relative centerline deviation [%]: {self.format_array(self.CD_median.numpy())}"
+        log_AS_median = f"[LOG] Relative average speed [%]: {self.format_array(self.AS_median.numpy())}"
 
         log_CS = (
             f"[LOG] Composite scores: {self.format_array(self.composite_score.numpy())}"
         )
-        if hasattr(self, "policy_inference_total_s") and torch.isfinite(
-            self.policy_inference_total_s
-        ).any():
-            log_policy_time = (
-                "[LOG] Policy inference time only: "
-                f"total_s={self.format_array_precision(self.policy_inference_total_s.numpy(), 6)}, "
-                f"calls={self.format_array_precision(self.policy_inference_num_calls.numpy(), 0)}, "
-                f"ms_per_call_mean={self.format_array_precision(self.policy_inference_ms_per_call.numpy(), 4)}, "
-                f"ms_per_call_std={self.format_array_precision(self.policy_inference_ms_per_call_std.numpy(), 4)}, "
-                f"ms_per_call_p95={self.format_array_precision(self.policy_inference_ms_per_call_p95.numpy(), 4)}, "
-                "us_per_agent_call="
-                f"{self.format_array_precision(self.policy_inference_us_per_agent_call.numpy(), 4)}"
-            )
-        else:
-            log_policy_time = (
-                "[LOG] Policy inference time only: not measured "
-                "(simulation outputs were loaded from cache or timing was disabled)"
-            )
 
-        cprint(log_CR_total, "black")
-        cprint(log_CR_AA, "black")
-        cprint(log_CR_AL, "black")
-        cprint(log_CD, "black")
-        cprint(log_AS, "black")
-        cprint(log_AS_penalized, "black")
-        cprint(log_SM, "black")
-        cprint(log_SM_penalized, "black")
-        cprint(log_SM_lon, "black")
-        cprint(log_SM_lon_penalized, "black")
-        cprint(log_SM_lat, "black")
-        cprint(log_SM_lat_penalized, "black")
-        cprint(log_policy_time, "black")
+        cprint(log_CR_total_median, "black")
+        cprint(log_CR_AA_median, "black")
+        cprint(log_CR_AL_median, "black")
+        cprint(log_CD_median, "black")
+        cprint(log_AS_median, "black")
         cprint(log_CS)
 
         # Save the evaluation results to a txt file
         with open(self.where_to_save_logging, "a") as file:
             file.write(f"Scenario: {self.parameters.scenario_type}\n")
-            file.write(f"{log_CR_AA}\n")
-            file.write(f"{log_CR_AL}\n")
-            file.write(f"{log_CR_total}\n")
-            file.write(f"{log_CD}\n")
-            file.write(f"{log_AS}\n")
-            file.write(f"{log_AS_penalized}\n")
-            file.write(f"{log_SM}\n")
-            file.write(f"{log_SM_penalized}\n")
-            file.write(f"{log_SM_lon}\n")
-            file.write(f"{log_SM_lon_penalized}\n")
-            file.write(f"{log_SM_lat}\n")
-            file.write(f"{log_SM_lat_penalized}\n")
-            file.write(f"{log_policy_time}\n")
+            file.write(f"{log_CR_AA_median}\n")
+            file.write(f"{log_CR_AL_median}\n")
+            file.write(f"{log_CR_total_median}\n")
+            file.write(f"{log_CD_median}\n")
+            file.write(f"{log_AS_median}\n")
             file.write(f"{log_CS}\n")
             file.write("=========================================")
             file.write("\n")
@@ -1174,10 +834,6 @@ class Evaluation:
     @staticmethod
     def format_array(arr):
         return ", ".join([f"{x:.2f}" for x in arr])
-
-    @staticmethod
-    def format_array_precision(arr, precision):
-        return ", ".join([f"{x:.{precision}f}" for x in arr])
 
     @staticmethod
     def min_max_normalize(tensor: torch.Tensor, **kwargs):

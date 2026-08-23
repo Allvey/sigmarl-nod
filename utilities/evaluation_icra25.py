@@ -30,7 +30,6 @@ fig_sizes = {
     "collision_rate": (3.5, 1.2),
     "centerline_deviation": (3.5, 2.0),
     "average_speed": (3.5, 1.2),
-    "smoothness": (3.5, 2.0),
 }
 
 y_limits = {
@@ -38,7 +37,6 @@ y_limits = {
     "collision_rate": [0, 2],
     "centerline_deviation": [0, 100],
     "average_speed": [70, 100],
-    "smoothness": [0, 100],
 }
 
 idx_our = 0  # Index of our model (0-based index)

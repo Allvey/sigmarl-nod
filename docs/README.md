@@ -1,0 +1,84 @@
+# 项目文档导航
+
+本文档目录以 **SigmaRL 1.2.0 为唯一代码底座**，并将新的 Opinion Dynamics +
+MARL 方法与旧 TSC 实现明确分开。
+
+## 新 Session 的阅读顺序
+
+1. [`opinion/opinion_dynamics_marl_technical_route.md`](opinion/opinion_dynamics_marl_technical_route.md)
+2. [`opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md`](opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md)
+3. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
+4. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
+5. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
+6. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
+
+## 目录职责
+
+```text
+docs/
+├── README.md
+├── opinion/
+│   ├── opinion_dynamics_marl_technical_route.md
+│   └── OPINION_MARL_IMPLEMENTATION_GUIDE.md
+├── sigmarl_1_2_0/
+│   ├── CODEBASE_AUDIT.md
+│   ├── RL_ENVIRONMENT_DESIGN.md
+│   ├── OBSERVATION_SPACE_DETAILS.md
+│   └── NETWORK_STRUCTURE_DETAILS.md
+├── papers/
+│   ├── AVOCADO_2025.pdf
+│   └── TASE-TSC.pdf
+└── archive_tsc/
+    └── 旧 TSC 文档，仅用于追溯，不作为当前实现依据
+```
+
+### `opinion/`
+
+当前研究方法的规范性文档。
+
+- 技术路线定义理论、变量语义和不可破坏的因果结构；
+- 实施指南定义从 SigmaRL 1.2.0 开始的文件边界、阶段、测试和交接规则。
+
+若两者冲突，以技术路线为准；工程实现不得反向修改理论语义来迁就旧 TSC 代码。
+
+### `sigmarl_1_2_0/`
+
+只描述 tag `1.2.0` 的原始环境、观测、动作、Actor、Critic 和 PPO 数据流。
+其中的数值以该 tag 的 `config.json` 为基准，而不是以后新增的 Opinion 配置。
+
+### `archive_tsc/`
+
+这里的文件包含 topology、priority、leader、action predictor、opponent modeling 或
+Stackelberg 等旧设计。它们可以帮助理解历史决策和构造外部 TSC 基线，但：
+
+- 不是当前方法规范；
+- 不用于决定 Opinion 模块接口；
+- 不应被新 Session 当作待恢复代码清单；
+- 旧 PDF 也不代表 SigmaRL 1.2.0 的观测空间。
+
+### `papers/`
+
+保存外部方法资料。TSC 在本项目中是外部比较对象，不是 Opinion-MARL 的理论底座。
+其中 AVOCADO 是意见动力学的启发来源，TASE-TSC 仅用于理解外部 TSC
+基线。两者都不直接定义当前代码接口。
+
+## 当前基线状态
+
+当前根目录已放入 SigmaRL 1.2.0 原始源码。核心代码、配置和资源与基线
+commit 逐文件一致，且真实 reset 和 3-step rollout 已通过。
+
+当前仍需修复 Conda 环境的 user-site 依赖泄漏，所以 R0 为“进行中”。详细证据和
+唯一下一步见 [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)。
+
+## 基线声明
+
+当前重建基线固定为：
+
+```text
+repository: https://github.com/bassamlab/SigmaRL
+tag:        1.2.0
+commit:     5fe715bdfba4ff3e33d901d69dfa220f1222c060
+```
+
+必须先完成 R0 隔离环境 Gate，再添加 Opinion 代码。旧 TSC 文件不得批量复制
+回根目录。

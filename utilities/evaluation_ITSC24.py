@@ -17,12 +17,12 @@ from utilities.evaluation_base import Evaluation
 fig_for = "paper"  # One of {"paper", "presentation"}
 
 model_paths = [
-    "outputs/testing_random/",
-    # "checkpoints/itsc24/M1 (do not use an ego view)/",
-    # "checkpoints/itsc24/M2 (do not observe vertices of surrounding agents)/",
-    # "checkpoints/itsc24/M3 (do not observe distances to surrounding agents)/",
-    # "checkpoints/itsc24/M4 (do not observe distances to lane boundaries)/",
-    # "checkpoints/itsc24/M5 (do not observe distances to lane center lines)/",
+    "checkpoints/itsc24/M0 (our)/",
+    "checkpoints/itsc24/M1 (do not use an ego view)/",
+    "checkpoints/itsc24/M2 (do not observe vertices of surrounding agents)/",
+    "checkpoints/itsc24/M3 (do not observe distances to surrounding agents)/",
+    "checkpoints/itsc24/M4 (do not observe distances to lane boundaries)/",
+    "checkpoints/itsc24/M5 (do not observe distances to lane center lines)/",
 ]
 
 num_models = len(model_paths)
@@ -33,7 +33,6 @@ y_limits = {
     "collision_rate": [0, 3],
     "centerline_deviation": [0, 100],
     "average_speed": [70, 100],
-    "smoothness": [0, 100],
 }
 
 # Figures are different in the paper and in the presentation
@@ -43,7 +42,6 @@ if fig_for.lower() == "paper":
         "collision_rate": (3.5, 2.0),
         "centerline_deviation": (3.5, 2.0),
         "average_speed": (3.5, 2.0),
-        "smoothness": (3.5, 2.0),
     }
 
     legends = [
@@ -58,16 +56,15 @@ else:
         "collision_rate": (3.5, 2.0),
         "centerline_deviation": (3.5, 2.0),
         "average_speed": (3.5, 2.0),
-        "smoothness": (3.5, 2.0),
     }
 
     legends = [
         r"$M_{0}$ (our)",
-        # r"$M_{1}$ (bird-eye view instead of ego view)",
-        # r"$M_{2}$ (poses and dimensions instead of vertices)",
-        # r"$M_{3}$ (does not observe distances)",
-        # r"$M_{4}$ (sampled points from lane boundaries instead of distances)",
-        # r"$M_{5}$ (does not observe lane center lines)",
+        r"$M_{1}$ (bird-eye view instead of ego view)",
+        r"$M_{2}$ (poses and dimensions instead of vertices)",
+        r"$M_{3}$ (does not observe distances)",
+        r"$M_{4}$ (sampled points from lane boundaries instead of distances)",
+        r"$M_{5}$ (does not observe lane center lines)",
     ]
     is_show_different_collisions = False
 
@@ -79,8 +76,8 @@ scenario_types = [
     "CPM_entire",
     "intersection_2",
     "on_ramp_1",
-    "roundabout_1"
-    ]
+    "roundabout_1",
+]
 
 for i_scenario in scenario_types:
     print("*****************************************")
@@ -101,8 +98,8 @@ for i_scenario in scenario_types:
         simulation_steps=1200,  # Number of time steps of each simulation. 1200 -> 1 min if sample time is 50 ms
         is_show_different_collisions=is_show_different_collisions,
         x_ticks=x_ticks,
-        where_to_save_eva_results=f"outputs/testing_random/eva_{i_scenario}",
-        where_to_save_logging=f"outputs/testing_random/log.txt",
+        where_to_save_eva_results=f"checkpoints/itsc24/eva_{i_scenario}",
+        where_to_save_logging=f"checkpoints/itsc24/log.txt",
         models_selected=[],  # Leave empty if all the models should be evaluated
         legends=legends,
         render_titles=render_titles,

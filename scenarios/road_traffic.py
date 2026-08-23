@@ -6,7 +6,6 @@
 import os
 import sys
 import time
-import random
 from termcolor import colored, cprint
 
 # Add project root to system path if you want to run this file directly
@@ -33,7 +32,6 @@ from vmas.simulator.scenario import BaseScenario
 
 from utilities.kinematic_bicycle import KinematicBicycle
 from utilities.colors import Color, colors
-from utilities.topology_labels import generate_e_labels_with_corridor
 
 from utilities.helper_training import Parameters
 
@@ -103,34 +101,7 @@ class ScenarioRoadTraffic(BaseScenario):
         self._init_params(batch_dim, device, **kwargs)
         world = self._init_world(batch_dim, device)
         self._init_agents(world)
-        self._init_opinion_conflict_graph(batch_dim, device)
         return world
-
-    def _init_opinion_conflict_graph(self, batch_dim, device):
-        """Create the stateless M4 geometry path only for Opinion-MARL."""
-        if not bool(getattr(self.parameters, "use_opinion_marl", False)):
-            return
-
-        from utilities.opinion.config import OpinionConfig
-        from utilities.opinion.conflict_graph import ConflictGraph
-
-        opinion = OpinionConfig.from_dict(self.parameters.opinion_config)
-        self.conflict_graph = ConflictGraph(
-            n_candidates=opinion.n_candidates,
-            ttc_horizon=opinion.ttc_horizon,
-            safe_distance=opinion.safe_distance,
-            urgency_time_scale=opinion.urgency_time_scale,
-            urgency_distance_temperature=opinion.urgency_distance_temperature,
-        )
-        self._opinion_agent_reset_mask = torch.zeros(
-            (batch_dim, self.n_agents), device=device, dtype=torch.bool
-        )
-        # A reset detected from the current transition is reported by info()
-        # before VMAS calls done(). This mask prevents reporting that same reset
-        # a second time after done() performs the physical partial reset.
-        self._opinion_preannounced_reset_mask = torch.zeros_like(
-            self._opinion_agent_reset_mask
-        )
 
     def _init_params(self, batch_dim, device, **kwargs):
         """
@@ -324,35 +295,15 @@ class ScenarioRoadTraffic(BaseScenario):
                     "is_observe_ref_path_other_agents", False
                 ),
                 is_visualize_extra_info=kwargs.pop("is_visualize_extra_info", False),
-                is_visualize_agent_id=kwargs.pop("is_visualize_agent_id", True),
                 render_title=kwargs.pop(
                     "render_title",
                     "Multi-Agent Reinforcement Learning for Road Traffic (CPM Lab Scenario)",
-                ),
-                is_visualize_agent_trajectory=kwargs.pop(
-                    "is_visualize_agent_trajectory", True
-                ),
-                agent_trajectory_len=kwargs.pop("agent_trajectory_len", 25),
-                agent_trajectory_thickness_m=kwargs.pop(
-                    "agent_trajectory_thickness_m", 0.06
-                ),
-                agent_trajectory_thickness_m_beautify=kwargs.pop(
-                    "agent_trajectory_thickness_m_beautify", 4.0
-                ),
-                agent_trajectory_interp_points_per_segment=kwargs.pop(
-                    "agent_trajectory_interp_points_per_segment", 4
-                ),
-                agent_trajectory_interp_use_catmull_rom=kwargs.pop(
-                    "agent_trajectory_interp_use_catmull_rom", True
                 ),
                 is_using_opponent_modeling=kwargs.pop(
                     "is_using_opponent_modeling", False
                 ),
                 is_using_prioritized_marl=kwargs.pop(
                     "is_using_prioritized_marl", False
-                ),
-                is_visualize_observed_neighbors=kwargs.pop(
-                    "is_visualize_observed_neighbors", False
                 ),
             )
 
@@ -1040,16 +991,6 @@ class ScenarioRoadTraffic(BaseScenario):
             ),  # [pos_x, pos_y, rot, vel_x, vel_y, scenario_id, path_id, point_id],
         )
 
-        traj_len = int(getattr(self.parameters, "agent_trajectory_len", 25))
-        traj_len = max(2, traj_len)
-        self.traj_pos_buffer = CircularBuffer(
-            buffer=torch.zeros(
-                (traj_len, batch_dim, self.n_agents, 2),
-                device=device,
-                dtype=torch.float32,
-            )
-        )
-
         # Store the computed observations of each agent for reuse in `info()`
         # to generate `base_obs` and `prio_obs`, which are used for prioritized MARL.
         self.stored_observations = [None] * self.n_agents
@@ -1075,8 +1016,7 @@ class ScenarioRoadTraffic(BaseScenario):
             agent = Agent(
                 name=f"agent_{i}",
                 shape=Box(length=AGENTS["length"], width=AGENTS["width"]),
-                color=tuple(colors[i % len(colors)]),
-                alpha=1.0,
+                color=tuple(colors[i]),
                 collide=False,
                 render_action=False,
                 u_range=[
@@ -1096,96 +1036,6 @@ class ScenarioRoadTraffic(BaseScenario):
             )
             world.add_agent(agent)
 
-    def _record_opinion_reset(self, env_index=None, agent_index=None):
-        """Record a reset event without storing any opinion state."""
-        if not hasattr(self, "_opinion_agent_reset_mask"):
-            return
-
-        env_selector = slice(None) if env_index is None else int(env_index)
-        agent_selector = slice(None) if agent_index is None else int(agent_index)
-        preannounced = self._opinion_preannounced_reset_mask[
-            env_selector, agent_selector
-        ]
-        pending = self._opinion_agent_reset_mask[env_selector, agent_selector]
-        self._opinion_agent_reset_mask[env_selector, agent_selector] = (
-            pending | ~preannounced
-        )
-        self._opinion_preannounced_reset_mask[env_selector, agent_selector] = False
-
-    def _preannounce_opinion_reset(self, env_index, agent_index):
-        if hasattr(self, "_opinion_preannounced_reset_mask"):
-            self._opinion_preannounced_reset_mask[
-                int(env_index), int(agent_index)
-            ] = True
-
-    def _imminent_opinion_agent_reset_mask(self):
-        """Mirror done()'s partial-reset decision before VMAS invokes done()."""
-        if not hasattr(self, "_opinion_agent_reset_mask"):
-            return None
-
-        is_max_steps_reached = self.timer.step == (self.parameters.max_steps - 1)
-        collision_agents = self.collisions.with_agents.view(
-            self.world.batch_dim, -1
-        ).any(dim=-1)
-        collision_lanelets = self.collisions.with_lanelets.any(dim=-1)
-        if self.parameters.is_testing_mode:
-            environment_done = is_max_steps_reached
-            partial_reset = (
-                self.collisions.with_agents.any(dim=-1)
-                | self.collisions.with_lanelets
-                | self.collisions.with_entry_segments
-                | self.collisions.with_exit_segments
-            )
-        elif self.parameters.scenario_type != "CPM_entire":
-            environment_done = (
-                is_max_steps_reached | collision_agents | collision_lanelets
-            )
-            partial_reset = (
-                self.collisions.with_entry_segments
-                | self.collisions.with_exit_segments
-            )
-        else:
-            environment_done = (
-                is_max_steps_reached | collision_agents | collision_lanelets
-            )
-            partial_reset = torch.zeros_like(self._opinion_agent_reset_mask)
-
-        return partial_reset & ~environment_done.unsqueeze(-1)
-
-    def _consume_opinion_reset_for_agent(self, agent_index):
-        """Return one per-agent reset event and consume only its stored column."""
-        pending = self._opinion_agent_reset_mask[:, agent_index].clone()
-        imminent = self._imminent_opinion_agent_reset_mask()[:, agent_index]
-        self._opinion_agent_reset_mask[:, agent_index] = False
-        return pending | imminent
-
-    def _build_opinion_visibility_mask(self):
-        positions = torch.stack([agent.state.pos for agent in self.world.agents], dim=1)
-        distances = torch.cdist(positions, positions)
-        visible = ~torch.eye(
-            self.n_agents, device=self.world.device, dtype=torch.bool
-        ).unsqueeze(0)
-        visible = visible.expand(self.world.batch_dim, -1, -1).clone()
-        if self.parameters.is_partial_observation and self.parameters.is_apply_mask:
-            visible &= distances < self.thresholds.distance_mask_agents
-        return visible
-
-    def _build_opinion_conflict_graph(self):
-        """Build all directed candidates from current simulator state only."""
-        if not hasattr(self, "conflict_graph"):
-            raise RuntimeError("Opinion ConflictGraph is not enabled")
-        positions = torch.stack([agent.state.pos for agent in self.world.agents], dim=1)
-        velocities = torch.stack([agent.state.vel for agent in self.world.agents], dim=1)
-        headings = torch.stack(
-            [agent.state.rot.squeeze(-1) for agent in self.world.agents], dim=1
-        )
-        return self.conflict_graph(
-            positions,
-            velocities,
-            headings,
-            self._build_opinion_visibility_mask(),
-        )
-
     def reset_world_at(self, env_index: int = None, agent_index: int = None):
         """
         This function resets the world at the specified env_index and the specified agent_index.
@@ -1196,8 +1046,6 @@ class ScenarioRoadTraffic(BaseScenario):
         :param agent_index: index of the agent to reset. If None all agents in the specified environment will be reset.
         """
         agents = self.world.agents
-
-        self._record_opinion_reset(env_index, agent_index)
 
         is_reset_single_agent = agent_index is not None
 
@@ -1300,36 +1148,20 @@ class ScenarioRoadTraffic(BaseScenario):
             self.collisions.with_entry_segments[env_j, :] = False
             self.collisions.with_exit_segments[env_j, :] = False
 
-        if not is_reset_single_agent:
-            self.state_buffer.reset()
-            state_add = torch.cat(
-                (
-                    torch.stack([a.state.pos for a in agents], dim=1),
-                    torch.stack([a.state.rot for a in agents], dim=1),
-                    torch.stack([a.state.vel for a in agents], dim=1),
-                    self.ref_paths_agent_related.scenario_id[:].unsqueeze(-1),
-                    self.ref_paths_agent_related.path_id[:].unsqueeze(-1),
-                    self.ref_paths_agent_related.point_id[:].unsqueeze(-1),
-                ),
-                dim=-1,
-            )
-            self.state_buffer.add(state_add)
-
-        if hasattr(self, "traj_pos_buffer"):
-            if not is_reset_single_agent:
-                pos_add = torch.stack([a.state.pos for a in agents], dim=1)
-                self.traj_pos_buffer.buffer[:] = pos_add.unsqueeze(0).expand(
-                    self.traj_pos_buffer.buffer_size, -1, -1, -1
-                )
-                self.traj_pos_buffer.pointer = 0
-                self.traj_pos_buffer.valid_size = self.traj_pos_buffer.buffer_size
-            else:
-                env_i = env_index
-                agent_i = agent_index
-                pos_i = agents[int(agent_i)].state.pos[env_i]
-                self.traj_pos_buffer.buffer[
-                    :, env_i, int(agent_i), :
-                ] = pos_i.unsqueeze(0).expand(self.traj_pos_buffer.buffer_size, -1)
+        # Reset the state buffer
+        self.state_buffer.reset()
+        state_add = torch.cat(
+            (
+                torch.stack([a.state.pos for a in agents], dim=1),
+                torch.stack([a.state.rot for a in agents], dim=1),
+                torch.stack([a.state.vel for a in agents], dim=1),
+                self.ref_paths_agent_related.scenario_id[:].unsqueeze(-1),
+                self.ref_paths_agent_related.path_id[:].unsqueeze(-1),
+                self.ref_paths_agent_related.point_id[:].unsqueeze(-1),
+            ),
+            dim=-1,
+        )
+        self.state_buffer.add(state_add)  # Add new state
 
     def _reset_scenario_related_ref_paths(
         self, env_i, is_reset_single_agent, agent_index
@@ -1903,11 +1735,6 @@ class ScenarioRoadTraffic(BaseScenario):
                 dim=-1,
             )
             self.state_buffer.add(state_add)
-            if getattr(
-                self.parameters, "is_visualize_agent_trajectory", False
-            ) and hasattr(self, "traj_pos_buffer"):
-                traj_add = torch.stack([a.state.pos for a in self.world.agents], dim=1)
-                self.traj_pos_buffer.add(traj_add)
 
         (
             self.ref_paths_agent_related.short_term[:, agent_index],
@@ -2518,282 +2345,6 @@ class ScenarioRoadTraffic(BaseScenario):
         ##################################################
         ## Observation of other agents
         ##################################################
-        # Optional topology-driven neighbor selection
-        use_topo_select = bool(
-            getattr(self.parameters, "use_topology_neighbor_selection", False)
-        )
-        topo_model = getattr(self, "topology_learner", None)
-        K_policy = int(self.observations.n_nearing_agents)
-        if use_topo_select and (topo_model is not None):
-            # Preserve heuristic indices for downstream modules and logging
-            # (We do not use them to build the policy observation when topology selection is enabled)
-            nearing_agents_distances_h, heur_idx = torch.topk(
-                self.distances.agents[:, agent_index],
-                k=self.observations.n_nearing_agents,
-                largest=False,
-            )
-            self.observations.nearing_agents_indices[:, agent_index] = heur_idx
-
-            # Build candidate set for topology scoring (exclude ego, no additional filtering)
-            K_topo = int(
-                getattr(self.parameters, "n_topology_nearing_agents_observed", K_policy)
-                or K_policy
-            )
-            K_topo = max(1, min(K_topo, int(self.n_agents) - 1))
-            dist_row = self.distances.agents[:, agent_index]  # [B, N]
-            dist_row_excl = dist_row.clone()
-            dist_row_excl[:, agent_index] = torch.tensor(
-                float("inf"), device=self.world.device, dtype=dist_row.dtype
-            )
-            _, cand_idx = torch.topk(
-                dist_row_excl, k=K_topo, largest=False
-            )  # [B, K_topo]
-
-            # Gather per-neighbor features for candidates (no masks applied in topo path)
-            B = self.world.batch_dim
-            indexing_tuple_topo = (
-                (self.constants.env_idx_broadcasting,)
-                + ((agent_index,) if self.parameters.is_ego_view else ())
-                + (cand_idx,)
-            )
-            obs_pos_cand = self.observations.past_pos.get_latest()[indexing_tuple_topo]
-            obs_rot_cand = self.observations.past_rot.get_latest()[indexing_tuple_topo]
-            obs_vel_cand = self.observations.past_vel.get_latest()[indexing_tuple_topo]
-            obs_ref_cand = self.observations.past_short_term_ref_points.get_latest()[
-                indexing_tuple_topo
-            ]
-            obs_vertices_cand = self.observations.past_vertices.get_latest()[
-                indexing_tuple_topo
-            ]
-            obs_dist_cand = self.observations.past_distance_to_agents.get_latest()[
-                self.constants.env_idx_broadcasting, agent_index, cand_idx
-            ]
-            obs_len_cand = self.observations.past_lengths.get_latest()[
-                self.constants.env_idx_broadcasting, cand_idx
-            ]
-            obs_wid_cand = self.observations.past_widths.get_latest()[
-                self.constants.env_idx_broadcasting, cand_idx
-            ]
-
-            # Compose ego observation (reuse self composition)
-            ego_obs_list = [o for o in self._observe_self(agent_index) if o is not None]
-            ego_b = torch.hstack(ego_obs_list)  # [B, D_ego]
-
-            # Compose neighbors_observation for topology model: [B, K_topo, D_nei]
-            pos_flat = obs_pos_cand.reshape(B, K_topo, -1)
-            rot_flat = obs_rot_cand.reshape(B, K_topo, -1)
-            vel_flat = obs_vel_cand.reshape(B, K_topo, -1)
-            ref_flat = (
-                obs_ref_cand.reshape(B, K_topo, -1)
-                if self.parameters.is_observe_ref_path_other_agents
-                else None
-            )
-            vert_flat = obs_vertices_cand.reshape(B, K_topo, -1)
-            dist_flat = (
-                obs_dist_cand.reshape(B, K_topo, -1)
-                if self.parameters.is_observe_distance_to_agents
-                else None
-            )
-            len_flat = obs_len_cand.reshape(B, K_topo, -1)
-            wid_flat = obs_wid_cand.reshape(B, K_topo, -1)
-            nei_list = [
-                (
-                    vert_flat
-                    if self.parameters.is_observe_vertices
-                    else torch.cat([pos_flat, rot_flat, len_flat, wid_flat], dim=-1)
-                ),
-                vel_flat,
-                dist_flat,
-                ref_flat,
-            ]
-            nei_list = [x for x in nei_list if x is not None]
-            nei_b = torch.cat(nei_list, dim=-1)
-
-            # Relative features in ego local frame: [B, K_topo, D_rel]
-            past_pos = self.observations.past_pos.get_latest()
-            past_rot = self.observations.past_rot.get_latest()
-            past_vel = self.observations.past_vel.get_latest()
-            pos_i_allj = past_pos[:, agent_index]
-            rot_i_allj = past_rot[:, agent_index]
-            vel_i_allj = past_vel[:, agent_index]
-            idx_for_2 = cand_idx.unsqueeze(-1).expand(-1, -1, pos_i_allj.size(-1))
-            idx_for_1 = cand_idx
-            rel_pos = torch.gather(pos_i_allj, dim=1, index=idx_for_2)
-            rel_yaw = torch.gather(rot_i_allj, dim=1, index=idx_for_1)
-            nei_v = torch.gather(vel_i_allj, dim=1, index=idx_for_2)
-            nei_v_forward = nei_v[..., 0]
-            ego_v_forward = past_vel[:, agent_index, agent_index, 0]
-            d_speed = nei_v_forward - ego_v_forward.unsqueeze(-1)
-            rel_b = torch.cat(
-                [rel_pos, rel_yaw.unsqueeze(-1), d_speed.unsqueeze(-1)], dim=-1
-            )
-
-            # Score candidates with topology model
-            edge_logits = topo_model(ego_b, nei_b, rel_b).squeeze(-1)  # [B, K_topo]
-            edge_probs = torch.sigmoid(edge_logits)
-
-            # Apply threshold and select top-K_policy neighbors by probability
-            thr = float(getattr(self.parameters, "topology_selection_threshold", 0.5))
-            sorted_probs, sorted_idx = torch.sort(
-                edge_probs, dim=1, descending=True
-            )  # [B, K_topo]
-            # Map sorted indices back to agent ids
-            cand_idx_sorted = torch.gather(cand_idx, 1, sorted_idx)
-            # Distances of candidates (for stable reordering later)
-            dist_cand = torch.gather(dist_row, dim=1, index=cand_idx)  # [B, K_topo]
-
-            # Build selection tensors
-            # 注意：特征收集需使用候选列表中的“位置索引”，而非全局 agent 索引
-            sel_pos = torch.full(
-                (B, K_policy), -1, device=self.world.device, dtype=torch.long
-            )
-            sel_ids = torch.full(
-                (B, K_policy), -1, device=self.world.device, dtype=torch.long
-            )
-            sel_probs = torch.zeros(
-                (B, K_policy), device=self.world.device, dtype=sorted_probs.dtype
-            )
-            for b in range(B):
-                valid = (sorted_probs[b] >= thr).nonzero(as_tuple=False).squeeze(-1)
-                n_take = min(K_policy, valid.numel())
-                if n_take > 0:
-                    # 位置索引（在 K_topo 列表内）
-                    sel_pos[b, :n_take] = sorted_idx[b, valid[:n_take]]
-                    # 对应的全局 agent 索引与概率，仅用于缓存与日志
-                    sel_ids[b, :n_take] = cand_idx_sorted[b, valid[:n_take]]
-                    sel_probs[b, :n_take] = sorted_probs[b, valid[:n_take]]
-
-                    # --- Stable reordering by distance (tie-break by agent id) ---
-                    # 仅对有效槽位进行稳定重排，确保与“距离升序”一致，从而稳定策略输入分布
-                    pos_take = sel_pos[b, :n_take]
-                    # 对应候选的距离
-                    dist_take = dist_cand[b].index_select(0, pos_take)
-                    ids_take = sel_ids[b, :n_take].to(torch.float32)
-                    # 将 agent_id 作为微小扰动用于平局打破，避免频繁抖动
-                    order = torch.argsort(dist_take + 1e-6 * ids_take, dim=0)
-                    sel_pos[b, :n_take] = pos_take.index_select(0, order)
-                    sel_ids[b, :n_take] = sel_ids[b, :n_take].index_select(0, order)
-                    sel_probs[b, :n_take] = sel_probs[b, :n_take].index_select(0, order)
-
-            # Cache selected indices/probabilities per agent for info() and training logs
-            if not hasattr(self.observations, "topology_selected_indices"):
-                self.observations.topology_selected_indices = torch.full(
-                    (self.world.batch_dim, int(self.n_agents), K_policy),
-                    -1,
-                    device=self.world.device,
-                    dtype=torch.long,
-                )
-            if not hasattr(self.observations, "topology_selected_probs"):
-                self.observations.topology_selected_probs = torch.zeros(
-                    (self.world.batch_dim, int(self.n_agents), K_policy),
-                    device=self.world.device,
-                    dtype=sel_probs.dtype,
-                )
-            self.observations.topology_selected_indices[:, agent_index] = sel_ids
-            self.observations.topology_selected_probs[:, agent_index] = sel_probs
-
-            # Gather selected neighbor features (pad missing with masks)
-            def gather_or_mask(tensor, expand_last):
-                # 通用 gather：按 dim=1 收集，index 需与输入张量维度一致
-                idx_for = sel_pos.clamp(min=0)
-                # 为所有后续维度添加轴，并扩展到与输入相同的形状（除dim=1外）
-                add_dims = tensor.dim() - 2
-                for _ in range(add_dims):
-                    idx_for = idx_for.unsqueeze(-1)
-                if add_dims > 0:
-                    idx_for = idx_for.expand(-1, -1, *tensor.shape[2:])
-                gathered = torch.gather(tensor, dim=1, index=idx_for)
-                pad_mask = sel_pos < 0
-                return gathered, pad_mask
-
-            pos_sel, pad_mask = gather_or_mask(
-                obs_pos_cand, expand_last=obs_pos_cand.size(-1)
-            )
-            rot_sel, _ = gather_or_mask(obs_rot_cand, expand_last=None)
-            vel_sel, _ = gather_or_mask(obs_vel_cand, expand_last=obs_vel_cand.size(-1))
-            ref_sel, _ = (
-                gather_or_mask(
-                    obs_ref_cand,
-                    expand_last=(
-                        obs_ref_cand.size(-1)
-                        if self.parameters.is_observe_ref_path_other_agents
-                        else None
-                    ),
-                )
-                if self.parameters.is_observe_ref_path_other_agents
-                else (None, pad_mask)
-            )
-            vert_sel, _ = gather_or_mask(
-                obs_vertices_cand, expand_last=obs_vertices_cand.size(-1)
-            )
-            dist_sel, _ = (
-                gather_or_mask(obs_dist_cand, expand_last=None)
-                if self.parameters.is_observe_distance_to_agents
-                else (None, pad_mask)
-            )
-            len_sel, _ = gather_or_mask(obs_len_cand, expand_last=None)
-            wid_sel, _ = gather_or_mask(obs_wid_cand, expand_last=None)
-
-            # Apply mask values to padded slots
-            pos_sel[pad_mask] = self.constants.mask_one
-            rot_sel[pad_mask] = self.constants.mask_zero
-            vel_sel[pad_mask] = self.constants.mask_zero
-            vert_sel[pad_mask] = self.constants.mask_one
-            len_sel[pad_mask] = 0.0
-            wid_sel[pad_mask] = 0.0
-            if dist_sel is not None:
-                dist_sel[pad_mask] = self.constants.mask_one
-            if ref_sel is not None:
-                ref_sel[pad_mask] = self.constants.mask_one
-
-            # Flatten per neighbor and compose final policy observation for others
-            pos_flat = pos_sel.reshape(B, K_policy, -1)
-            rot_flat = rot_sel.reshape(B, K_policy, -1)
-            vel_flat = vel_sel.reshape(B, K_policy, -1)
-            vert_flat = vert_sel.reshape(B, K_policy, -1)
-            len_flat = len_sel.reshape(B, K_policy, -1)
-            wid_flat = wid_sel.reshape(B, K_policy, -1)
-            dist_flat = (
-                dist_sel.reshape(B, K_policy, -1) if (dist_sel is not None) else None
-            )
-            ref_flat = (
-                ref_sel.reshape(B, K_policy, -1) if (ref_sel is not None) else None
-            )
-
-            obs_others_list = [
-                (
-                    vert_flat
-                    if self.parameters.is_observe_vertices
-                    else torch.cat([pos_flat, rot_flat, len_flat, wid_flat], dim=-1)
-                ),
-                vel_flat,
-                dist_flat,
-                ref_flat,
-            ]
-            obs_others_list = [o for o in obs_others_list if o is not None]
-            obs_other_agents = torch.cat(obs_others_list, dim=-1).reshape(B, -1)
-
-            # Lightweight logging (env 0) to compare selection vs heuristic
-            if getattr(self.parameters, "is_visualize_short_term_path", False):
-                env0 = 0
-                probs_e0 = edge_probs[env0].detach().cpu().tolist()
-                cand_e0 = cand_idx[env0].detach().cpu().tolist()
-                sel_ids_e0 = sel_ids[env0].detach().cpu().tolist()
-                sel_probs_e0 = sel_probs[env0].detach().cpu().tolist()
-                heur_e0 = heur_idx[env0].detach().cpu().tolist()
-                # print(
-                #     colored(
-                #         f"[TOPO-SELECT][ON] ego={agent_index} raw_probs="
-                #         + str([f"{i}:{p:.2f}" for i, p in zip(cand_e0, probs_e0)])
-                #         + f" | selected="
-                #         + str([f"{i}:{p:.2f}" for i, p in zip(sel_ids_e0, sel_probs_e0)])
-                #         + f" | heuristic={heur_e0}",
-                #         "blue",
-                #     )
-                # )
-
-            return obs_other_agents
-
         if self.parameters.is_partial_observation:
             # Each agent observes only a fixed number of nearest agents
             (
@@ -3118,7 +2669,6 @@ class ScenarioRoadTraffic(BaseScenario):
                 agents_reset_indices[0], agents_reset_indices[1]
             ):
                 if not is_done[env_idx]:
-                    self._preannounce_opinion_reset(env_idx, agent_idx)
                     self.reset_world_at(env_index=env_idx, agent_index=agent_idx)
         else:
             is_done = (
@@ -3142,7 +2692,6 @@ class ScenarioRoadTraffic(BaseScenario):
                 ):
                     if not is_done[env_idx]:
                         # Skip envs with done flag since later they will be reset anyway
-                        self._preannounce_opinion_reset(env_idx, agent_idx)
                         self.reset_world_at(env_index=env_idx, agent_index=agent_idx)
                         # print(f"Reset agent {agent_idx} in env {env_idx}")
             else:
@@ -3203,475 +2752,6 @@ class ScenarioRoadTraffic(BaseScenario):
 
         prio_obs = self.stored_observations[agent_index].clone()
 
-        # -------------------------------------------------------------
-        # Structured observation for topology learning and later Top-K selection
-        # We precompute and store:
-        # - ego_observation: per-agent semantic vector (no neighbors)
-        # - neighbors_observation: per-agent, per-neighbor semantic vectors
-        # - neighbors_observation_flat: flattened neighbors_observation (optional, for quick inspection)
-        # - relative_features: lightweight relative geometry (dx, dy, d_yaw, d_speed)
-        # These keys are written under ("agents","info",*) to avoid changing the policy inputs.
-        # -------------------------------------------------------------
-
-        # Build ego observation by reusing _observe_self() composition
-        ego_obs_list = [o for o in self._observe_self(agent_index) if o is not None]
-        ego_observation = torch.hstack(ego_obs_list)  # [batch_dim, D_ego]
-
-        # Flat neighbors observation using the original helper (preserves scenario masking & composition)
-        neighbors_observation_flat = self._observe_other_agents(agent_index)
-
-        # Structured neighbors_observation for TopoDecoder: [B, K, D_nei]
-        if neighbors_observation_flat is not None:
-            B = neighbors_observation_flat.shape[0]
-            K = self.parameters.n_nearing_agents_observed
-            D_nei = neighbors_observation_flat.shape[1] // K
-            neighbors_observation = neighbors_observation_flat.reshape(B, K, D_nei)
-        else:
-            neighbors_observation = None
-
-        # Compute relative features (dx, dy, d_yaw, d_speed) in ego local frame
-        # Only implemented for ego-view, which is the default in this project
-        if self.parameters.is_ego_view:
-            # Neighbor indices for current ego (B, K)
-            neighbor_idx = self.observations.nearing_agents_indices[
-                :, agent_index
-            ].long()
-
-            # Convenience tensors
-            past_pos = self.observations.past_pos.get_latest()  # [B, N, N, 2]
-            past_rot = self.observations.past_rot.get_latest()  # [B, N, N]
-            past_vel = self.observations.past_vel.get_latest()  # [B, N, N, 2]
-
-            # Slice the j-dimension for current ego i, then gather neighbors along j
-            pos_i_allj = past_pos[:, agent_index]  # [B, N, 2]
-            rot_i_allj = past_rot[:, agent_index]  # [B, N]
-            vel_i_allj = past_vel[:, agent_index]  # [B, N, 2]
-
-            # Build gather indices
-            idx_for_2 = neighbor_idx.unsqueeze(-1).expand(
-                -1, -1, pos_i_allj.size(-1)
-            )  # [B, K, 2]
-            idx_for_1 = neighbor_idx  # [B, K]
-
-            # Relative position and yaw in ego local frame
-            rel_pos = torch.gather(pos_i_allj, dim=1, index=idx_for_2)  # [B, K, 2]
-            rel_yaw = torch.gather(rot_i_allj, dim=1, index=idx_for_1)  # [B, K]
-
-            # Neighbor forward speed (component 0)
-            nei_v = torch.gather(vel_i_allj, dim=1, index=idx_for_2)  # [B, K, 2]
-            nei_v_forward = nei_v[..., 0]  # [B, K]
-
-            # Ego forward speed (first component): [B]
-            ego_v_forward = past_vel[:, agent_index, agent_index, 0]  # [B]
-
-            # Speed difference: [B, K]
-            d_speed = nei_v_forward - ego_v_forward.unsqueeze(-1)
-
-            # Apply masking consistent with scenario design
-            if self.parameters.is_partial_observation:
-                # Distances to all agents for ego i: [B, N] -> gather to [B, K]
-                dist_i_allj = self.distances.agents[:, agent_index]  # [B, N]
-                nearing_agents_distances = torch.gather(
-                    dist_i_allj, dim=1, index=neighbor_idx
-                )  # [B, K]
-                if self.parameters.is_apply_mask:
-                    masked_agents_by_distance = (
-                        nearing_agents_distances >= self.thresholds.distance_mask_agents
-                    )  # [B, K]
-                    if len(self.map.parser.neighboring_lanelets_idx) != 0:
-                        try:
-                            masked_agents_by_lanelets = (
-                                self.map.determine_masked_agents_by_lanelets(
-                                    agent_index, neighbor_idx
-                                )
-                            )
-                        except Exception:
-                            masked_agents_by_lanelets = torch.zeros(
-                                (
-                                    self.world.batch_dim,
-                                    self.parameters.n_nearing_agents_observed,
-                                ),
-                                device=self.world.device,
-                                dtype=torch.bool,
-                            )
-                    else:
-                        masked_agents_by_lanelets = torch.zeros(
-                            (
-                                self.world.batch_dim,
-                                self.parameters.n_nearing_agents_observed,
-                            ),
-                            device=self.world.device,
-                            dtype=torch.bool,
-                        )
-                    masked_agents = (
-                        masked_agents_by_distance | masked_agents_by_lanelets
-                    )
-                else:
-                    masked_agents = torch.zeros(
-                        (
-                            self.world.batch_dim,
-                            self.parameters.n_nearing_agents_observed,
-                        ),
-                        device=self.world.device,
-                        dtype=torch.bool,
-                    )
-
-                rel_pos[masked_agents] = self.constants.mask_one
-                rel_yaw[masked_agents] = self.constants.mask_zero
-                d_speed[masked_agents] = self.constants.mask_zero
-
-            # Concatenate to [B, K, 4]
-            relative_features = torch.cat(
-                [rel_pos, rel_yaw.unsqueeze(-1), d_speed.unsqueeze(-1)], dim=-1
-            )
-        else:
-            # Bird-view fallback: compute differences in world frame (approximate)
-            # pos_i: [B, 2], yaw_i: [B], v_i_forward: [B] (approximate with x-component)
-            pos_all = self.observations.past_pos.get_latest()[:, :, :, :]
-            yaw_all = self.observations.past_rot.get_latest()[:, :, :]
-            v_all = self.observations.past_vel.get_latest()[:, :, :, 0]
-            pos_i = pos_all[:, :, agent_index, :]
-            yaw_i = yaw_all[:, :, agent_index]
-            v_i = v_all[:, :, agent_index]
-            neighbor_idx = self.observations.nearing_agents_indices[:, agent_index]
-            pos_j = pos_all[:, (slice(None),), neighbor_idx, :].squeeze(1)
-            yaw_j = yaw_all[:, (slice(None),), neighbor_idx].squeeze(1)
-            v_j = v_all[:, (slice(None),), neighbor_idx].squeeze(1)
-            rel_pos = pos_j - pos_i.unsqueeze(1)
-            rel_yaw = angle_eliminate_two_pi(yaw_j - yaw_i.unsqueeze(1))
-            d_speed = v_j - v_i.unsqueeze(1)
-            relative_features = torch.cat(
-                [rel_pos, rel_yaw.unsqueeze(-1), d_speed.unsqueeze(-1)], dim=-1
-            )
-
-        # --- Topology labels相关：提供短期参考路径（自车与K邻居）与距离掩码 ---
-        B = self.world.batch_dim
-        K = self.parameters.n_nearing_agents_observed
-        neighbor_idx_local = neighbor_idx.long()
-        # 所有代理的短期参考路径 [B, N, T, 2]
-        short_term_all = self.ref_paths_agent_related.short_term  # [B, N, T, 2]
-        short_term_all_norm = short_term_all / self.normalizers.pos_world
-        # 可选：在短期参考前追加“当前位置”，统一尺度归一化
-        if getattr(
-            self.parameters, "is_append_current_pos_to_short_refs_for_topology", False
-        ):
-            current_pos_all = torch.stack(
-                [ag.state.pos for ag in self.world.agents], dim=1
-            )  # [B, N, 2]
-            current_pos_all_norm = current_pos_all / self.normalizers.pos_world
-            short_term_use = torch.cat(
-                [current_pos_all_norm.unsqueeze(2), short_term_all_norm], dim=2
-            )  # [B, N, T+1, 2]
-        else:
-            short_term_use = short_term_all_norm
-        # 扩展索引用于按代理维 gather -> [B, K, T, 2]
-        T_points = short_term_use.size(2)
-        idx_agents = (
-            neighbor_idx_local.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, T_points, 2)
-        )
-        ref_neighbors_local = torch.gather(
-            short_term_use, dim=1, index=idx_agents
-        )  # [B, K, T, 2]
-        ref_neighbors_local_flat = ref_neighbors_local.reshape(B, K * T_points * 2)
-
-        # 自车短期参考（展平）与现有键保持一致
-        ref_local_flat = short_term_use[:, agent_index].reshape(B, -1)
-
-        # 邻居距离与掩码（统一距离屏蔽，与相对特征的屏蔽保持一致）
-        dist_i_allj = self.distances.agents[:, agent_index]  # [B, N]
-        nearing_agents_distances = torch.gather(
-            dist_i_allj, dim=1, index=neighbor_idx_local
-        )  # [B, K]
-        try:
-            if self.parameters.is_partial_observation:
-                if self.parameters.is_apply_mask:
-                    masked_agents_by_distance = (
-                        nearing_agents_distances >= self.thresholds.distance_mask_agents
-                    )  # [B, K]
-                    if len(self.map.parser.neighboring_lanelets_idx) != 0:
-                        masked_agents_by_lanelets = (
-                            self.map.determine_masked_agents_by_lanelets(
-                                agent_index, neighbor_idx_local
-                            )
-                        )
-                    else:
-                        masked_agents_by_lanelets = torch.zeros(
-                            (B, K), device=self.world.device, dtype=torch.bool
-                        )
-                    neighbors_mask_distance = (
-                        masked_agents_by_distance | masked_agents_by_lanelets
-                    )
-                else:
-                    neighbors_mask_distance = torch.zeros(
-                        (B, K), device=self.world.device, dtype=torch.bool
-                    )
-            else:
-                neighbors_mask_distance = torch.zeros(
-                    (B, K), device=self.world.device, dtype=torch.bool
-                )
-        except Exception:
-            neighbors_mask_distance = torch.zeros(
-                (B, K), device=self.world.device, dtype=torch.bool
-            )
-
-        # --- Topology-specific neighbor observations (K_topo can be larger than K) ---
-        try:
-            K_topo = int(self.parameters.n_topology_nearing_agents_observed)
-        except Exception:
-            K_topo = self.parameters.n_nearing_agents_observed
-
-        topology_neighbors_observation_flat = None
-        topology_relative_features = None
-        topology_ref_neighbors_local_flat = None
-        topology_neighbors_distance = None
-        topology_neighbors_mask_distance = None
-        topo_neighbor_idx = None
-
-        if K_topo is not None and K_topo > 0 and K_topo != K:
-            # 约束 K_topo 不超过可用邻居数量（排除自车）
-            try:
-                K_topo = int(K_topo)
-            except Exception:
-                pass
-            K_topo = max(1, min(int(K_topo), int(self.n_agents) - 1))
-
-            # 选择 K_topo 个最近邻居，并在选择前排除自车（自车距离为 0）
-            # 这样后续调试打印无需再过滤自车，数量与 K_topo 一致
-            dist_row = self.distances.agents[:, agent_index]  # [B, n_agents]
-            # 排除自车条目：将自车对应列置为 +inf，使其不会被 topk 选中
-            dist_row_excl = dist_row.clone()
-            dist_row_excl[:, agent_index] = torch.tensor(
-                float("inf"), device=self.world.device, dtype=dist_row_excl.dtype
-            )
-
-            topology_neighbors_distance, topo_neighbor_idx = torch.topk(
-                dist_row_excl, k=K_topo, largest=False
-            )  # [B, K_topo]
-
-            # Build distance & lanelet masks, consistent with scenario logic
-            if self.parameters.is_partial_observation:
-                if self.parameters.is_apply_mask:
-                    masked_topo_by_distance = (
-                        topology_neighbors_distance
-                        >= self.thresholds.distance_mask_agents
-                    )
-                    if len(self.map.parser.neighboring_lanelets_idx) != 0:
-                        try:
-                            masked_topo_by_lanelets = (
-                                self.map.determine_masked_agents_by_lanelets(
-                                    agent_index, topo_neighbor_idx
-                                )
-                            )
-                        except Exception:
-                            masked_topo_by_lanelets = torch.zeros(
-                                (B, K_topo), device=self.world.device, dtype=torch.bool
-                            )
-                    else:
-                        masked_topo_by_lanelets = torch.zeros(
-                            (B, K_topo), device=self.world.device, dtype=torch.bool
-                        )
-                    topology_neighbors_mask_distance = (
-                        masked_topo_by_distance | masked_topo_by_lanelets
-                    )
-                else:
-                    topology_neighbors_mask_distance = torch.zeros(
-                        (B, K_topo), device=self.world.device, dtype=torch.bool
-                    )
-            else:
-                topology_neighbors_mask_distance = torch.zeros(
-                    (B, K_topo), device=self.world.device, dtype=torch.bool
-                )
-
-            # Indexing tuple for ego-view gathers
-            indexing_tuple_topo = (
-                (self.constants.env_idx_broadcasting,)
-                + ((agent_index,) if self.parameters.is_ego_view else ())
-                + (topo_neighbor_idx,)
-            )
-
-            # Gather per-neighbor features for topology
-            obs_pos_topo = self.observations.past_pos.get_latest()[indexing_tuple_topo]
-            obs_rot_topo = self.observations.past_rot.get_latest()[indexing_tuple_topo]
-            obs_vel_topo = self.observations.past_vel.get_latest()[indexing_tuple_topo]
-            obs_ref_path_topo = (
-                self.observations.past_short_term_ref_points.get_latest()[
-                    indexing_tuple_topo
-                ]
-            )
-            obs_vertices_topo = self.observations.past_vertices.get_latest()[
-                indexing_tuple_topo
-            ]
-            obs_lengths_topo = self.observations.past_lengths.get_latest()[
-                self.constants.env_idx_broadcasting, topo_neighbor_idx
-            ]
-            obs_widths_topo = self.observations.past_widths.get_latest()[
-                self.constants.env_idx_broadcasting, topo_neighbor_idx
-            ]
-            obs_distance_topo = self.observations.past_distance_to_agents.get_latest()[
-                self.constants.env_idx_broadcasting, agent_index, topo_neighbor_idx
-            ]
-
-            # Apply masks
-            obs_pos_topo[topology_neighbors_mask_distance] = self.constants.mask_one
-            obs_rot_topo[topology_neighbors_mask_distance] = self.constants.mask_zero
-            obs_vel_topo[topology_neighbors_mask_distance] = self.constants.mask_zero
-            obs_ref_path_topo[
-                topology_neighbors_mask_distance
-            ] = self.constants.mask_one
-            obs_vertices_topo[
-                topology_neighbors_mask_distance
-            ] = self.constants.mask_one
-            obs_distance_topo[
-                topology_neighbors_mask_distance
-            ] = self.constants.mask_one
-
-            # Flatten per neighbor
-            obs_pos_topo_flat = obs_pos_topo.reshape(B, K_topo, -1)
-            obs_rot_topo_flat = obs_rot_topo.reshape(B, K_topo, -1)
-            obs_vel_topo_flat = obs_vel_topo.reshape(B, K_topo, -1)
-            obs_ref_path_topo_flat = obs_ref_path_topo.reshape(B, K_topo, -1)
-            obs_vertices_topo_flat = obs_vertices_topo.reshape(B, K_topo, -1)
-            obs_distance_topo_flat = obs_distance_topo.reshape(B, K_topo, -1)
-            obs_lengths_topo_flat = obs_lengths_topo.reshape(B, K_topo, -1)
-            obs_widths_topo_flat = obs_widths_topo.reshape(B, K_topo, -1)
-
-            obs_topo_list = [
-                (
-                    obs_vertices_topo_flat
-                    if self.parameters.is_observe_vertices
-                    else torch.cat(
-                        [
-                            obs_pos_topo_flat,
-                            obs_rot_topo_flat,
-                            obs_lengths_topo_flat,
-                            obs_widths_topo_flat,
-                        ],
-                        dim=-1,
-                    )
-                ),
-                obs_vel_topo_flat,
-                (
-                    obs_distance_topo_flat
-                    if self.parameters.is_observe_distance_to_agents
-                    else None
-                ),
-                (
-                    obs_ref_path_topo_flat
-                    if self.parameters.is_observe_ref_path_other_agents
-                    else None
-                ),
-            ]
-            obs_topo_list = [o for o in obs_topo_list if o is not None]
-            topology_neighbors_observation_flat = torch.cat(
-                obs_topo_list, dim=-1
-            ).reshape(B, -1)
-
-            # Relative features for topology neighbors
-            if self.parameters.is_ego_view:
-                past_pos = self.observations.past_pos.get_latest()
-                past_rot = self.observations.past_rot.get_latest()
-                past_vel = self.observations.past_vel.get_latest()
-
-                pos_i_allj = past_pos[:, agent_index]
-                rot_i_allj = past_rot[:, agent_index]
-                vel_i_allj = past_vel[:, agent_index]
-
-                idx_for_2 = topo_neighbor_idx.unsqueeze(-1).expand(
-                    -1, -1, pos_i_allj.size(-1)
-                )
-                idx_for_1 = topo_neighbor_idx
-
-                rel_pos_topo = torch.gather(pos_i_allj, dim=1, index=idx_for_2)
-                rel_yaw_topo = torch.gather(rot_i_allj, dim=1, index=idx_for_1)
-                nei_v_topo = torch.gather(vel_i_allj, dim=1, index=idx_for_2)
-                nei_v_forward_topo = nei_v_topo[..., 0]
-                ego_v_forward = past_vel[:, agent_index, agent_index, 0]
-                d_speed_topo = nei_v_forward_topo - ego_v_forward.unsqueeze(-1)
-
-                rel_pos_topo[topology_neighbors_mask_distance] = self.constants.mask_one
-                rel_yaw_topo[
-                    topology_neighbors_mask_distance
-                ] = self.constants.mask_zero
-                d_speed_topo[
-                    topology_neighbors_mask_distance
-                ] = self.constants.mask_zero
-
-                topology_relative_features = torch.cat(
-                    [
-                        rel_pos_topo,
-                        rel_yaw_topo.unsqueeze(-1),
-                        d_speed_topo.unsqueeze(-1),
-                    ],
-                    dim=-1,
-                )
-            else:
-                # Bird-view fallback
-                pos_all = self.observations.past_pos.get_latest()[:, :, :, :]
-                yaw_all = self.observations.past_rot.get_latest()[:, :, :]
-                v_all = self.observations.past_vel.get_latest()[:, :, :, 0]
-                pos_i = pos_all[:, :, agent_index, :]
-                yaw_i = yaw_all[:, :, agent_index]
-                v_i = v_all[:, :, agent_index]
-                pos_j = pos_all[:, (slice(None),), topo_neighbor_idx, :].squeeze(1)
-                yaw_j = yaw_all[:, (slice(None),), topo_neighbor_idx].squeeze(1)
-                v_j = v_all[:, (slice(None),), topo_neighbor_idx].squeeze(1)
-                rel_pos_topo = pos_j - pos_i.unsqueeze(1)
-                rel_yaw_topo = angle_eliminate_two_pi(yaw_j - yaw_i.unsqueeze(1))
-                d_speed_topo = v_j - v_i.unsqueeze(1)
-                topology_relative_features = torch.cat(
-                    [
-                        rel_pos_topo,
-                        rel_yaw_topo.unsqueeze(-1),
-                        d_speed_topo.unsqueeze(-1),
-                    ],
-                    dim=-1,
-                )
-
-            # Neighbor short-term references for topology
-            short_term_all_norm = (
-                self.ref_paths_agent_related.short_term / self.normalizers.pos_world
-            )
-            if getattr(
-                self.parameters,
-                "is_append_current_pos_to_short_refs_for_topology",
-                False,
-            ):
-                current_pos_all = torch.stack(
-                    [ag.state.pos for ag in self.world.agents], dim=1
-                )  # [B, N, 2]
-                current_pos_all_norm = current_pos_all / self.normalizers.pos_world
-                short_term_use = torch.cat(
-                    [current_pos_all_norm.unsqueeze(2), short_term_all_norm], dim=2
-                )  # [B, N, T+1, 2]
-            else:
-                short_term_use = short_term_all_norm
-            T_points = short_term_use.size(2)
-            idx_agents_topo = (
-                topo_neighbor_idx.unsqueeze(-1)
-                .unsqueeze(-1)
-                .expand(-1, -1, T_points, 2)
-            )
-            ref_neighbors_local_topo = torch.gather(
-                short_term_use, dim=1, index=idx_agents_topo
-            )
-            topology_ref_neighbors_local_flat = ref_neighbors_local_topo.reshape(
-                B, K_topo * T_points * 2
-            )
-
-        opinion_info = {}
-        if hasattr(self, "conflict_graph"):
-            graph = self._build_opinion_conflict_graph()
-            opinion_info = {
-                "pair_features": graph.pair_features[:, agent_index],
-                "neighbor_ids": graph.neighbor_ids[:, agent_index],
-                "pair_mask": graph.pair_mask[:, agent_index],
-                "urgency": graph.urgency[:, agent_index],
-                "confidence": graph.confidence[:, agent_index],
-                "agent_reset_mask": self._consume_opinion_reset_for_agent(
-                    agent_index
-                ),
-            }
-
         info = {
             "pos": agent.state.pos / self.normalizers.pos_world,
             "rot": angle_eliminate_two_pi(agent.state.rot) / self.normalizers.rot,
@@ -3690,11 +2770,6 @@ class ScenarioRoadTraffic(BaseScenario):
                 self.ref_paths_agent_related.short_term[:, agent_index]
                 / self.normalizers.pos_world
             ).reshape(self.world.batch_dim, -1),
-            # 拓扑需要的别名与邻居参考
-            "ref_local": ref_local_flat,
-            "ref_neighbors_local": ref_neighbors_local_flat,
-            "neighbors_distance": nearing_agents_distances,
-            "neighbors_mask_distance": neighbors_mask_distance,
             "distance_ref": self.distances.ref_paths[:, agent_index]
             / self.normalizers.distance_ref,
             "distance_left_b": self.distances.left_boundaries[:, agent_index].min(
@@ -3718,44 +2793,6 @@ class ScenarioRoadTraffic(BaseScenario):
                 and self.parameters.prioritization_method.lower() == "marl"
                 else {}
             ),
-            # New structured keys for topology learning (kept under agents.info)
-            "ego_observation": ego_observation,
-            # "neighbors_observation": neighbors_observation,  # can be enabled if structured [B,K,D_nei] is required
-            "neighbors_observation_flat": neighbors_observation_flat,
-            "relative_features": relative_features,
-            # Topology-specific keys
-            **(
-                {
-                    "topology_neighbors_observation_flat": topology_neighbors_observation_flat,
-                    "topology_relative_features": topology_relative_features,
-                    "topology_ref_neighbors_local": topology_ref_neighbors_local_flat,
-                    "topology_neighbors_distance": topology_neighbors_distance,
-                    "topology_neighbors_mask_distance": topology_neighbors_mask_distance,
-                    "topology_neighbors_indices": topo_neighbor_idx,
-                    # Selected neighbors used by policy when topology selection is ON
-                    **(
-                        {
-                            "topology_selected_indices": self.observations.topology_selected_indices[
-                                :, agent_index
-                            ],
-                            "topology_selected_probs": self.observations.topology_selected_probs[
-                                :, agent_index
-                            ],
-                        }
-                        if (
-                            hasattr(self.observations, "topology_selected_indices")
-                            and hasattr(self.observations, "topology_selected_probs")
-                        )
-                        else {}
-                    ),
-                }
-                if topology_neighbors_observation_flat is not None
-                else {}
-            ),
-            # 策略分支使用的 K 个近邻编号（用于对比）
-            "neighbors_indices": neighbor_idx_local,
-            # Independent Opinion-MARL current-physics interface (M4).
-            **opinion_info,
         }
 
         return info
@@ -3765,13 +2802,9 @@ class ScenarioRoadTraffic(BaseScenario):
 
         if self.parameters.is_real_time_rendering:
             if self.timer.step[0] == 0:
-                pause_duration = 0  # At step 0, skip pause
+                pause_duration = 0  # Not sure how long should the simulation be paused at time step 0, so rather 0
             else:
-                # Allow slowing down visual rendering without affecting physics
-                pause_scale = float(getattr(self.parameters, "render_pause_scale", 1.0))
-                pause_duration = self.world.dt * pause_scale - (
-                    time.time() - self.timer.render_begin
-                )
+                pause_duration = self.world.dt - (time.time() - self.timer.render_begin)
             if pause_duration > 0:
                 time.sleep(pause_duration)
             # print(f"Paused for {pause_duration} sec.")
@@ -3779,150 +2812,27 @@ class ScenarioRoadTraffic(BaseScenario):
             self.timer.render_begin = time.time()  # Update
         geoms = []
 
-        is_beautify_map = bool(getattr(self.parameters, "is_beautify_map", False))
+        # Visualize all lanelets
+        for i in range(len(self.map.parser.lanelets_all)):
+            lanelet = self.map.parser.lanelets_all[i]
 
-        def _polyline_key(v):
-            v_np = v.detach().cpu()
-            v_rounded = torch.round(v_np * 1000.0) / 1000.0
-            a = tuple(map(tuple, v_rounded.tolist()))
-            b = tuple(reversed(a))
-            return a if a < b else b
-
-        def _append_polyline(v, color, linewidth, close=False):
-            geom = rendering.PolyLine(v=v, close=close)
+            geom = rendering.PolyLine(
+                v=lanelet["left_boundary"],
+                close=False,
+            )
             xform = rendering.Transform()
             geom.add_attr(xform)
-            geom.set_color(*color)
-            geom.set_linewidth(linewidth)
+            geom.set_color(*Color.black100)
             geoms.append(geom)
 
-        def _append_dashed(v, color, linewidth, stride=3):
-            n = int(v.shape[0])
-            if n < 2:
-                return
-            stride = max(2, int(stride))
-            for k in range(0, n - 1, stride):
-                _append_polyline(v[k : k + 2], color, linewidth, close=False)
-
-        def _densify_trajectory(points: torch.Tensor) -> torch.Tensor:
-            interp_points_per_seg = int(
-                getattr(
-                    self.parameters, "agent_trajectory_interp_points_per_segment", 1
-                )
-            )
-            if interp_points_per_seg <= 1 or int(points.shape[0]) < 2:
-                return points
-
-            use_catmull_rom = bool(
-                getattr(
-                    self.parameters, "agent_trajectory_interp_use_catmull_rom", True
-                )
-            )
-            ts_full = torch.linspace(
-                0.0,
-                1.0,
-                steps=interp_points_per_seg,
-                device=points.device,
-                dtype=points.dtype,
-            )
-
-            n_pts = int(points.shape[0])
-            out = []
-            for i in range(n_pts - 1):
-                ts = ts_full if i == 0 else ts_full[1:]
-                p1 = points[i]
-                p2 = points[i + 1]
-                if not use_catmull_rom or n_pts < 4:
-                    t = ts.unsqueeze(-1)
-                    out.append((1.0 - t) * p1 + t * p2)
-                    continue
-
-                i0 = 0 if i - 1 < 0 else i - 1
-                i3 = n_pts - 1 if i + 2 >= n_pts else i + 2
-                p0 = points[i0]
-                p3 = points[i3]
-
-                t = ts.unsqueeze(-1)
-                t2 = t * t
-                t3 = t2 * t
-                out.append(
-                    0.5
-                    * (
-                        (2.0 * p1)
-                        + (-p0 + p2) * t
-                        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-                        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
-                    )
-                )
-            return torch.cat(out, dim=0) if out else points
-
-        if is_beautify_map:
-            bg = rendering.make_polygon(
-                v=torch.tensor(
-                    [
-                        [-self.world.x_semidim, -self.world.y_semidim],
-                        [-self.world.x_semidim, self.world.y_semidim],
-                        [self.world.x_semidim, self.world.y_semidim],
-                        [self.world.x_semidim, -self.world.y_semidim],
-                    ],
-                    device=self.world.device,
-                    dtype=torch.float32,
-                ),
-                filled=True,
-                draw_border=False,
+            geom = rendering.PolyLine(
+                v=lanelet["right_boundary"],
+                close=False,
             )
             xform = rendering.Transform()
-            bg.add_attr(xform)
-            bg.set_color(*Color.green10)
-            geoms.append(bg)
-
-        drawn_boundaries = set()
-        for lanelet in self.map.parser.lanelets_all:
-            left = lanelet["left_boundary"]
-            right = lanelet["right_boundary"]
-            center = lanelet["center_line"]
-
-            if is_beautify_map:
-                road_poly = torch.vstack([left, torch.flip(right, dims=[0])])
-                road = rendering.make_polygon(
-                    v=road_poly,
-                    filled=True,
-                    draw_border=False,
-                )
-                xform = rendering.Transform()
-                road.add_attr(xform)
-                road.set_color(*Color.black25)
-                geoms.append(road)
-
-                left_marking = lanelet.get("left_line_marking", None)
-                right_marking = lanelet.get("right_line_marking", None)
-                center_marking = lanelet.get("center_line_marking", "dashed")
-
-                lk = _polyline_key(left)
-                if lk not in drawn_boundaries:
-                    if left_marking == "dashed":
-                        _append_dashed(left, Color.black50, 1.6, stride=3)
-                    else:
-                        _append_polyline(left, Color.black50, 1.8, close=False)
-                    drawn_boundaries.add(lk)
-
-                rk = _polyline_key(right)
-                if rk not in drawn_boundaries:
-                    if right_marking == "dashed":
-                        _append_dashed(right, Color.black50, 1.6, stride=3)
-                    else:
-                        _append_polyline(right, Color.black50, 1.8, close=False)
-                    drawn_boundaries.add(rk)
-
-                if center is not None and int(center.shape[0]) >= 2:
-                    if center_marking == "solid":
-                        _append_polyline(center, Color.yellow50, 1.0, close=False)
-                    else:
-                        _append_dashed(center, Color.yellow50, 1.0, stride=4)
-            else:
-                _append_polyline(left, Color.black50, 1.6, close=False)
-                _append_polyline(right, Color.black50, 1.6, close=False)
-                _append_polyline(center, Color.black10, 1.2, close=False)
+            geom.add_attr(xform)
+            geom.set_color(*Color.black100)
+            geoms.append(geom)
 
         if self.parameters.is_visualize_extra_info:
             hight_a = -0.10
@@ -3985,7 +2895,6 @@ class ScenarioRoadTraffic(BaseScenario):
             # geom.add_attr(xform)
             # geoms.append(geom)
 
-        trajectory_items = []
         for agent_i in range(self.n_agents):
             # # Visualize goal
             # if not self.ref_paths_agent_related.is_loop[env_index, agent_i]:
@@ -4018,145 +2927,6 @@ class ScenarioRoadTraffic(BaseScenario):
                     xform.set_translation(i_p[0], i_p[1])
                     circle.set_color(*colors[agent_i])
                     geoms.append(circle)
-
-            # Visualize only first three future points per agent (independent of full path flag)
-            if getattr(self.parameters, "is_visualize_future_three_points", False):
-                path = self.ref_paths_agent_related.short_term[env_index, agent_i]
-                n_pts = path.shape[0]
-                n_show = min(3, n_pts)
-                for i in range(n_show):
-                    i_p = path[i]
-                    circle = rendering.make_circle(radius=0.018, filled=True)
-                    xform = rendering.Transform()
-                    circle.add_attr(xform)
-                    xform.set_translation(i_p[0], i_p[1])
-                    circle.set_color(*colors[agent_i])
-                    geoms.append(circle)
-
-            if getattr(
-                self.parameters, "is_visualize_agent_trajectory", False
-            ) and hasattr(self, "traj_pos_buffer"):
-                buf = self.traj_pos_buffer.buffer
-                valid = int(self.traj_pos_buffer.valid_size)
-                if valid >= 2:
-                    ptr = int(self.traj_pos_buffer.pointer)
-                    if valid < int(buf.shape[0]):
-                        traj = buf[:valid, env_index, agent_i]
-                    else:
-                        traj = torch.cat(
-                            (
-                                buf[ptr:, env_index, agent_i],
-                                buf[:ptr, env_index, agent_i],
-                            ),
-                            dim=0,
-                        )
-
-                    n = int(traj.shape[0])
-                    if n >= 2:
-                        traj = _densify_trajectory(traj)
-                        n = int(traj.shape[0])
-                        base = colors[agent_i]
-                        if is_beautify_map:
-                            thickness_m = float(
-                                getattr(
-                                    self.parameters,
-                                    "agent_trajectory_thickness_m_beautify",
-                                    4.0,
-                                )
-                            )
-                        else:
-                            thickness_m = float(
-                                getattr(
-                                    self.parameters,
-                                    "agent_trajectory_thickness_m",
-                                    0.06,
-                                )
-                            )
-                        fade_min = 0.0
-                        fade_max = 0.85
-                        denom = max(1, n - 1)
-                        for seg_i in range(n - 1):
-                            age = seg_i / denom
-                            fade = fade_max + (fade_min - fade_max) * age
-                            col = (
-                                max(
-                                    0.0,
-                                    min(
-                                        1.0,
-                                        float(base[0]) + (1.0 - float(base[0])) * fade,
-                                    ),
-                                ),
-                                max(
-                                    0.0,
-                                    min(
-                                        1.0,
-                                        float(base[1]) + (1.0 - float(base[1])) * fade,
-                                    ),
-                                ),
-                                max(
-                                    0.0,
-                                    min(
-                                        1.0,
-                                        float(base[2]) + (1.0 - float(base[2])) * fade,
-                                    ),
-                                ),
-                            )
-                            p0 = traj[seg_i]
-                            p1 = traj[seg_i + 1]
-                            d = p1 - p0
-                            seg_len = torch.norm(d).item()
-                            if seg_len <= 1e-8:
-                                continue
-
-                            ux = float(d[0].item()) / seg_len
-                            uy = float(d[1].item()) / seg_len
-                            nx = -uy
-                            ny = ux
-                            half = thickness_m * 0.5
-
-                            overlap = half
-                            p0x = float(p0[0].item()) - ux * overlap
-                            p0y = float(p0[1].item()) - uy * overlap
-                            p1x = float(p1[0].item()) + ux * overlap
-                            p1y = float(p1[1].item()) + uy * overlap
-
-                            quad = torch.tensor(
-                                [
-                                    [p0x + nx * half, p0y + ny * half],
-                                    [p0x - nx * half, p0y - ny * half],
-                                    [p1x - nx * half, p1y - ny * half],
-                                    [p1x + nx * half, p1y + ny * half],
-                                ],
-                                device=self.world.device,
-                                dtype=torch.float32,
-                            )
-                            geom = rendering.make_polygon(
-                                v=quad, filled=True, draw_border=False
-                            )
-                            xform = rendering.Transform()
-                            geom.add_attr(xform)
-                            geom.set_color(*col)
-                            trajectory_items.append((float(age), geom))
-
-                            if seg_i == 0:
-                                cap0 = rendering.make_circle(radius=half, filled=True)
-                                xform0 = rendering.Transform()
-                                cap0.add_attr(xform0)
-                                xform0.set_translation(
-                                    float(p0[0].item()), float(p0[1].item())
-                                )
-                                cap0.set_color(*col)
-                                trajectory_items.append((0.0, cap0))
-
-                            cap1 = rendering.make_circle(radius=half, filled=True)
-                            xform1 = rendering.Transform()
-                            cap1.add_attr(xform1)
-                            xform1.set_translation(
-                                float(p1[0].item()), float(p1[1].item())
-                            )
-                            cap1.set_color(*col)
-                            age_end = (seg_i + 1) / denom
-                            trajectory_items.append((float(age_end), cap1))
 
             # Visualize nearing points on boundaries
             if not self.parameters.is_observe_distance_to_boundaries:
@@ -4204,6 +2974,27 @@ class ScenarioRoadTraffic(BaseScenario):
                     circle.set_color(*colors[agent_i])
                     geoms.append(circle)
 
+            # Agent IDs
+            geom = rendering.TextLine(
+                text=f"{agent_i}",
+                x=(
+                    self.world.agents[agent_i].state.pos[env_index, 0]
+                    / self.world.x_semidim
+                )
+                * self.viewer_size[0],
+                y=(
+                    self.world.agents[agent_i].state.pos[env_index, 1]
+                    / self.world.y_semidim
+                )
+                * self.viewer_size[1],
+                # x=(self.world.agents[agent_i].state.pos[env_index, 0] - self.render_origin[0] + self.world.x_semidim / 2) * self.resolution_factor / self.viewer_zoom,
+                # y=(self.world.agents[agent_i].state.pos[env_index, 1] - self.render_origin[1] + self.world.y_semidim / 2) * self.resolution_factor / self.viewer_zoom,
+                font_size=14,
+            )
+            xform = rendering.Transform()
+            geom.add_attr(xform)
+            geoms.append(geom)
+
             # Lanelet boundaries of agents' reference path
             if self.parameters.is_visualize_lane_boundary:
                 if agent_i == 0:
@@ -4247,352 +3038,6 @@ class ScenarioRoadTraffic(BaseScenario):
                     geom.add_attr(xform)
                     geom.set_color(*colors[agent_i])
                     geoms.append(geom)
-
-        if trajectory_items:
-            trajectory_items.sort(key=lambda item: item[0])
-            geoms.extend([geom for _, geom in trajectory_items])
-
-        # Visualize observed neighbors of a fixed agent by connecting line segments
-        if (
-            getattr(self.parameters, "is_visualize_observed_neighbors", False)
-            and self.parameters.is_partial_observation
-        ):
-            # Use a fixed agent index if provided; default to 0 to avoid jitter
-            ego_i_param = getattr(
-                self.parameters, "visualize_observed_neighbors_agent_index", None
-            )
-            if ego_i_param is None:
-                ego_i = 0
-            else:
-                ego_i = int(ego_i_param)
-                if ego_i < 0 or ego_i >= self.n_agents:
-                    ego_i = max(0, min(self.n_agents - 1, ego_i))
-
-            pos_ego = self.world.agents[ego_i].state.pos[env_index]
-            neighbor_idx = self.observations.nearing_agents_indices[:, ego_i]  # [B, K]
-            B = self.world.batch_dim
-            K = self.parameters.n_nearing_agents_observed
-
-            # Distances for current env only: [K]
-            nearing_agents_distances = self.distances.agents[
-                env_index, ego_i, neighbor_idx[env_index]
-            ]
-            masked_by_distance = (
-                nearing_agents_distances >= self.thresholds.distance_mask_agents
-            )
-            # Lanelet-based mask only when apply_mask is enabled and neighbor relations exist
-            if (
-                self.parameters.is_apply_mask
-                and len(self.map.parser.neighboring_lanelets_idx) != 0
-            ):
-                masked_all_envs = self.map.determine_masked_agents_by_lanelets(
-                    ego_i, neighbor_idx
-                )  # [B, K]
-                masked_by_lanelets = masked_all_envs[env_index]
-            else:
-                masked_by_lanelets = torch.zeros_like(
-                    masked_by_distance, dtype=torch.bool
-                )
-            masked_agents = masked_by_distance | masked_by_lanelets  # [K]
-
-            # --- Draw distance/lanelet-filtered neighbors (red), slightly offset ---
-            valid_idx = neighbor_idx[env_index][~masked_agents]
-            for j in valid_idx.tolist():
-                pos_j = self.world.agents[int(j)].state.pos[env_index]
-                # Perpendicular offset to avoid overlapping with topology lines
-                v = pos_j - pos_ego
-                v_norm = torch.norm(v)
-                if float(v_norm.item()) > 1e-6:
-                    n = torch.tensor(
-                        [-v[1].item(), v[0].item()],
-                        device=self.world.device,
-                        dtype=torch.float32,
-                    )
-                    n = n / torch.norm(n)
-                else:
-                    n = torch.tensor(
-                        [0.0, 0.0], device=self.world.device, dtype=torch.float32
-                    )
-                offset = -0.04 * n  # meters
-
-                line = rendering.Line(
-                    tuple((pos_ego + offset).tolist()),
-                    tuple((pos_j + offset).tolist()),
-                    width=2,
-                )
-                xform = rendering.Transform()
-                line.add_attr(xform)
-                line.set_color(*Color.red50)
-                geoms.append(line)
-
-            # --- Compute topology-based positive labels e_ij and draw (blue), offset the other side ---
-            try:
-                # Normalize short-term refs and gather ego/neighbors
-                short_term_all_norm = (
-                    self.ref_paths_agent_related.short_term / self.normalizers.pos_world
-                )  # [B,N,T,2]
-                if getattr(
-                    self.parameters,
-                    "is_append_current_pos_to_short_refs_for_topology",
-                    False,
-                ):
-                    current_pos_all = torch.stack(
-                        [ag.state.pos for ag in self.world.agents], dim=1
-                    )  # [B,N,2]
-                    current_pos_all_norm = current_pos_all / self.normalizers.pos_world
-                    short_term_use = torch.cat(
-                        [current_pos_all_norm.unsqueeze(2), short_term_all_norm], dim=2
-                    )  # [B,N,T+1,2]
-                else:
-                    short_term_use = short_term_all_norm
-                T_points = short_term_use.size(2)
-                idx_agents = (
-                    neighbor_idx.long()
-                    .unsqueeze(-1)
-                    .unsqueeze(-1)
-                    .expand(-1, -1, T_points, 2)
-                )
-                ref_neighbors_local = torch.gather(
-                    short_term_use, dim=1, index=idx_agents
-                )  # [B,K,T,2]
-                ref_neighbors_flat = ref_neighbors_local.reshape(B, K * T_points * 2)
-                ref_local_flat = short_term_use[:, ego_i].reshape(B, -1)
-
-                # Distances and mask over all envs
-                dist_row = self.distances.agents[:, ego_i]  # [B,N]
-                neighbors_distance = torch.gather(
-                    dist_row, dim=1, index=neighbor_idx.long()
-                )  # [B,K]
-
-                if (
-                    self.parameters.is_apply_mask
-                    and self.parameters.is_partial_observation
-                ):
-                    masked_by_distance_all = (
-                        neighbors_distance >= self.thresholds.distance_mask_agents
-                    )
-                    if len(self.map.parser.neighboring_lanelets_idx) != 0:
-                        masked_by_lanelets_all = (
-                            self.map.determine_masked_agents_by_lanelets(
-                                ego_i, neighbor_idx.long()
-                            )
-                        )  # [B,K]
-                    else:
-                        masked_by_lanelets_all = torch.zeros(
-                            (B, K), device=self.world.device, dtype=torch.bool
-                        )
-                    neighbors_mask_distance = (
-                        masked_by_distance_all | masked_by_lanelets_all
-                    )  # [B,K]
-                else:
-                    neighbors_mask_distance = torch.zeros(
-                        (B, K), device=self.world.device, dtype=torch.bool
-                    )
-
-                # 打印：用于生成拓扑标签的参考轨迹世界坐标（两位小数）
-                try:
-                    ego_pts_env = short_term_use[env_index, ego_i]  # [T,2] (normalized)
-                    nei_ids_env = neighbor_idx.long()[env_index]  # [K]
-                    nei_pts_env = ref_neighbors_local[env_index]  # [K,T,2] (normalized)
-
-                    # 反归一化为世界坐标
-                    ego_pts_env_world = ego_pts_env * self.normalizers.pos_world
-                    nei_pts_env_world = nei_pts_env * self.normalizers.pos_world
-
-                    def fmt_pts_row(t_row):
-                        return (
-                            "["
-                            + ",".join(
-                                [
-                                    f"({float(t_row[k,0].item()):.2f},{float(t_row[k,1].item()):.2f})"
-                                    for k in range(t_row.size(0))
-                                ]
-                            )
-                            + "]"
-                        )
-
-                    print(
-                        f"[TopoRefs] n={int(self.timer.step[0])}, ego={ego_i}, T={int(T_points)} (world)"
-                    )
-                    print(f"[TopoRefs] ego refs: {fmt_pts_row(ego_pts_env_world)}")
-                    for j in range(int(K)):
-                        nid = int(nei_ids_env[j].item())
-                        print(
-                            f"[TopoRefs] neighbor id={nid}: {fmt_pts_row(nei_pts_env_world[j])}"
-                        )
-                except Exception:
-                    pass
-
-                # Corridor width uses agent width + buffer
-                corridor_buffer = float(
-                    getattr(self.parameters, "topology_corridor_buffer_m", 0.4)
-                )
-                e_labels = generate_e_labels_with_corridor(
-                    ref_local_flat,
-                    ref_neighbors_flat,
-                    neighbors_distance,
-                    neighbors_mask_distance,
-                    float(self.thresholds.distance_mask_agents),
-                    int(K),
-                    int(T_points),
-                    self.normalizers.pos_world,
-                    float(self.agent_width),
-                    corridor_buffer,
-                    use_intersection=True,
-                    use_corridor=True,
-                    max_time_lag_steps=2,
-                )  # [B,K]
-
-                # Positive edges for current env
-                pos_edge_mask = e_labels[env_index] > 0.5  # [K]
-                topo_idx = neighbor_idx[env_index][pos_edge_mask]
-
-                for j in topo_idx.tolist():
-                    pos_j = self.world.agents[int(j)].state.pos[env_index]
-                    # Perpendicular offset opposite side
-                    v = pos_j - pos_ego
-                    v_norm = torch.norm(v)
-                    if float(v_norm.item()) > 1e-6:
-                        n = torch.tensor(
-                            [-v[1].item(), v[0].item()],
-                            device=self.world.device,
-                            dtype=torch.float32,
-                        )
-                        n = n / torch.norm(n)
-                    else:
-                        n = torch.tensor(
-                            [0.0, 0.0], device=self.world.device, dtype=torch.float32
-                        )
-                    offset = 0.04 * n  # meters
-
-                    line = rendering.Line(
-                        tuple((pos_ego + offset).tolist()),
-                        tuple((pos_j + offset).tolist()),
-                        width=3,
-                    )
-                    xform = rendering.Transform()
-                    line.add_attr(xform)
-                    line.set_color(*Color.blue75)
-                    geoms.append(line)
-
-                # --- Output text overlays and console logs for the two neighbor sets ---
-                if getattr(self.parameters, "is_visualize_extra_info", False):
-                    # Position overlays below the default info HUD
-                    hight_d = -0.40
-                    hight_e = -0.50
-
-                    # Dist/Lane neighbors set
-                    geom = rendering.TextLine(
-                        text=f"Dist/Lane: {','.join(map(str, valid_idx.tolist()))}",
-                        x=0.05 * self.resolution_factor,
-                        y=(self.world.y_semidim + hight_d) * self.resolution_factor,
-                        font_size=14,
-                    )
-                    xform = rendering.Transform()
-                    geom.add_attr(xform)
-                    geom.set_color(*Color.red75)
-                    geoms.append(geom)
-
-                    # Topology-positive neighbors set
-                    geom = rendering.TextLine(
-                        text=f"Topo=1: {','.join(map(str, topo_idx.tolist()))}",
-                        x=0.05 * self.resolution_factor,
-                        y=(self.world.y_semidim + hight_e) * self.resolution_factor,
-                        font_size=14,
-                    )
-                    xform = rendering.Transform()
-                    geom.add_attr(xform)
-                    geom.set_color(*Color.blue75)
-                    geoms.append(geom)
-
-                # Console log per time step n
-                try:
-                    print(
-                        f"[Neighbors] n={int(self.timer.step[0])}, t={self.timer.step[0]*self.parameters.dt:.2f}s, "
-                        f"ego={ego_i}, dist/lane={valid_idx.tolist()}, topo_pos={topo_idx.tolist()}"
-                    )
-                except Exception:
-                    pass
-            except Exception:
-                # Fail-safe: skip topology overlay if any error
-                pass
-
-        if getattr(self.parameters, "is_visualize_agent_id", True):
-            try:
-                width = float(self.viewer_size[0])
-                height = float(self.viewer_size[1])
-                aspect_ratio = width / height if height > 0 else 1.0
-                zoom = float(self.viewer_zoom)
-
-                if aspect_ratio < 1:
-                    cam_range = torch.tensor(
-                        [zoom, zoom / aspect_ratio],
-                        device=self.world.device,
-                        dtype=torch.float32,
-                    )
-                else:
-                    cam_range = torch.tensor(
-                        [zoom * aspect_ratio, zoom],
-                        device=self.world.device,
-                        dtype=torch.float32,
-                    )
-
-                all_poses = torch.stack(
-                    [agent.state.pos[env_index] for agent in self.world.agents], dim=0
-                )
-                max_agent_radius = max(
-                    [agent.shape.circumscribed_radius() for agent in self.world.agents]
-                )
-                viewer_size_fit = (
-                    torch.stack(
-                        [
-                            torch.max(
-                                torch.abs(all_poses[:, 0] - self.render_origin[0])
-                            ),
-                            torch.max(
-                                torch.abs(all_poses[:, 1] - self.render_origin[1])
-                            ),
-                        ]
-                    )
-                    + 2 * max_agent_radius
-                )
-                viewer_size = torch.maximum(
-                    viewer_size_fit / cam_range,
-                    torch.tensor(zoom, device=self.world.device, dtype=torch.float32),
-                )
-                cam_range = cam_range * torch.max(viewer_size)
-
-                left = -cam_range[0] + self.render_origin[0]
-                right = cam_range[0] + self.render_origin[0]
-                bottom = -cam_range[1] + self.render_origin[1]
-                top = cam_range[1] + self.render_origin[1]
-
-                scalex = width / float((right - left).item())
-                scaley = height / float((top - bottom).item())
-                transx = -float(left.item()) * scalex
-                transy = -float(bottom.item()) * scaley
-
-                for agent_i, agent in enumerate(self.world.agents):
-                    pos = agent.state.pos[env_index]
-                    label_pos = pos + torch.tensor(
-                        [0.0, float(self.agent_length) * 0.55],
-                        device=self.world.device,
-                        dtype=torch.float32,
-                    )
-                    px = float(label_pos[0].item()) * scalex + transx
-                    py = float(label_pos[1].item()) * scaley + transy
-                    geom = rendering.TextLine(
-                        text=str(agent_i + 1),
-                        x=px,
-                        y=py,
-                        font_size=14,
-                    )
-                    xform = rendering.Transform()
-                    geom.add_attr(xform)
-                    geom.set_color(*Color.black100)
-                    geoms.append(geom)
-            except Exception:
-                pass
 
         return geoms
 
