@@ -80,9 +80,9 @@ is_collision_with_agents    [2,4,1]
 is_collision_with_lanelets  [2,4,1]
 ```
 
-## 4. 尚未通过的可复现性 Gate
+## 4. R0 环境修复记录
 
-当前 Conda 环境并非完全隔离：
+修复前 Conda 环境并非完全隔离：
 
 - 部分包从 `~/.local/lib/python3.9/site-packages` 加载；
 - 其中存在指向另一个项目目录的 editable `sigmarl 1.2.0`；
@@ -90,21 +90,22 @@ is_collision_with_lanelets  [2,4,1]
 - 设置 `PYTHONNOUSERSITE=1` 后，环境内部缺少 `typing_extensions` 和多个
   间接依赖。
 
-因此当前只能说“源码一致且 smoke 可运行”，不能宣称环境已完全可复现。
-R0 状态应保持“进行中”，直到：
+R0 已原地执行：
 
-1. 原地修复现有 `sigmarl-nod` Conda 环境，不创建或切换到其他环境；
-2. `sigmarl-nod` 环境内部独立安装 `requirements.txt` 的精确版本；
-3. 不依赖 user-site 仍能导入核心包；
-4. `pip check` 无冲突；
-5. reset、3-step rollout 和 `TanhNormal` 有限值检查重新通过。
+1. 为现有 `sigmarl-nod` Conda 环境设置 `PYTHONNOUSERSITE=1`；
+2. 使用根目录 `requirements.txt` 在该环境内部补齐固定依赖；
+3. 保留环境名称和位置，不创建 `.venv` 或其他替代环境；
+4. 将标准测试入口与训练输出目录、训练场景对齐。
+
+按用户要求，本轮不代替用户启动训练或进行性能验证。手动运行方式见
+[`R0_USAGE.md`](R0_USAGE.md)。
 
 ## 5. 当前结论
 
 ```text
 源码基线：通过
-环境 smoke：通过（但尚依赖 user-site）
-隔离依赖：未通过
-R0 总状态：进行中
-下一动作：修复隔离环境后重跑 R0，再执行 R1 Base 基线
+既有环境 smoke：通过
+隔离配置与依赖补全：已实施，待用户手动训练确认
+R0 实现状态：已完成
+下一实现步骤：R1 Base 产物合同
 ```

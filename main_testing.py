@@ -13,7 +13,11 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/M2 (Baseline)/"
+# Keep the default testing entry point aligned with ``main_training.py``.
+# Training writes to ``where_to_save`` in config.json; testing reads the same
+# directory instead of relying on a repository-specific hard-coded path.
+config_file = "config.json"
+path = Parameters.from_json(config_file).where_to_save
 
 try:
     path_to_json_file = next(
@@ -38,9 +42,10 @@ try:
         else:
             parameters.num_vmas_envs = 1
 
-        parameters.scenario_type = (
-            "CPM_entire"  # on_ramp_1, roundabout_1, intersection_1/2/3, CPM_mixed
-        )
+        # By default, evaluate on the same scenario used for training. This
+        # keeps ``python main_testing.py`` compatible with the saved critic
+        # dimensions. Cross-scenario evaluation will be exposed explicitly in
+        # a later evaluation configuration instead of being hard-coded here.
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
 
         parameters.is_save_simulation_video = False

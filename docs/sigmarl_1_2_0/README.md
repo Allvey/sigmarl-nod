@@ -14,6 +14,7 @@ commit:     5fe715bdfba4ff3e33d901d69dfa220f1222c060
 
 - [`CODEBASE_AUDIT.md`](CODEBASE_AUDIT.md)：当前目录的源码差异、环境版本、
   smoke 证据和尚未通过的 R0 Gate；
+- [`R0_USAGE.md`](R0_USAGE.md)：使用现有 `sigmarl-nod` 环境执行标准训练和测试入口；
 - [`RL_ENVIRONMENT_DESIGN.md`](RL_ENVIRONMENT_DESIGN.md)：环境、动作、奖励、reset 和
   原始向量化训练数据流；
 - [`OBSERVATION_SPACE_DETAILS.md`](OBSERVATION_SPACE_DETAILS.md)：默认 32 维局部
@@ -32,8 +33,8 @@ action           [2,4,2]
 3-step rollout   finite
 ```
 
-上述 smoke 已通过，但 Conda 环境仍依赖 user-site 中的部分包，所以完整 R0
-尚未结束。不得只根据 rollout 成功就宣称依赖已可复现。
+上述 smoke 是环境修复前的既有证据；R0 已在现有 Conda 环境中实施 user-site 隔离
+和依赖补全。按用户要求，修复后的实际训练与测试由用户手动执行。
 
 以后如果基础 tag 改变，必须建立新的版本目录，不得直接覆盖本目录并继续沿用
 `sigmarl_1_2_0` 名称。

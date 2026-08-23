@@ -1,6 +1,6 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：源码已对齐，R0 隔离环境验证进行中  
+> 文档状态：R0 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
@@ -46,13 +46,12 @@ modeling。Base 必须走 SigmaRL 1.2.0 原始向量化 MAPPO；Evidence/Joint �
 conda run -n sigmarl-nod python <command>
 ```
 
-禁止在新文档、测试或脚本中写死 `.venv/bin/python`。当前环境还有 user-site
-泄漏，必须先完成 R0 修复；详见
+禁止在新文档、测试或脚本中写死 `.venv/bin/python`。R0 已在现有环境中设置
+user-site 隔离并补齐固定依赖；详见
 [`../sigmarl_1_2_0/CODEBASE_AUDIT.md`](../sigmarl_1_2_0/CODEBASE_AUDIT.md)。
 
-R0 必须原地修复现有 `sigmarl-nod` Conda 环境，不新建其他环境、不改环境名，也不
-切换回以前的 `.venv`。修复目标是让该环境自身包含完整依赖，并在禁止 user-site
-加载时仍能通过全部 runtime Gate。
+后续继续使用现有 `sigmarl-nod` Conda 环境，不新建其他环境、不改环境名，也不
+切换回以前的 `.venv`。实际训练和性能验证由用户手动执行。
 
 ## 1. 方法和代码底座的关系
 
@@ -413,7 +412,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 
 | 阶段 | 状态 | Gate |
 |---|---|---|
-| R0：恢复 SigmaRL 1.2.0 原始代码 | 进行中 | 源码/smoke 已通过；隔离依赖未通过 |
+| R0：恢复 SigmaRL 1.2.0 原始代码 | 已完成 | 环境原地隔离，标准训练/测试入口已统一 |
 | R1：原始 Base 速度与产物基线 | 未开始 | 固定小预算与 wall time |
 | M2：Opinion 配置与独立入口 | 未开始 | 不导入 TSC，不改变 Base |
 | M3：Evidence/Dynamics/Residual | 未开始 | 数学、边界、梯度测试 |
@@ -462,9 +461,10 @@ action      [E,4,2]
 
 这个数据是后续所有性能优化的比较基准。
 
-### 10.1 每个里程碑都必须可训练验证
+### 10.1 每个里程碑都必须保持可训练
 
-每一步完成后都必须运行同一套分层验证，不允许只通过单元测试就进入下一步：
+每一步实现后都必须保持完整训练和测试入口。开发 Session 负责实现代码、配置、保存
+和加载闭环，但不替用户启动训练或判断性能；以下分层验证由用户按需手动执行：
 
 ```text
 Level A：smoke training
@@ -582,6 +582,7 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - 本表不继承旧仓库的 M0-M10“已完成”状态；
 - 核心源码、配置和资源已逐文件确认与 commit `5fe715b...` 一致；
 - `CPM_mixed` 真实 reset 和 3-step rollout 已通过；
-- Conda 环境仍依赖 user-site 包且 `pip check` 失败，所以 R0 仍为进行中；
-- 下一步是先修复 `sigmarl-nod` 隔离依赖并重跑 R0 Gate；通过后再执行 R1
-  Base 速度与产物基线。
+- R0 已在现有 `sigmarl-nod` 环境中设置 user-site 隔离并补齐固定依赖；
+- `main_testing.py` 已与 `config.json.where_to_save` 及训练场景对齐；
+- 按用户要求，实际训练、测试和性能判断由用户手动完成；
+- 下一实现步骤是 R1：补全 Base 的稳定产物合同，同时继续使用原始快速训练路径。
