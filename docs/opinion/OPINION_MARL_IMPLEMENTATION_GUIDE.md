@@ -1,6 +1,6 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
@@ -15,15 +15,16 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 
 1. 阅读本文件；
 2. 阅读技术路线全文；
-3. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录和三份事实文档；
-4. 确认当前源代码确实是 tag 1.2.0，而不是 TSC 工作树；
+3. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
+4. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
 5. 查看本文件第 10 节，只执行下一个未完成阶段；
 6. 每次实现后更新阶段状态、验证命令和真实结果。
 
 可复制给新 Session：
 
 ```text
-请在 SigmaRL 1.2.0 干净代码上继续实现独立 Opinion Dynamics + MARL。
+请在以 SigmaRL 1.2.0 为底座、已完成 R0/R1 的代码上继续实现独立
+Opinion Dynamics + MARL。
 
 先完整阅读：
 1. docs/opinion/opinion_dynamics_marl_technical_route.md
@@ -34,7 +35,8 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 不要恢复 docs/archive_tsc 中的代码设计。TSC 只作为外部实验基线；新方法禁止依赖
 TopologyLearner、priority、leader、Stackelberg、action predictor 或 opponent
 modeling。Base 必须走 SigmaRL 1.2.0 原始向量化 MAPPO；Evidence/Joint 才使用
-连续 chunk。先检查里程碑状态，只实现下一个阶段并完成测试。
+连续 chunk。先检查里程碑状态，只实现下一个阶段；保证训练/测试入口完整，实际训练
+和性能判断由用户手动完成。
 ```
 
 ### 0.1 当前解释器约定
@@ -225,15 +227,15 @@ Critic 只能作为后续消融。
 
 ## 5. 模块边界
 
-建议新增：
+按阶段新增：
 
 ```text
+utilities/experiment_artifacts.py     # R1 已新增
+configs/base/pilot.json               # R1 已新增
 scripts/check_runtime_environment.py
 scripts/run_milestone_validation.py
-main_training_base.py
 main_training_opinion.py
 main_testing_opinion.py
-configs/base/pilot.json
 configs/validation/smoke.json
 configs/validation/pilot.json
 config_opinion.json
@@ -263,27 +265,29 @@ tests/test_runtime_environment.py
 tests/test_base_entrypoint.py
 ```
 
-允许最小修改：
+原始文件允许的最小修改：
 
 | 原始文件 | 允许修改 |
 |---|---|
+| `main_training.py` | R1 独立 Base run 包装，保持标准无参数入口 |
+| `main_testing.py` | R1 定位最近成功 Base run，保持标准无参数入口 |
+| `utilities/mappo_cavs.py` | R1 种子、指标、计时和 Base 产物钩子；不得改变 PPO 数据流 |
+| `utilities/helper_training.py` | R1 seed 与 artifact metadata |
+| `config.json` | Base seed 和稳定输出根目录 |
 | `scenarios/road_traffic.py` | gated pair info、reset event、detached render |
 | `requirements.txt` | 可视化确需的固定依赖 |
 
-第一版不修改：
+Opinion 实现不得为了迁就新方法修改：
 
 ```text
-utilities/mappo_cavs.py
-utilities/helper_training.py
 utilities/helper_scenario.py
 utilities/constants.py
-main_training.py
-main_testing.py
-config.json
 ```
 
-Opinion config loader 应先用原始字段构造 `Parameters`，再动态附加
-`use_opinion_marl` 和 typed `opinion_config`，不把 TSC 字段塞回 `Parameters`。
+R1 对原始训练文件的改动只服务于 Base 产物合同。M2 之后的 Opinion config loader
+应先用原始字段构造 `Parameters`，再动态附加 `use_opinion_marl` 和 typed
+`opinion_config`，不把 TSC 字段塞回 `Parameters`，也不把 Opinion 分支塞入原始
+Base PPO 主循环。
 
 ## 6. Base 训练必须使用原始快速路径
 
@@ -413,7 +417,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 | 阶段 | 状态 | Gate |
 |---|---|---|
 | R0：恢复 SigmaRL 1.2.0 原始代码 | 已完成 | 环境原地隔离，标准训练/测试入口已统一 |
-| R1：原始 Base 速度与产物基线 | 未开始 | 固定小预算与 wall time |
+| R1：原始 Base 速度与产物基线 | 已完成 | 固定小预算与 wall time；用户手动训练 |
 | M2：Opinion 配置与独立入口 | 未开始 | 不导入 TSC，不改变 Base |
 | M3：Evidence/Dynamics/Residual | 未开始 | 数学、边界、梯度测试 |
 | M4：ConflictGraph 环境接口 | 未开始 | gated info/reset，Base 不变 |
@@ -450,6 +454,10 @@ action      [E,4,2]
 `TanhNormal` 有限值和 3-step rollout 检查。
 
 ### R1 Gate
+
+R1 用法和产物定义见
+[`../sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](../sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)。
+实现已完成；下列数据需由用户运行完整或 pilot 训练后填充：
 
 用固定 tiny/pilot 配置记录：
 
@@ -583,6 +591,9 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - 核心源码、配置和资源已逐文件确认与 commit `5fe715b...` 一致；
 - `CPM_mixed` 真实 reset 和 3-step rollout 已通过；
 - R0 已在现有 `sigmarl-nod` 环境中设置 user-site 隔离并补齐固定依赖；
-- `main_testing.py` 已与 `config.json.where_to_save` 及训练场景对齐；
+- R1 已保持原始向量化 MAPPO 主循环，并增加唯一 run、配置快照、逐轮指标/耗时、
+  曲线 PDF、Base Actor/Critic 和完整最终 checkpoint；
+- `main_testing.py` 已通过 `latest_run.json` 与最近成功 Base run 及训练场景对齐；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 R1：补全 Base 的稳定产物合同，同时继续使用原始快速训练路径。
+- 下一实现步骤是 M2：新增 typed Opinion 配置和独立入口，关闭 Opinion 时仍走 R1
+  Base 快速路径。

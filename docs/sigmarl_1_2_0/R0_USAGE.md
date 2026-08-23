@@ -18,7 +18,7 @@ R0 已在该环境中设置 `PYTHONNOUSERSITE=1`，并按根目录 `requirements
 
 ```json
 {
-    "where_to_save": "outputs/testing_random/"
+    "where_to_save": "outputs/base/"
 }
 ```
 
@@ -29,7 +29,8 @@ python main_training.py
 ```
 
 R0 使用 SigmaRL 1.2.0 原始 `mappo_cavs()` 训练流程，不改变 Actor、Critic、环境、
-reward 或 PPO。
+reward 或 PPO。R1 已在这条训练路径外围增加独立 run 和标准产物；当前实际用法请以
+[`R1_BASE_ARTIFACTS.md`](R1_BASE_ARTIFACTS.md) 为准。
 
 ## 3. 测试已训练模型
 
@@ -39,8 +40,9 @@ reward 或 PPO。
 python main_testing.py
 ```
 
-R0 已取消 `main_testing.py` 中旧的硬编码模型目录。测试入口会读取 `config.json` 的
-`where_to_save`，再从训练保存的 JSON 恢复参数和模型。
+R0 已取消 `main_testing.py` 中旧的硬编码模型目录。R1 之后，测试入口会读取
+`config.json` 的 `where_to_save`，通过 `latest_run.json` 选择最近一次成功训练，再从
+该 run 的 `config_resolved.json` 恢复参数和模型。
 
 测试默认沿用训练 checkpoint 中的 `scenario_type`，避免硬编码切换到 agent 数不同
 的场景后造成中央 Critic 维度不匹配。跨场景测试将在后续 M10 使用显式评估配置实现。

@@ -5,17 +5,22 @@
 > 上游基线：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`
 
-## 1. 源码核对结论
+## 1. 恢复到 R0 时的源码核对结论
 
 已将当前目录与基线 commit 的完整文件树逐文件比较，排除当前项目自有的
 `.git/`、`docs/` 和 macOS `.DS_Store`。
 
-结果：
+恢复完成时的结果：
 
 - `assets/`、`scenarios/`、`utilities/` 内容与 1.2.0 完全一致；
 - `config.json`、`requirements.txt`、`main_training.py`、`main_testing.py`、
   `README.md`、`LICENSE.txt` 等核心文件完全一致；
-- 当前源码中没有 Opinion、TSC topology、action predictor 或旧测试代码残留。
+- 恢复后的源码中没有 Opinion、TSC topology、action predictor 或旧测试代码残留。
+
+以上是后续阶段开始前的基线证据，不表示 R1 实施后的训练入口和产物辅助代码仍与
+上游逐字节相同。R1 的受控差异见
+[`R1_BASE_ARTIFACTS.md`](R1_BASE_ARTIFACTS.md)。环境、观测、动作、reward、网络和
+原始向量化 PPO 数据流仍保持 1.2.0 语义。
 
 当前缺少四项上游隐藏工程文件：
 
@@ -97,8 +102,8 @@ R0 已原地执行：
 3. 保留环境名称和位置，不创建 `.venv` 或其他替代环境；
 4. 将标准测试入口与训练输出目录、训练场景对齐。
 
-按用户要求，本轮不代替用户启动训练或进行性能验证。手动运行方式见
-[`R0_USAGE.md`](R0_USAGE.md)。
+按用户要求，不代替用户启动训练或进行性能验证。当前手动运行方式见
+[`R1_BASE_ARTIFACTS.md`](R1_BASE_ARTIFACTS.md)。
 
 ## 5. 当前结论
 
@@ -107,5 +112,6 @@ R0 已原地执行：
 既有环境 smoke：通过
 隔离配置与依赖补全：已实施，待用户手动训练确认
 R0 实现状态：已完成
-下一实现步骤：R1 Base 产物合同
+R1 实现状态：已完成，待用户手动训练形成真实性能基线
+下一实现步骤：M2 Opinion 配置与独立入口
 ```

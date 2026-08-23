@@ -733,6 +733,7 @@ class Parameters:
         dt: float = 0.05,  # [s] sample time
         device: str = "cpu",  # Tensor device
         scenario_name: str = "road_traffic",  # Scenario name
+        seed: int = 0,  # Random seed for reproducible Base runs
         # Training parameters
         n_iters: int = 250,  # Number of training iterations
         frames_per_batch: int = 4096,  # Number of team frames collected per training iteration
@@ -799,6 +800,10 @@ class Parameters:
         is_using_opponent_modeling: bool = False,  # Whether to use opponent modeling to predict the actions of other agents
         is_using_prioritized_marl: bool = False,  # Whether to use prioritized MARL and action propagation.
         prioritization_method: str = "marl",  # Which method to use for generating priority ranks (options: {"marl", "random"}). Applicable only for prioritized MARL scenarios.
+        # R1 artifact metadata (normally filled by main_training.py)
+        artifact_logging_enabled: bool = False,
+        run_id: str = None,
+        output_root: str = None,
     ):
 
         self.n_agents = n_agents
@@ -806,6 +811,7 @@ class Parameters:
 
         self.device = device
         self.scenario_name = scenario_name
+        self.seed = seed
 
         # Sampling
         self.n_iters = n_iters
@@ -880,8 +886,15 @@ class Parameters:
 
         self.prioritization_method = prioritization_method
 
-        if (model_name is None) and (scenario_name is not None):
-            self.model_name = get_model_name(self)
+        self.artifact_logging_enabled = artifact_logging_enabled
+        self.run_id = run_id
+        self.output_root = output_root
+
+        self.model_name = (
+            get_model_name(self)
+            if (model_name is None) and (scenario_name is not None)
+            else model_name
+        )
 
     def to_dict(self):
         # Create a dictionary representation of the instance

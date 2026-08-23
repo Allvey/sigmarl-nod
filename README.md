@@ -67,12 +67,26 @@ We have tested that this repository works well in Windows and macOS.
 
 ## How to Use
 ### Training
-Run `/main_training.py`. During training, all the intermediate models that have higher performance than the saved one will be automatically saved. You are also allowed to retrain or refine a trained model by setting the parameter `is_continue_train` in the `config.json` from the root directory file to `true`. The saved model will be loaded for a new training process.
+Activate the Conda environment `sigmarl-nod` and run `python main_training.py` from
+the project root. Each training creates a unique directory under the output root
+configured by `where_to_save`; completed runs are selected through
+`latest_run.json`. A small end-to-end run is available with
+`python main_training.py --config configs/base/pilot.json`.
+
+The MAPPO collector, GAE, replay and PPO optimization path remains the SigmaRL
+1.2.0 implementation. R1 additionally records resolved configuration, metrics,
+timing, PDF curves and final checkpoints. See
+[`docs/sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](docs/sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
+for the complete artifact contract and commands.
 
 `/scenarios/road_traffic.py` defines the RL environment, such as observation function and reward function. Besides, it provides an interactive interface, which also visualizes the environment. To open the interface, simply run this file. You can use `arrow keys` to control agents and use the `tab key` to switch between agents. Adjust the parameter `scenario_type` to choose a scenario. All available scenarios are listed in the variable `SCENARIOS` in `utilities/constants.py`. It is recommended to use the virtual visualization to check if the environment is as expected before training.
 ### Testing
-After training, run `/main_testing.py` to test your model. You may need to adjust the parameter `path` therein to tell which folder the target model was saved.
-*Note*: If the path to a saved model changes, you need to update the value of `where_to_save` in the corresponding JSON file as well.
+After a successful full training, run `python main_testing.py`. The command reads
+`config.json`, resolves the latest completed run, restores its resolved training
+configuration and loads `final_policy.pth`; no source-code path edit is needed.
+Use `python main_testing.py --config configs/base/pilot.json` for the latest pilot
+run, or `python main_testing.py --run-dir <run-directory>` to reproduce one exact
+historical run.
 
 ## Customize Your Own Maps
 We support maps customized in <a href="https://josm.openstreetmap.de/" target="_blank">JOSM</a>, an open-source editor for ​OpenStreetMap. Follow these steps:

@@ -1,0 +1,262 @@
+"""Artifact management for reproducible SigmaRL training runs.
+
+This module is intentionally independent from the PPO implementation.  It
+creates isolated run directories and writes metadata without changing the
+collector, losses, or optimizer update order.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+
+ARTIFACT_SCHEMA_VERSION = 1
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Atomically replace a JSON file in its destination directory."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    with temporary_path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=4, ensure_ascii=False)
+        file.write("\n")
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary_path, path)
+
+
+def create_run_directory(output_root: str, method: str, seed: int) -> Path:
+    """Create and return a unique, non-reused run directory."""
+
+    root = Path(output_root).expanduser().resolve()
+    runs_root = root / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_id = f"{method}-seed{seed}-{timestamp}-{secrets.token_hex(4)}"
+    run_directory = runs_root / run_id
+    run_directory.mkdir(parents=False, exist_ok=False)
+    return run_directory
+
+
+def initialize_run(
+    run_directory: Path,
+    source_config: Dict[str, Any],
+    resolved_config: Dict[str, Any],
+) -> None:
+    """Write immutable input snapshots and initial run metadata."""
+
+    run_directory = Path(run_directory)
+    atomic_write_json(run_directory / "config_source.json", source_config)
+    atomic_write_json(run_directory / "config_resolved.json", resolved_config)
+    atomic_write_json(
+        run_directory / "validation_protocol.json",
+        {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "method": "base_mappo",
+            "automated_performance_validation": False,
+            "performance_validation_owner": "user",
+            "note": "R1 preserves the original SigmaRL 1.2.0 training path.",
+        },
+    )
+    write_training_status(run_directory, status="running", iteration=0)
+
+
+def write_training_status(
+    run_directory: Path,
+    status: str,
+    iteration: Optional[int],
+    error: Optional[str] = None,
+) -> None:
+    status_path = Path(run_directory) / "training_status.json"
+    if iteration is None and status_path.is_file():
+        with status_path.open("r", encoding="utf-8") as file:
+            iteration = int(json.load(file).get("iteration", 0))
+    if iteration is None:
+        iteration = 0
+    payload: Dict[str, Any] = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "status": status,
+        "iteration": int(iteration),
+        "updated_at": _utc_now(),
+    }
+    if error is not None:
+        payload["error"] = error
+    atomic_write_json(status_path, payload)
+
+
+def write_metrics(run_directory: Path, iterations: List[Dict[str, Any]]) -> None:
+    atomic_write_json(
+        Path(run_directory) / "metrics.json",
+        {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "method": "base_mappo",
+            "iterations": iterations,
+        },
+    )
+
+
+def write_timing(
+    run_directory: Path,
+    iterations: Iterable[Dict[str, Any]],
+    total_seconds: float,
+) -> None:
+    timing_iterations = [
+        {
+            "iteration": item["iteration"],
+            "rollout_seconds": item["rollout_seconds"],
+            "optimization_seconds": item["optimization_seconds"],
+            "iteration_seconds": item["iteration_seconds"],
+        }
+        for item in iterations
+    ]
+    atomic_write_json(
+        Path(run_directory) / "timing.json",
+        {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "total_seconds": float(total_seconds),
+            "total_hours": float(total_seconds) / 3600.0,
+            "iterations": timing_iterations,
+        },
+    )
+
+
+def save_training_curves(
+    run_directory: Path, iterations: List[Dict[str, Any]]
+) -> None:
+    """Save the final Base training curves as one multi-panel PDF."""
+
+    if not iterations:
+        return
+
+    import matplotlib.pyplot as plt
+
+    x = [item["iteration"] for item in iterations]
+    figure, axes = plt.subplots(2, 2, figsize=(7.2, 5.4))
+
+    axes[0, 0].plot(x, [item["episode_reward_mean"] for item in iterations])
+    axes[0, 0].set_title("Episode reward")
+
+    axes[0, 1].plot(
+        x,
+        [item["collision_with_agents_rate"] for item in iterations],
+        label="agents",
+    )
+    axes[0, 1].plot(
+        x,
+        [item["collision_with_lanelets_rate"] for item in iterations],
+        label="lanelets",
+    )
+    axes[0, 1].plot(
+        x,
+        [item["total_collision_rate"] for item in iterations],
+        label="total",
+    )
+    axes[0, 1].set_title("Collision rates")
+    axes[0, 1].legend()
+
+    axes[1, 0].plot(
+        x, [item["loss_objective"] for item in iterations], label="actor"
+    )
+    axes[1, 0].plot(x, [item["loss_critic"] for item in iterations], label="critic")
+    axes[1, 0].plot(x, [item["loss_entropy"] for item in iterations], label="entropy")
+    axes[1, 0].set_title("PPO losses")
+    axes[1, 0].legend()
+
+    axes[1, 1].plot(
+        x, [item["rollout_seconds"] for item in iterations], label="rollout"
+    )
+    axes[1, 1].plot(
+        x,
+        [item["optimization_seconds"] for item in iterations],
+        label="optimization",
+    )
+    axes[1, 1].set_title("Wall time per iteration")
+    axes[1, 1].legend()
+
+    for axis in axes.flat:
+        axis.set_xlabel("Iteration")
+        axis.grid(alpha=0.2)
+
+    figure.tight_layout()
+    figure.savefig(Path(run_directory) / "training_curves.pdf", bbox_inches="tight")
+    plt.close(figure)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_artifact_manifest(run_directory: Path) -> None:
+    run_directory = Path(run_directory)
+    artifacts = []
+    for path in sorted(run_directory.iterdir()):
+        if not path.is_file() or path.name == "artifacts_manifest.json":
+            continue
+        artifacts.append(
+            {
+                "name": path.name,
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+        )
+    atomic_write_json(
+        run_directory / "artifacts_manifest.json",
+        {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "generated_at": _utc_now(),
+            "artifacts": artifacts,
+        },
+    )
+
+
+def mark_latest_completed_run(output_root: str, run_directory: Path) -> None:
+    atomic_write_json(
+        Path(output_root).expanduser().resolve() / "latest_run.json",
+        {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "status": "completed",
+            "run_directory": str(Path(run_directory).resolve()),
+            "updated_at": _utc_now(),
+        },
+    )
+
+
+def resolve_latest_run(output_root: str) -> Path:
+    """Resolve the completed run selected by the stable latest-run pointer."""
+
+    root = Path(output_root).expanduser().resolve()
+    pointer_path = root / "latest_run.json"
+    if pointer_path.is_file():
+        with pointer_path.open("r", encoding="utf-8") as file:
+            pointer = json.load(file)
+        run_directory = Path(pointer["run_directory"]).expanduser().resolve()
+        if pointer.get("status") != "completed":
+            raise RuntimeError(f"Latest run is not complete: {pointer_path}")
+        if not run_directory.is_dir():
+            raise FileNotFoundError(f"Run directory does not exist: {run_directory}")
+        return run_directory
+
+    # Compatibility with a legacy output directory that directly contains
+    # SigmaRL artifacts rather than R1 runs/<run_id>/.
+    if (root / "final_policy.pth").is_file():
+        return root
+    raise FileNotFoundError(
+        f"No completed Base run found under {root}. Run python main_training.py first."
+    )

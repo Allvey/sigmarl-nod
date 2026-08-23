@@ -5,11 +5,14 @@
 
 # Adapted from https://pytorch.org/rl/stable/tutorials/multiagent_ppo.html
 import time
+import random
+from pathlib import Path
 
 from termcolor import colored, cprint
 
 # Torch
 import torch
+import numpy as np
 
 # Enable anomaly detection
 # torch.autograd.set_detect_anomaly(True)
@@ -70,12 +73,23 @@ from utilities.helper_training import (
 )
 
 from scenarios.road_traffic import ScenarioRoadTraffic
-
-# Reproducibility
-torch.manual_seed(0)
+from utilities.experiment_artifacts import (
+    ARTIFACT_SCHEMA_VERSION,
+    atomic_write_json,
+    save_training_curves,
+    write_metrics,
+    write_timing,
+    write_training_status,
+)
 
 
 def mappo_cavs(parameters: Parameters):
+    # Preserve the upstream default (seed 0) while making it explicit in the
+    # resolved configuration for reproducible Base runs.
+    random.seed(parameters.seed)
+    np.random.seed(parameters.seed)
+    torch.manual_seed(parameters.seed)
+
     scenario = ScenarioRoadTraffic()
 
     scenario.parameters = parameters
@@ -97,6 +111,9 @@ def mappo_cavs(parameters: Parameters):
         parameters=parameters,
         episode_reward_mean_list=[],
     )
+    artifact_logging_enabled = parameters.artifact_logging_enabled
+    artifact_run_directory = Path(parameters.where_to_save)
+    artifact_iterations = []
 
     env = TransformedEnvCustom(
         env,
@@ -198,79 +215,58 @@ def mappo_cavs(parameters: Parameters):
 
     # Load an existing model or train a new model?
     if parameters.is_load_model:
-        # Load the model with the highest reward in the folder `parameters.where_to_save`
-        highest_reward = find_the_highest_reward_among_all_models(
-            parameters.where_to_save
-        )
-        parameters.episode_reward_mean_current = highest_reward  # Update the parameter so that the right filename will be returned later on
-        if highest_reward is not float("-inf"):
-            if parameters.is_load_final_model:
-                policy.load_state_dict(
-                    torch.load(parameters.where_to_save + "final_policy.pth")
-                )
-                print(
-                    colored(
-                        "[INFO] Loaded the final model (instead of the intermediate model with the highest episode reward)",
-                        "red",
-                    )
-                )
-
-                if priority_module:
-                    priority_module.policy.load_state_dict(
-                        torch.load(
-                            parameters.where_to_save + "final_priority_policy.pth"
-                        )
-                    )
-
-                    print(
-                        colored(
-                            "[INFO] Loaded the final priority model (instead of the intermediate model with the highest episode reward)",
-                            "red",
-                        )
-                    )
-
-            else:
-                # Get paths based on the parameter configuration
-                paths = get_path_to_save_model(parameters=parameters)
-
-                # Destructure paths based on whether prioritized MARL is enabled
-                if priority_module:
-                    (
-                        PATH_POLICY,
-                        PATH_CRITIC,
-                        PATH_PRIORITY_POLICY,
-                        PATH_PRIORITY_CRITIC,
-                        PATH_FIG,
-                        PATH_JSON,
-                    ) = paths
-                else:
-                    PATH_POLICY, PATH_CRITIC, PATH_FIG, PATH_JSON = paths
-
-                # Load the saved model state dictionaries for policy and critic
-                policy.load_state_dict(torch.load(PATH_POLICY))
-                print(
-                    colored(
-                        f"[INFO] Loaded the intermediate model {PATH_POLICY}  with the highest episode reward",
-                        "blue",
-                    )
-                )
-
-                # Load priority policy and critic if prioritized (dual) MARL is enabled
-                if priority_module:
-                    priority_module.policy.load_state_dict(
-                        torch.load(PATH_PRIORITY_POLICY)
-                    )
-                    print(
-                        colored(
-                            f"[INFO] Loaded the intermediate priority model {PATH_PRIORITY_POLICY} with the highest episode reward",
-                            "blue",
-                        )
-                    )
-
-        else:
-            raise ValueError(
-                "There is no model stored in '{parameters.where_to_save}', or the model names stored here are not following the right pattern."
+        if parameters.is_load_final_model:
+            PATH_POLICY = parameters.where_to_save + "final_policy.pth"
+            PATH_CRITIC = parameters.where_to_save + "final_critic.pth"
+            if not os.path.isfile(PATH_POLICY):
+                raise FileNotFoundError(f"Final policy not found: {PATH_POLICY}")
+            policy.load_state_dict(
+                torch.load(PATH_POLICY, map_location=parameters.device)
             )
+            print(colored(f"[INFO] Loaded final policy: {PATH_POLICY}", "red"))
+
+            if priority_module:
+                PATH_PRIORITY_POLICY = (
+                    parameters.where_to_save + "final_priority_policy.pth"
+                )
+                PATH_PRIORITY_CRITIC = (
+                    parameters.where_to_save + "final_priority_critic.pth"
+                )
+                priority_module.policy.load_state_dict(
+                    torch.load(PATH_PRIORITY_POLICY, map_location=parameters.device)
+                )
+        else:
+            highest_reward = find_the_highest_reward_among_all_models(
+                parameters.where_to_save
+            )
+            if highest_reward == float("-inf"):
+                raise ValueError(
+                    f"No intermediate model found in {parameters.where_to_save}."
+                )
+            parameters.episode_reward_mean_current = highest_reward
+            paths = get_path_to_save_model(parameters=parameters)
+
+            if priority_module:
+                (
+                    PATH_POLICY,
+                    PATH_CRITIC,
+                    PATH_PRIORITY_POLICY,
+                    PATH_PRIORITY_CRITIC,
+                    PATH_FIG,
+                    PATH_JSON,
+                ) = paths
+            else:
+                PATH_POLICY, PATH_CRITIC, PATH_FIG, PATH_JSON = paths
+
+            policy.load_state_dict(
+                torch.load(PATH_POLICY, map_location=parameters.device)
+            )
+            print(colored(f"[INFO] Loaded intermediate policy: {PATH_POLICY}", "blue"))
+
+            if priority_module:
+                priority_module.policy.load_state_dict(
+                    torch.load(PATH_PRIORITY_POLICY, map_location=parameters.device)
+                )
 
         if not parameters.is_continue_train:
             print(colored("[INFO] Training will not continue.", "blue"))
@@ -280,10 +276,16 @@ def mappo_cavs(parameters: Parameters):
             print(
                 colored("[INFO] Training will continue with the loaded model.", "red")
             )
-            critic.load_state_dict(torch.load(PATH_CRITIC))
+            if not os.path.isfile(PATH_CRITIC):
+                raise FileNotFoundError(f"Critic not found: {PATH_CRITIC}")
+            critic.load_state_dict(
+                torch.load(PATH_CRITIC, map_location=parameters.device)
+            )
 
             if priority_module:
-                priority_module.critic.load_state_dict(torch.load(PATH_PRIORITY_CRITIC))
+                priority_module.critic.load_state_dict(
+                    torch.load(PATH_PRIORITY_CRITIC, map_location=parameters.device)
+                )
 
     collector = SyncDataCollectorCustom(
         env,
@@ -344,7 +346,16 @@ def mappo_cavs(parameters: Parameters):
     episode_reward_mean_list = []
 
     t_start = time.time()
+    iteration_cycle_start = t_start
     for tensordict_data in collector:
+        rollout_finished_at = time.time()
+        rollout_seconds = rollout_finished_at - iteration_cycle_start
+        optimization_started_at = rollout_finished_at
+        loss_objective_sum = 0.0
+        loss_critic_sum = 0.0
+        loss_entropy_sum = 0.0
+        loss_update_count = 0
+
         tensordict_data.set(
             ("next", "agents", "done"),
             tensordict_data.get(("next", "done"))
@@ -397,6 +408,13 @@ def mappo_cavs(parameters: Parameters):
 
                 loss_vals = loss_module(mini_batch_data)
 
+                loss_objective_sum += (
+                    loss_vals["loss_objective"].detach().mean().item()
+                )
+                loss_critic_sum += loss_vals["loss_critic"].detach().mean().item()
+                loss_entropy_sum += loss_vals["loss_entropy"].detach().mean().item()
+                loss_update_count += 1
+
                 loss_value = (
                     loss_vals["loss_objective"]
                     + loss_vals["loss_critic"]
@@ -436,6 +454,7 @@ def mappo_cavs(parameters: Parameters):
                     new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
                     mini_batch_data.set("td_error", new_td_errors)
                     replay_buffer.update_tensordict_priority(mini_batch_data)
+        optimization_seconds = time.time() - optimization_started_at
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
 
         # Logging
@@ -447,6 +466,22 @@ def mappo_cavs(parameters: Parameters):
         )
         episode_reward_mean = round(episode_reward_mean, 2)
         episode_reward_mean_list.append(episode_reward_mean)
+
+        collision_with_agents = tensordict_data.get(
+            ("next", "agents", "info", "is_collision_with_agents")
+        ).bool()
+        collision_with_lanelets = tensordict_data.get(
+            ("next", "agents", "info", "is_collision_with_lanelets")
+        ).bool()
+        collision_with_agents_rate = (
+            collision_with_agents.float().mean().item()
+        )
+        collision_with_lanelets_rate = (
+            collision_with_lanelets.float().mean().item()
+        )
+        total_collision_rate = (
+            (collision_with_agents | collision_with_lanelets).float().mean().item()
+        )
         pbar.set_description(
             f"Episode mean reward = {episode_reward_mean:.2f}", refresh=False
         )
@@ -507,9 +542,63 @@ def mappo_cavs(parameters: Parameters):
 
         pbar.update()
 
+        if artifact_logging_enabled:
+            if loss_update_count == 0:
+                raise RuntimeError("No PPO updates were executed in this iteration.")
+            iteration_seconds = time.time() - iteration_cycle_start
+            artifact_iterations.append(
+                {
+                    "iteration": int(pbar.n),
+                    "episode_reward_mean": float(episode_reward_mean),
+                    "collision_with_agents_rate": float(
+                        collision_with_agents_rate
+                    ),
+                    "collision_with_lanelets_rate": float(
+                        collision_with_lanelets_rate
+                    ),
+                    "total_collision_rate": float(total_collision_rate),
+                    "loss_objective": loss_objective_sum / loss_update_count,
+                    "loss_critic": loss_critic_sum / loss_update_count,
+                    "loss_entropy": loss_entropy_sum / loss_update_count,
+                    "learning_rate": float(optim.param_groups[0]["lr"]),
+                    "rollout_seconds": float(rollout_seconds),
+                    "optimization_seconds": float(optimization_seconds),
+                    "iteration_seconds": float(iteration_seconds),
+                }
+            )
+            write_metrics(artifact_run_directory, artifact_iterations)
+            write_training_status(
+                artifact_run_directory,
+                status="running",
+                iteration=pbar.n,
+            )
+
+        iteration_cycle_start = time.time()
+
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
+
+    if artifact_logging_enabled:
+        # Keep the upstream filename for main_testing.py and expose a stable,
+        # method-specific bridge for the later Opinion training stages.
+        torch.save(
+            policy.state_dict(),
+            artifact_run_directory / "final_base_actor.pth",
+        )
+        torch.save(
+            {
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "method": "base_mappo",
+                "iteration": int(pbar.n),
+                "base_actor_state": policy.state_dict(),
+                "critic_state": critic.state_dict(),
+                "optimizer_state": optim.state_dict(),
+                "resolved_config": dict(parameters.to_dict()),
+                "torch_rng_state": torch.get_rng_state(),
+            },
+            artifact_run_directory / "final_checkpoint.pt",
+        )
 
     if (
         parameters.is_using_prioritized_marl
@@ -530,8 +619,27 @@ def mappo_cavs(parameters: Parameters):
     )
     # plt.show()
 
-    training_duration = (time.time() - t_start) / 3600  # seconds to hours
+    training_duration_seconds = time.time() - t_start
+    training_duration = training_duration_seconds / 3600  # seconds to hours
     print(colored(f"[INFO] Training duration: {training_duration:.2f} hours.", "blue"))
+
+    if artifact_logging_enabled:
+        write_timing(
+            artifact_run_directory,
+            artifact_iterations,
+            total_seconds=training_duration_seconds,
+        )
+        save_training_curves(artifact_run_directory, artifact_iterations)
+        atomic_write_json(
+            artifact_run_directory / "comparison_to_base.json",
+            {
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "reference": "self",
+                "status": "base_reference_created",
+                "automated_performance_validation": False,
+                "note": "Performance comparison is performed manually by the user.",
+            },
+        )
 
     return env, policy, priority_module, parameters
 

@@ -1,0 +1,7 @@
+# Training, evaluation, and generated experiment artifacts
+outputs/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+*$py.class

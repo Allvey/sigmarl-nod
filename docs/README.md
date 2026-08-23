@@ -9,9 +9,10 @@ MARL 方法与旧 TSC 实现明确分开。
 2. [`opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md`](opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md)
 3. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
 4. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
-5. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
-6. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
-7. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
+5. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
+6. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
+7. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
+8. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
 
 ## 目录职责
 
@@ -24,6 +25,7 @@ docs/
 ├── sigmarl_1_2_0/
 │   ├── CODEBASE_AUDIT.md
 │   ├── R0_USAGE.md
+│   ├── R1_BASE_ARTIFACTS.md
 │   ├── RL_ENVIRONMENT_DESIGN.md
 │   ├── OBSERVATION_SPACE_DETAILS.md
 │   └── NETWORK_STRUCTURE_DETAILS.md
@@ -66,12 +68,14 @@ Stackelberg 等旧设计。它们可以帮助理解历史决策和构造外部 T
 
 ## 当前基线状态
 
-当前根目录已放入 SigmaRL 1.2.0 原始源码。核心代码、配置和资源与基线
-commit 逐文件一致，且真实 reset 和 3-step rollout 已通过。
+当前根目录以 SigmaRL 1.2.0 原始源码为底座；恢复时的核心代码、配置和资源已与
+基线 commit 逐文件核对，且真实 reset 和 3-step rollout 已通过。此后只叠加了本
+指南记录的 R0/R1 工程修改，没有引入 TSC 或 Opinion 算法代码。
 
-现有 `sigmarl-nod` Conda 环境已经实施 user-site 隔离和依赖补全，R0 实现已完成；
-实际训练和测试由用户按照
-[`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md) 手动执行。
+现有 `sigmarl-nod` Conda 环境已经实施 user-site 隔离和依赖补全。R0、R1 代码实现
+已完成；实际训练和测试由用户按照
+[`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
+手动执行。
 
 ## 基线声明
 
@@ -83,4 +87,4 @@ tag:        1.2.0
 commit:     5fe715bdfba4ff3e33d901d69dfa220f1222c060
 ```
 
-下一实现步骤为 R1 Base 产物合同。旧 TSC 文件不得批量复制回根目录。
+下一实现步骤为 M2 Opinion 配置与独立入口。旧 TSC 文件不得批量复制回根目录。
