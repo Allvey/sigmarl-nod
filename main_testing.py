@@ -36,13 +36,12 @@ def _load_run_parameters(run_directory: Path) -> Parameters:
         return SaveData.from_dict(json.load(file)).parameters
 
 
-def main(
-    config_file: Path = DEFAULT_CONFIG_FILE,
+def test_base(
+    output_root: str,
     run_directory: Optional[Path] = None,
 ) -> None:
-    source_parameters = Parameters.from_json(str(config_file))
     if run_directory is None:
-        run_directory = resolve_latest_run(source_parameters.where_to_save)
+        run_directory = resolve_latest_run(output_root)
     else:
         run_directory = run_directory.expanduser().resolve()
         if not run_directory.is_dir():
@@ -86,6 +85,14 @@ def main(
         save_video(str(run_directory / "video"), frame_list, fps=1 / parameters.dt)
     else:
         out_td = rollout_result
+
+
+def main(
+    config_file: Path = DEFAULT_CONFIG_FILE,
+    run_directory: Optional[Path] = None,
+) -> None:
+    source_parameters = Parameters.from_json(str(config_file))
+    test_base(source_parameters.where_to_save, run_directory)
 
 
 if __name__ == "__main__":

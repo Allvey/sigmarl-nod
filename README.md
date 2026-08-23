@@ -88,6 +88,21 @@ Use `python main_testing.py --config configs/base/pilot.json` for the latest pil
 run, or `python main_testing.py --run-dir <run-directory>` to reproduce one exact
 historical run.
 
+### Opinion-MARL staged entrypoints
+
+The independent Opinion Dynamics + MARL implementation is rebuilt milestone by
+milestone. M2 provides a strict typed configuration and executable Base/no-op
+entrypoints:
+
+```bash
+python main_training_opinion.py --config configs/opinion/pilot.json
+python main_testing_opinion.py --config configs/opinion/pilot.json
+```
+
+At M2, `stage=base` and `use_opinion_marl=false`; therefore these commands use
+the same Base-MAPPO path and do not claim an Opinion performance improvement.
+See [`docs/opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](docs/opinion/M2_CONFIG_AND_ENTRYPOINTS.md).
+
 ## Customize Your Own Maps
 We support maps customized in <a href="https://josm.openstreetmap.de/" target="_blank">JOSM</a>, an open-source editor for ​OpenStreetMap. Follow these steps:
 - Install and open JOSM, click the green download button

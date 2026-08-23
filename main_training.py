@@ -8,8 +8,10 @@ import json
 import os
 import argparse
 from pathlib import Path
+from typing import Any, Dict, Mapping, Optional
 
 from utilities.experiment_artifacts import (
+    atomic_write_json,
     create_run_directory,
     initialize_run,
     mark_latest_completed_run,
@@ -23,15 +25,19 @@ from utilities.mappo_cavs import mappo_cavs
 DEFAULT_CONFIG_FILE = Path("config.json")
 
 
-def main(config_file: Path = DEFAULT_CONFIG_FILE) -> None:
-    with config_file.open("r", encoding="utf-8") as file:
-        source_config = json.load(file)
+def train_base(
+    parameters: Parameters,
+    source_config: Mapping[str, Any],
+    run_label: str = "base",
+    supplementary_snapshots: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    comparison_payload: Optional[Mapping[str, Any]] = None,
+) -> Path:
+    """Run the unchanged Base-MAPPO path inside one isolated R1 run."""
 
-    parameters = Parameters.from_dict(source_config)
     output_root = str(Path(parameters.where_to_save).expanduser().resolve())
     run_directory = create_run_directory(
         output_root=output_root,
-        method="base",
+        method=run_label,
         seed=parameters.seed,
     )
 
@@ -42,17 +48,28 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> None:
 
     initialize_run(
         run_directory=run_directory,
-        source_config=source_config,
+        source_config=dict(source_config),
         resolved_config=dict(parameters.to_dict()),
     )
-
     try:
+        for filename, payload in (supplementary_snapshots or {}).items():
+            if Path(filename).name != filename or not filename.endswith(".json"):
+                raise ValueError(
+                    "Supplementary snapshot names must be plain .json filenames."
+                )
+            atomic_write_json(run_directory / filename, dict(payload))
+
         mappo_cavs(parameters=parameters)
         write_training_status(
             run_directory,
             status="completed",
             iteration=parameters.n_iters,
         )
+        if comparison_payload is not None:
+            atomic_write_json(
+                run_directory / "comparison_to_base.json",
+                dict(comparison_payload),
+            )
         write_artifact_manifest(run_directory)
         mark_latest_completed_run(output_root, run_directory)
     except BaseException as error:
@@ -64,6 +81,16 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> None:
         )
         write_artifact_manifest(run_directory)
         raise
+
+    return run_directory
+
+
+def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
+    with config_file.open("r", encoding="utf-8") as file:
+        source_config: Dict[str, Any] = json.load(file)
+
+    parameters = Parameters.from_dict(source_config)
+    return train_base(parameters=parameters, source_config=source_config)
 
 
 if __name__ == "__main__":

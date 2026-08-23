@@ -1,6 +1,6 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0、R1 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1、M2 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
@@ -15,10 +15,11 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 
 1. 阅读本文件；
 2. 阅读技术路线全文；
-3. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
-4. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
-5. 查看本文件第 10 节，只执行下一个未完成阶段；
-6. 每次实现后更新阶段状态、验证命令和真实结果。
+3. 阅读 [`M2_CONFIG_AND_ENTRYPOINTS.md`](M2_CONFIG_AND_ENTRYPOINTS.md)；
+4. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
+5. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
+6. 查看本文件第 10 节，只执行下一个未完成阶段；
+7. 每次实现后更新阶段状态、验证命令和真实结果。
 
 可复制给新 Session：
 
@@ -29,8 +30,9 @@ Opinion Dynamics + MARL。
 先完整阅读：
 1. docs/opinion/opinion_dynamics_marl_technical_route.md
 2. docs/opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md
-3. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
-4. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
+3. docs/opinion/M2_CONFIG_AND_ENTRYPOINTS.md
+4. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
+5. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
 
 不要恢复 docs/archive_tsc 中的代码设计。TSC 只作为外部实验基线；新方法禁止依赖
 TopologyLearner、priority、leader、Stackelberg、action predictor 或 opponent
@@ -284,10 +286,10 @@ utilities/helper_scenario.py
 utilities/constants.py
 ```
 
-R1 对原始训练文件的改动只服务于 Base 产物合同。M2 之后的 Opinion config loader
-应先用原始字段构造 `Parameters`，再动态附加 `use_opinion_marl` 和 typed
-`opinion_config`，不把 TSC 字段塞回 `Parameters`，也不把 Opinion 分支塞入原始
-Base PPO 主循环。
+R1 对原始训练文件的改动只服务于 Base 产物合同。M2 已选择更严格的并列配置边界：
+Opinion loader 用被引用的 Base JSON 构造原始 `Parameters`，同时单独返回 typed
+`OpinionExperimentConfig`。不把 Opinion/TSC 字段塞回 `Parameters`，也不把 Opinion
+分支塞入原始 Base PPO 主循环。关闭 Opinion 时，独立入口复用同一个 `train_base()`。
 
 ## 6. Base 训练必须使用原始快速路径
 
@@ -418,7 +420,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 |---|---|---|
 | R0：恢复 SigmaRL 1.2.0 原始代码 | 已完成 | 环境原地隔离，标准训练/测试入口已统一 |
 | R1：原始 Base 速度与产物基线 | 已完成 | 固定小预算与 wall time；用户手动训练 |
-| M2：Opinion 配置与独立入口 | 未开始 | 不导入 TSC，不改变 Base |
+| M2：Opinion 配置与独立入口 | 已完成 | 不导入 TSC，不改变 Base；用户手动训练 |
 | M3：Evidence/Dynamics/Residual | 未开始 | 数学、边界、梯度测试 |
 | M4：ConflictGraph 环境接口 | 未开始 | gated info/reset，Base 不变 |
 | M5：Policy 与 Base checkpoint bridge | 未开始 | 分布、边界和权重一致 |
@@ -594,6 +596,9 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - R1 已保持原始向量化 MAPPO 主循环，并增加唯一 run、配置快照、逐轮指标/耗时、
   曲线 PDF、Base Actor/Critic 和完整最终 checkpoint；
 - `main_testing.py` 已通过 `latest_run.json` 与最近成功 Base run 及训练场景对齐；
+- M2 已新增 strict typed Opinion schema、完整/pilot 配置和独立训练/测试入口；
+- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径，开启未实现阶段会明确
+  失败，不会静默伪装为 Opinion 训练；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M2：新增 typed Opinion 配置和独立入口，关闭 Opinion 时仍走 R1
-  Base 快速路径。
+- 下一实现步骤是 M3：实现 Evidence、固定 OpinionDynamics 和有界 Residual 的纯数学
+  模块，并先保持 residual/no-op 训练行为。
