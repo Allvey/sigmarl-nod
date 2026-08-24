@@ -2,7 +2,7 @@
 
 > 代码底座：SigmaRL 1.2.0  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 实施状态：M4 已完成，M5–M10 按图中标记逐步实现  
+> 实施状态：M5 已完成，M6–M10 按图中标记逐步实现  
 > 更新日期：2026-08-24
 
 ## 1. 整体网络结构
@@ -46,7 +46,7 @@ flowchart TB
         Q["q = tanh(z/z₀)<br/>urgency 归一化聚合"]
         DELTA["有界速度残差 Δμ<br/>[-max_abs,max_abs]"]
 
-        BRIDGE["Policy Bridge<br/>[M5]<br/>速度loc + Δμ<br/>转向loc不变<br/>scale不变"]
+        BRIDGE["Policy Bridge<br/>[M5 已实现]<br/>速度loc + Δμ<br/>转向loc不变<br/>scale不变"]
         DIST["TanhNormal"]
         ACTION["action [E,N,2]<br/>+ log_prob"]
     end
@@ -107,7 +107,7 @@ flowchart TB
 |---|---|---|---|
 | M3，已完成 | EvidenceNet、OpinionDynamics、OpinionResidual | 实现纯数学映射、边界和梯度接口 | 否，尚未接线 |
 | M4，已完成 | ConflictGraph、pair features、urgency/confidence、track IDs、reset mask | 从真实车辆状态生成物理交互信息 | 否，Policy 不读取 |
-| M5 | Base Actor 与 residual 的 Policy Bridge | 加载 Base 权重，将 residual 加到速度 loc | 是，首次改变动作分布 |
+| M5，已完成 | Base Actor 与 residual 的 Policy Bridge | 加载 Base 权重，以 `z_direct=b` 将 residual 加到速度 loc | 是，首次改变动作分布 |
 | M6 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次 | 是，形成真实时间记忆 |
 | M7 | Sequence Buffer | 保存连续 chunk、`z_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
 | M8 | Sequence PPO | 时间维展开意见动力学，使梯度训练 EvidenceNet | 改变训练方式 |

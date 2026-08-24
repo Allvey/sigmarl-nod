@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 ARTIFACT_SCHEMA_VERSION = 1
+_INTERMEDIATE_POLICY_PATTERN = re.compile(
+    r"^reward(-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))_policy\.pth$"
+)
 
 
 def _utc_now() -> str:
@@ -55,6 +59,8 @@ def initialize_run(
     run_directory: Path,
     source_config: Dict[str, Any],
     resolved_config: Dict[str, Any],
+    method: str = "base_mappo",
+    stage: str = "base",
 ) -> None:
     """Write immutable input snapshots and initial run metadata."""
 
@@ -65,10 +71,15 @@ def initialize_run(
         run_directory / "validation_protocol.json",
         {
             "schema_version": ARTIFACT_SCHEMA_VERSION,
-            "method": "base_mappo",
+            "method": method,
+            "stage": stage,
             "automated_performance_validation": False,
             "performance_validation_owner": "user",
-            "note": "R1 preserves the original SigmaRL 1.2.0 training path.",
+            "note": (
+                "R1 preserves the original SigmaRL 1.2.0 training path."
+                if method == "base_mappo"
+                else "Opinion-MARL performance validation is performed manually."
+            ),
         },
     )
     write_training_status(run_directory, status="running", iteration=0)
@@ -97,12 +108,18 @@ def write_training_status(
     atomic_write_json(status_path, payload)
 
 
-def write_metrics(run_directory: Path, iterations: List[Dict[str, Any]]) -> None:
+def write_metrics(
+    run_directory: Path,
+    iterations: List[Dict[str, Any]],
+    method: str = "base_mappo",
+    stage: str = "base",
+) -> None:
     atomic_write_json(
         Path(run_directory) / "metrics.json",
         {
             "schema_version": ARTIFACT_SCHEMA_VERSION,
-            "method": "base_mappo",
+            "method": method,
+            "stage": stage,
             "iterations": iterations,
         },
     )
@@ -259,4 +276,122 @@ def resolve_latest_run(output_root: str) -> Path:
         return root
     raise FileNotFoundError(
         f"No completed Base run found under {root}. Run python main_training.py first."
+    )
+
+
+def resolve_policy_checkpoint(
+    run_directory: Path,
+    checkpoint_path: Optional[Path] = None,
+) -> Path:
+    """Resolve the policy state dict used for visualization/evaluation.
+
+    A final policy is preferred.  While training is still running, SigmaRL's
+    reward-named best intermediate policy is a valid testing fallback.
+    """
+
+    run_directory = Path(run_directory).expanduser().resolve()
+    if not run_directory.is_dir():
+        raise FileNotFoundError(f"Run directory does not exist: {run_directory}")
+
+    if checkpoint_path is not None:
+        checkpoint = Path(checkpoint_path).expanduser().resolve()
+        if checkpoint.parent != run_directory:
+            raise ValueError(
+                "The explicit checkpoint must be directly inside the selected "
+                f"run directory: checkpoint={checkpoint}, run={run_directory}"
+            )
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Policy checkpoint does not exist: {checkpoint}")
+        if checkpoint.name != "final_policy.pth" and not (
+            _INTERMEDIATE_POLICY_PATTERN.fullmatch(checkpoint.name)
+        ):
+            raise ValueError(
+                "A testable policy checkpoint must be final_policy.pth or "
+                f"reward<value>_policy.pth, got: {checkpoint.name}"
+            )
+        return checkpoint
+
+    final_policy = run_directory / "final_policy.pth"
+    if final_policy.is_file():
+        return final_policy
+
+    intermediate_policies = []
+    for candidate in run_directory.glob("reward*_policy.pth"):
+        match = _INTERMEDIATE_POLICY_PATTERN.fullmatch(candidate.name)
+        if match and candidate.is_file():
+            intermediate_policies.append((float(match.group(1)), candidate))
+    if intermediate_policies:
+        # Intermediate files represent best-so-far snapshots.  Select the
+        # highest reward, with filename as a deterministic tie breaker.
+        return max(intermediate_policies, key=lambda item: (item[0], item[1].name))[1]
+
+    raise FileNotFoundError(
+        "No testable policy checkpoint found in "
+        f"{run_directory}. Expected final_policy.pth or reward<value>_policy.pth."
+    )
+
+
+def resolve_policy_critic_pair(
+    run_directory: Path,
+    checkpoint_path: Optional[Path] = None,
+) -> tuple[Path, Path]:
+    """Resolve a policy and its reward/final-matched critic checkpoint."""
+
+    policy_checkpoint = resolve_policy_checkpoint(run_directory, checkpoint_path)
+    policy_suffix = "_policy.pth"
+    checkpoint_prefix = policy_checkpoint.name[: -len(policy_suffix)]
+    critic_checkpoint = policy_checkpoint.with_name(
+        f"{checkpoint_prefix}_critic.pth"
+    )
+    if not critic_checkpoint.is_file():
+        raise FileNotFoundError(
+            "The selected Base policy has no matching critic checkpoint: "
+            f"policy={policy_checkpoint}, expected_critic={critic_checkpoint}"
+        )
+    return policy_checkpoint, critic_checkpoint
+
+
+def resolve_latest_testable_run(output_root: str) -> Path:
+    """Resolve a completed run, or the newest run with an intermediate policy."""
+
+    root = Path(output_root).expanduser().resolve()
+
+    # Preserve the stable completed-run behavior whenever its pointer exists.
+    pointer_path = root / "latest_run.json"
+    if pointer_path.is_file():
+        completed_run = resolve_latest_run(output_root)
+        resolve_policy_checkpoint(completed_run)
+        return completed_run
+
+    # Compatibility with legacy flat output directories.
+    if root.is_dir():
+        try:
+            resolve_policy_checkpoint(root)
+            return root
+        except FileNotFoundError:
+            pass
+
+    runs_root = root / "runs"
+    candidates = (
+        sorted(
+            (path for path in runs_root.iterdir() if path.is_dir()),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+            reverse=True,
+        )
+        if runs_root.is_dir()
+        else []
+    )
+    for candidate in candidates:
+        if not (candidate / "config_resolved.json").is_file():
+            continue
+        try:
+            resolve_policy_checkpoint(candidate)
+            return candidate
+        except FileNotFoundError:
+            continue
+
+    raise FileNotFoundError(
+        f"No testable run found under {root}. A run becomes testable after its "
+        "first reward<value>_policy.pth snapshot is saved; it does not need to "
+        "have final_policy.pth yet."
     )

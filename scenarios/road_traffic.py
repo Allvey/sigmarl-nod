@@ -353,6 +353,7 @@ class ScenarioRoadTraffic(BaseScenario):
         self._opinion_conflict_graph = None
         self._opinion_pair_info_cache = None
         self._opinion_agent_reset_mask = None
+        self._opinion_visualization_lines = []
         opinion_options = getattr(self, "_opinion_pair_info_options", None)
         if opinion_options is not None:
             from utilities.opinion.config import ConflictGraphConfig
@@ -2792,6 +2793,11 @@ class ScenarioRoadTraffic(BaseScenario):
             )
         return self._opinion_pair_info_cache
 
+    def set_opinion_visualization(self, lines) -> None:
+        """Update testing-only text rendered by ``extra_render``."""
+
+        self._opinion_visualization_lines = [str(line) for line in lines]
+
     def info(self, agent: Agent) -> Dict[str, Tensor]:
         """
         This function computes the info dict for "agent" in a vectorized way
@@ -2960,6 +2966,22 @@ class ScenarioRoadTraffic(BaseScenario):
             xform = rendering.Transform()
             geom.add_attr(xform)
             geoms.append(geom)
+
+            for line_index, line in enumerate(self._opinion_visualization_lines):
+                geom = rendering.TextLine(
+                    text=line,
+                    x=0.75 * self.resolution_factor,
+                    y=(
+                        self.world.y_semidim
+                        - 0.10
+                        - 0.10 * line_index
+                    )
+                    * self.resolution_factor,
+                    font_size=11,
+                )
+                xform = rendering.Transform()
+                geom.add_attr(xform)
+                geoms.append(geom)
 
             # Mean velocity
             # mean_vel = torch.vstack([a.state.vel for a in self.world.agents]).norm(dim=-1).mean()

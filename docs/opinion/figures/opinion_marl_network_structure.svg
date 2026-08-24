@@ -31,7 +31,7 @@
 
   <rect width="2400" height="1600" fill="#FFFFFF"/>
   <text x="1200" y="58" class="title" text-anchor="middle">Opinion Dynamics + MARL：整体网络结构与里程碑对应</text>
-  <text x="1200" y="94" class="subtitle" text-anchor="middle">绿色：M3 已实现　橙色：M4 下一步　蓝色/紫色：M5–M10 计划结构　灰色：SigmaRL Base 保持不变</text>
+  <text x="1200" y="94" class="subtitle" text-anchor="middle">M3–M5 已实现　M6–M10 计划结构　SigmaRL Base 主干保持不变</text>
 
   <!-- Physical information layer -->
   <rect x="45" y="125" width="2310" height="270" class="cluster"/>
@@ -110,7 +110,7 @@
   <text x="2012" y="946" class="node-text">归一化聚合 · 有界 Δμ</text>
 
   <rect x="1995" y="500" width="300" height="145" class="planned"/>
-  <text x="2145" y="538" class="node-title">Policy Bridge [M5]</text>
+  <text x="2145" y="538" class="node-title">Policy Bridge [M5 已实现]</text>
   <text x="2145" y="570" class="node-text">速度 loc + Δμ</text>
   <text x="2145" y="599" class="node-text">转向 loc 不变</text>
   <text x="2145" y="628" class="node-text">scale 不变</text>
@@ -198,7 +198,7 @@
   <rect x="285" y="1465" width="24" height="24" class="m4"/>
   <text x="322" y="1484" class="legend">M4 下一步</text>
   <rect x="475" y="1465" width="24" height="24" class="planned"/>
-  <text x="512" y="1484" class="legend">M5–M10 计划</text>
+  <text x="512" y="1484" class="legend">M6–M10 计划</text>
   <rect x="690" y="1465" width="24" height="24" class="base"/>
   <text x="727" y="1484" class="legend">SigmaRL Base 不变</text>
   <line x1="950" y1="1477" x2="1020" y2="1477" stroke="#64748B" stroke-width="3" stroke-dasharray="11 9" marker-end="url(#arrow)"/>

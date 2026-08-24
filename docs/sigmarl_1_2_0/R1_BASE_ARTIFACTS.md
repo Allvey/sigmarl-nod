@@ -56,7 +56,8 @@ run 目录。
 
 ## 5. 测试模型
 
-测试完整训练最近一次成功 run：
+自动测试模型：如果存在 `latest_run.json`，优先选择最近一次成功 run；否则选择
+最新一个已经保存中间策略的 run：
 
 ```bash
 python main_testing.py
@@ -74,10 +75,25 @@ python main_testing.py --config configs/base/pilot.json
 python main_testing.py --run-dir outputs/base/runs/<run_id>
 ```
 
-测试入口先读取所选配置的 `where_to_save`，再读取其中的 `latest_run.json`，最后从
-该 run 的 `config_resolved.json` 恢复网络和场景参数，并加载 `final_policy.pth`。
-测试不会自动选择正在运行或失败的 run。显式使用 `--run-dir` 时，责任主体是用户
-指定的这个目录，入口仍要求其中存在可解析配置和最终权重。
+也可以精确指定某个权重；此时可省略 `--run-dir`，测试入口会把权重的父目录作为
+run 目录：
+
+```bash
+python main_testing.py \
+  --checkpoint outputs/base/runs/<run_id>/reward-0.52_policy.pth
+```
+
+测试入口从 run 的 `config_resolved.json` 恢复网络和场景参数。权重选择顺序为：
+
+1. 显式 `--checkpoint`；
+2. run 中的 `final_policy.pth`；
+3. run 中 reward 数值最高的 `reward<value>_policy.pth`。
+
+因此，训练无需结束即可进行可视化测试。训练至少要完成一次触发中间保存的迭代；如果
+目录中既没有 `final_policy.pth`，也没有 `reward<value>_policy.pth`，仍然无法测试。
+`latest_run.json` 继续只指向完整结束的 run，避免改变正式实验的 completed 合同。
+当已有 completed run、但希望观察更新的在训 run 时，应显式传入该 run 的
+`--run-dir` 或某个 `--checkpoint`。
 
 默认测试使用实时可视化、单环境、1200 个仿真步，并沿用训练场景。跨场景统一评估
 将在 M10 实现。

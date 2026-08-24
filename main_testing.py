@@ -11,7 +11,10 @@ from typing import Mapping, Optional
 
 from vmas.simulator.utils import save_video
 
-from utilities.experiment_artifacts import resolve_latest_run
+from utilities.experiment_artifacts import (
+    resolve_latest_testable_run,
+    resolve_policy_checkpoint,
+)
 from utilities.helper_training import Parameters, SaveData
 from utilities.constants import SCENARIOS
 from utilities.mappo_cavs import mappo_cavs
@@ -39,14 +42,22 @@ def _load_run_parameters(run_directory: Path) -> Parameters:
 def test_base(
     output_root: str,
     run_directory: Optional[Path] = None,
+    checkpoint_path: Optional[Path] = None,
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
+    opinion_policy_config: Optional[Mapping[str, object]] = None,
+    opinion_visualization_config: Optional[Mapping[str, object]] = None,
 ) -> None:
-    if run_directory is None:
-        run_directory = resolve_latest_run(output_root)
+    if checkpoint_path is not None and run_directory is None:
+        run_directory = checkpoint_path.expanduser().resolve().parent
+    elif run_directory is None:
+        run_directory = resolve_latest_testable_run(output_root)
     else:
         run_directory = run_directory.expanduser().resolve()
         if not run_directory.is_dir():
             raise FileNotFoundError(f"Run directory does not exist: {run_directory}")
+    checkpoint_path = resolve_policy_checkpoint(run_directory, checkpoint_path)
+    print(f"[INFO] Testing run: {run_directory}")
+    print(f"[INFO] Testing policy checkpoint: {checkpoint_path}")
     parameters = _load_run_parameters(run_directory)
 
     parameters.where_to_save = str(run_directory) + os.sep
@@ -72,14 +83,28 @@ def test_base(
     env, policy, priority_module, parameters = mappo_cavs(
         parameters=parameters,
         opinion_pair_info_config=opinion_pair_info_config,
+        opinion_policy_config=opinion_policy_config,
+        policy_checkpoint_path=checkpoint_path,
     )
+
+    def render_callback(render_env, tensordict):
+        if opinion_visualization_config is not None:
+            from utilities.opinion.visualization import (
+                update_opinion_visualization,
+            )
+
+            update_opinion_visualization(
+                render_env,
+                tensordict,
+                opinion_visualization_config,
+            )
+        return render_env.render(mode="rgb_array", visualize_when_rgb=True)
+
     rollout_result = env.rollout(
         max_steps=parameters.max_steps - 1,
         policy=policy,
         priority_module=priority_module,
-        callback=lambda env, _: env.render(
-            mode="rgb_array", visualize_when_rgb=True
-        ),
+        callback=render_callback,
         auto_cast_to_device=True,
         break_when_any_done=False,
         is_save_simulation_video=parameters.is_save_simulation_video,
@@ -94,13 +119,16 @@ def test_base(
 def main(
     config_file: Path = DEFAULT_CONFIG_FILE,
     run_directory: Optional[Path] = None,
+    checkpoint_path: Optional[Path] = None,
 ) -> None:
     source_parameters = Parameters.from_json(str(config_file))
-    test_base(source_parameters.where_to_save, run_directory)
+    test_base(source_parameters.where_to_save, run_directory, checkpoint_path)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test a completed SigmaRL Base run.")
+    parser = argparse.ArgumentParser(
+        description="Test a final or intermediate SigmaRL Base policy."
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -111,7 +139,16 @@ if __name__ == "__main__":
         "--run-dir",
         type=Path,
         default=None,
-        help="Test this exact run directory instead of the latest completed run.",
+        help="Test this exact run directory instead of auto-resolving a run.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Load this exact final_policy.pth or reward<value>_policy.pth. "
+            "Its parent directory is used as --run-dir when --run-dir is omitted."
+        ),
     )
     arguments = parser.parse_args()
-    main(arguments.config, arguments.run_dir)
+    main(arguments.config, arguments.run_dir, arguments.checkpoint)

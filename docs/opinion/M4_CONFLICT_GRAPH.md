@@ -2,7 +2,7 @@
 
 > 实现状态：已完成；训练和性能由用户手动验证  
 > 本阶段是否改变动作：否  
-> 下一阶段：M5 Policy Bridge
+> 下一阶段：M5 Policy Bridge（已完成，见 `M5_POLICY_BRIDGE.md`）
 
 ## 1. M4 做了什么
 
@@ -196,8 +196,9 @@ M4 没有改变最终动作分布，所以合理预期是 reward/collision 与�
 参考数学测试文件为 `tests/opinion/test_m4_conflict_graph.py`。按当前项目约定，是否
 执行测试和正式训练由用户决定。
 
-## 9. M5 交接
+## 9. M5 衔接
 
-M5 首次把 M3 与 M4 接起来：加载已训练 Base Actor，计算当前帧 Evidence/Residual，
+M5 已把 M3 与 M4 接起来：加载已训练 Base Actor，计算当前帧 Evidence/Residual，
 只修正速度分布的 location，保持转向和 scale 不变。M5 不应提前实现跨时间
-`z_dense`；真实状态记忆仍留给 M6。
+`z_dense`；真实状态记忆仍留给 M6。具体见
+[`M5_POLICY_BRIDGE.md`](M5_POLICY_BRIDGE.md)。

@@ -34,6 +34,13 @@
             "max_abs": 0.25,
             "action_index": 0
         },
+        "policy_bridge": {
+            "enabled": false,
+            "mode": "direct_evidence",
+            "base_output_root": "outputs/base_pilot/",
+            "freeze_base_actor": true,
+            "visualize_agent_id": 0
+        },
         "sequence_ppo": {
             "chunk_length": 16,
             "evidence_learning_rate_scale": 0.1,

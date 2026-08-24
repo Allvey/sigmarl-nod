@@ -42,7 +42,9 @@ python main_testing.py
 
 R0 已取消 `main_testing.py` 中旧的硬编码模型目录。R1 之后，测试入口会读取
 `config.json` 的 `where_to_save`，通过 `latest_run.json` 选择最近一次成功训练，再从
-该 run 的 `config_resolved.json` 恢复参数和模型。
+该 run 的 `config_resolved.json` 恢复参数和模型。如果尚未生成 completed 指针，入口
+也会从最新的可测试 run 加载 reward 最优的中间 `reward<value>_policy.pth`。可用
+`--run-dir` 指定在训 run，或用 `--checkpoint` 精确指定某个中间/最终策略文件。
 
 测试默认沿用训练 checkpoint 中的 `scenario_type`，避免硬编码切换到 agent 数不同
 的场景后造成中央 Critic 维度不匹配。跨场景测试将在后续 M10 使用显式评估配置实现。

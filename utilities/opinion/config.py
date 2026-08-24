@@ -265,6 +265,46 @@ class ResidualConfig:
 
 
 @dataclass(frozen=True)
+class PolicyBridgeConfig:
+    enabled: bool
+    mode: str
+    base_output_root: str
+    freeze_base_actor: bool
+    visualize_agent_id: int
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "PolicyBridgeConfig":
+        raw = _object(raw, "opinion.policy_bridge")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.policy_bridge")
+        result = cls(
+            enabled=_boolean(raw["enabled"], "opinion.policy_bridge.enabled"),
+            mode=_string(raw["mode"], "opinion.policy_bridge.mode").lower(),
+            base_output_root=_string(
+                raw["base_output_root"],
+                "opinion.policy_bridge.base_output_root",
+            ),
+            freeze_base_actor=_boolean(
+                raw["freeze_base_actor"],
+                "opinion.policy_bridge.freeze_base_actor",
+            ),
+            visualize_agent_id=_integer(
+                raw["visualize_agent_id"],
+                "opinion.policy_bridge.visualize_agent_id",
+                minimum=0,
+            ),
+        )
+        if result.mode != "direct_evidence":
+            raise OpinionConfigError(
+                "The M5 policy bridge requires mode='direct_evidence'."
+            )
+        if result.enabled and not result.freeze_base_actor:
+            raise OpinionConfigError(
+                "M5 requires policy_bridge.freeze_base_actor=true."
+            )
+        return result
+
+
+@dataclass(frozen=True)
 class SequencePPOConfig:
     chunk_length: int
     evidence_learning_rate_scale: float
@@ -275,7 +315,7 @@ class SequencePPOConfig:
     def from_dict(cls, raw: Mapping[str, Any]) -> "SequencePPOConfig":
         raw = _object(raw, "opinion.sequence_ppo")
         _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.sequence_ppo")
-        return cls(
+        result = cls(
             chunk_length=_integer(
                 raw["chunk_length"], "opinion.sequence_ppo.chunk_length", minimum=2
             ),
@@ -293,6 +333,11 @@ class SequencePPOConfig:
                 "opinion.sequence_ppo.magnitude_loss_coefficient",
             ),
         )
+        if result.evidence_learning_rate_scale > 1.0:
+            raise OpinionConfigError(
+                "evidence_learning_rate_scale must be <= 1 through M5."
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -301,6 +346,7 @@ class OpinionConfig:
     evidence: EvidenceConfig
     dynamics: DynamicsConfig
     residual: ResidualConfig
+    policy_bridge: PolicyBridgeConfig
     sequence_ppo: SequencePPOConfig
 
     @classmethod
@@ -312,6 +358,7 @@ class OpinionConfig:
             evidence=EvidenceConfig.from_dict(raw["evidence"]),
             dynamics=DynamicsConfig.from_dict(raw["dynamics"]),
             residual=ResidualConfig.from_dict(raw["residual"]),
+            policy_bridge=PolicyBridgeConfig.from_dict(raw["policy_bridge"]),
             sequence_ppo=SequencePPOConfig.from_dict(raw["sequence_ppo"]),
         )
 
@@ -349,6 +396,17 @@ class OpinionExperimentConfig:
                 "stage='base' requires use_opinion_marl=false; evidence/joint "
                 "require use_opinion_marl=true."
             )
+        policy_bridge = _object(raw["opinion"], "opinion").get("policy_bridge")
+        if isinstance(policy_bridge, dict):
+            bridge_enabled = policy_bridge.get("enabled")
+            if stage == "base" and bridge_enabled is not False:
+                raise OpinionConfigError(
+                    "stage='base' requires policy_bridge.enabled=false."
+                )
+            if stage in {"evidence", "joint"} and bridge_enabled is not True:
+                raise OpinionConfigError(
+                    "evidence/joint stages require policy_bridge.enabled=true."
+                )
         return cls(
             schema_version=schema_version,
             method=method,
@@ -428,6 +486,14 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
         raise OpinionConfigError(
             "n_nearing_agents_observed must equal conflict_graph.candidate_count."
         )
+    if opinion.policy_bridge.enabled and not opinion.conflict_graph.emit_pair_info:
+        raise OpinionConfigError(
+            "An enabled policy bridge requires conflict_graph.emit_pair_info=true."
+        )
+    if opinion.policy_bridge.visualize_agent_id >= parameters.n_agents:
+        raise OpinionConfigError(
+            "policy_bridge.visualize_agent_id must be a valid global agent ID."
+        )
     if parameters.is_using_opponent_modeling:
         raise OpinionConfigError("Opponent modeling is forbidden in Opinion-MARL.")
     if parameters.is_using_prioritized_marl or parameters.is_prb:
@@ -438,7 +504,8 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
         or parameters.is_continue_train
     ):
         raise OpinionConfigError(
-            "Milestone entrypoints start a new stage; loading/resume is not available in M2."
+            "Milestone entrypoints start a new stage; loading/resume is not "
+            "available through M5."
         )
     if parameters.is_testing_mode:
         raise OpinionConfigError("The referenced Base config must be a training config.")
@@ -472,6 +539,13 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
         raise OpinionConfigError(f"Invalid Base Parameters: {error}") from error
 
     parameters.where_to_save = config.output_root
+    if config.opinion.policy_bridge.enabled and (
+        Path(config.opinion.policy_bridge.base_output_root).expanduser().resolve()
+        == Path(config.output_root).expanduser().resolve()
+    ):
+        raise OpinionConfigError(
+            "policy_bridge.base_output_root and output_root must be isolated."
+        )
     _validate_base_contract(parameters, config.opinion)
     return LoadedOpinionExperiment(
         config_path=config_path,
@@ -483,15 +557,32 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
     )
 
 
-def require_base_noop_mode(experiment: LoadedOpinionExperiment) -> None:
-    """Fail explicitly instead of silently treating an enabled method as Base."""
+def require_m5_supported_mode(experiment: LoadedOpinionExperiment) -> None:
+    """Allow the Base/M4 path and the M5 stateless Evidence path only."""
 
-    if experiment.config.use_opinion_marl or experiment.config.stage != "base":
+    stage = experiment.config.stage
+    bridge_enabled = experiment.config.opinion.policy_bridge.enabled
+    if stage == "base" and not bridge_enabled:
+        return
+    if stage == "evidence" and bridge_enabled:
+        return
+    raise NotImplementedError(
+        "M5 supports stage='base' without the bridge, or stage='evidence' "
+        "with the direct-evidence bridge. Stateful/joint execution starts in "
+        "M6-M9."
+    )
+
+
+def require_base_noop_mode(experiment: LoadedOpinionExperiment) -> None:
+    """Compatibility name retained for M2-M4 callers."""
+
+    if (
+        experiment.config.stage != "base"
+        or experiment.config.use_opinion_marl
+        or experiment.config.opinion.policy_bridge.enabled
+    ):
         raise NotImplementedError(
-            "M4 provides the gated physical pair-info side channel; active "
-            "Opinion policy execution is introduced in M5-M9. For the current "
-            "trainable information-only path, use stage='base' with "
-            "use_opinion_marl=false."
+            "This caller only supports the Base/M4 information-only path."
         )
 
 

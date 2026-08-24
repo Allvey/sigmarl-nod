@@ -87,6 +87,10 @@ from utilities.experiment_artifacts import (
 def mappo_cavs(
     parameters: Parameters,
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
+    opinion_policy_config: Optional[Mapping[str, object]] = None,
+    artifact_method: str = "base_mappo",
+    artifact_stage: str = "base",
+    policy_checkpoint_path: Optional[Path] = None,
 ):
     # Preserve the upstream default (seed 0) while making it explicit in the
     # resolved configuration for reproducible Base runs.
@@ -190,7 +194,7 @@ def mappo_cavs(
     )
 
     # Use a probabilistic actor allows for exploration
-    policy = ProbabilisticActor(
+    base_policy = ProbabilisticActor(
         module=policy_module,
         spec=env.unbatched_action_spec,
         in_keys=[("agents", "loc"), ("agents", "scale")],
@@ -206,6 +210,94 @@ def mappo_cavs(
             "sample_log_prob",
         ),  # log probability favors numerical stability and gradient calculation
     )  # we'll need the log-prob for the PPO loss
+
+    is_direct_opinion = bool(
+        opinion_policy_config
+        and opinion_policy_config.get("mode") == "direct_evidence"
+    )
+    opinion_bridge = None
+    base_actor_source_state = None
+    if is_direct_opinion:
+        if not emits_opinion_pair_info:
+            raise ValueError("The M5 policy bridge requires M4 pair info.")
+        if not parameters.is_load_model:
+            base_actor_checkpoint = Path(
+                str(opinion_policy_config["base_actor_checkpoint"])
+            )
+            if not base_actor_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"Base Actor checkpoint not found: {base_actor_checkpoint}"
+                )
+            base_actor_source_state = torch.load(
+                base_actor_checkpoint,
+                map_location=parameters.device,
+            )
+            base_policy.load_state_dict(base_actor_source_state, strict=True)
+            print(
+                colored(
+                    f"[INFO] Loaded frozen Base Actor: {base_actor_checkpoint}",
+                    "red",
+                )
+            )
+
+        from utilities.opinion.config import EvidenceConfig, ResidualConfig
+        from utilities.opinion.evidence_net import OpinionEvidenceNet
+        from utilities.opinion.policy import DirectEvidencePolicyBridge
+        from utilities.opinion.residual import OpinionResidual
+
+        evidence_config = EvidenceConfig.from_dict(
+            opinion_policy_config["evidence"]
+        )
+        residual_config = ResidualConfig.from_dict(
+            opinion_policy_config["residual"]
+        )
+        evidence_net = OpinionEvidenceNet.from_config(
+            pair_feature_dim=int(opinion_pair_info_config["pair_feature_dim"]),
+            config=evidence_config,
+        ).to(parameters.device)
+        residual = OpinionResidual.from_config(residual_config).to(parameters.device)
+        opinion_bridge = DirectEvidencePolicyBridge(
+            base_policy_net=policy_net,
+            evidence_net=evidence_net,
+            residual=residual,
+            freeze_base_actor=bool(
+                opinion_policy_config.get("freeze_base_actor", True)
+            ),
+        ).to(parameters.device)
+        opinion_policy_module = TensorDictModule(
+            opinion_bridge,
+            in_keys=[
+                observation_key,
+                ("agents", "info", "pair_features"),
+                ("agents", "info", "urgency"),
+                ("agents", "info", "confidence"),
+                ("agents", "info", "pair_mask"),
+            ],
+            out_keys=[
+                ("agents", "loc"),
+                ("agents", "scale"),
+                ("agents", "opinion", "base_loc"),
+                ("agents", "opinion", "raw_b"),
+                ("agents", "opinion", "b"),
+                ("agents", "opinion", "direct_z"),
+                ("agents", "opinion", "residual"),
+            ],
+        )
+        policy = ProbabilisticActor(
+            module=opinion_policy_module,
+            spec=env.unbatched_action_spec,
+            in_keys=[("agents", "loc"), ("agents", "scale")],
+            out_keys=[env.action_key],
+            distribution_class=TanhNormal,
+            distribution_kwargs={
+                "min": env.unbatched_action_spec[env.action_key].space.low,
+                "max": env.unbatched_action_spec[env.action_key].space.high,
+            },
+            return_log_prob=True,
+            log_prob_key=("agents", "sample_log_prob"),
+        )
+    else:
+        policy = base_policy
 
     mappo = True  # IPPO (Independent PPO) if False
 
@@ -231,6 +323,25 @@ def mappo_cavs(
         out_keys=[("agents", "state_value")],
     )
 
+    if is_direct_opinion and not parameters.is_load_model:
+        base_critic_checkpoint = Path(
+            str(opinion_policy_config["base_critic_checkpoint"])
+        )
+        if not base_critic_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Base Critic checkpoint not found: {base_critic_checkpoint}"
+            )
+        critic.load_state_dict(
+            torch.load(base_critic_checkpoint, map_location=parameters.device),
+            strict=True,
+        )
+        print(
+            colored(
+                f"[INFO] Initialized M5 Critic from: {base_critic_checkpoint}",
+                "red",
+            )
+        )
+
     # Instantiate the priority module
     if (
         parameters.is_using_prioritized_marl
@@ -252,7 +363,40 @@ def mappo_cavs(
 
     # Load an existing model or train a new model?
     if parameters.is_load_model:
-        if parameters.is_load_final_model:
+        if policy_checkpoint_path is not None:
+            checkpoint = Path(policy_checkpoint_path).expanduser().resolve()
+            if not checkpoint.is_file():
+                raise FileNotFoundError(f"Policy checkpoint not found: {checkpoint}")
+            PATH_POLICY = str(checkpoint)
+            policy.load_state_dict(
+                torch.load(PATH_POLICY, map_location=parameters.device)
+            )
+            print(colored(f"[INFO] Loaded policy checkpoint: {PATH_POLICY}", "blue"))
+
+            checkpoint_suffix = "_policy.pth"
+            checkpoint_prefix = checkpoint.name[: -len(checkpoint_suffix)]
+            PATH_CRITIC = str(
+                checkpoint.with_name(f"{checkpoint_prefix}_critic.pth")
+            )
+            if priority_module:
+                PATH_PRIORITY_POLICY = str(
+                    checkpoint.with_name(
+                        f"{checkpoint_prefix}_priority_policy.pth"
+                    )
+                )
+                PATH_PRIORITY_CRITIC = str(
+                    checkpoint.with_name(
+                        f"{checkpoint_prefix}_priority_critic.pth"
+                    )
+                )
+                if not os.path.isfile(PATH_PRIORITY_POLICY):
+                    raise FileNotFoundError(
+                        f"Priority policy checkpoint not found: {PATH_PRIORITY_POLICY}"
+                    )
+                priority_module.policy.load_state_dict(
+                    torch.load(PATH_PRIORITY_POLICY, map_location=parameters.device)
+                )
+        elif parameters.is_load_final_model:
             PATH_POLICY = parameters.where_to_save + "final_policy.pth"
             PATH_CRITIC = parameters.where_to_save + "final_critic.pth"
             if not os.path.isfile(PATH_POLICY):
@@ -376,7 +520,43 @@ def mappo_cavs(
     )  # We build GAE
     GAE = loss_module.value_estimator  # Generalized Advantage Estimation
 
-    optim = torch.optim.Adam(loss_module.parameters(), parameters.lr)
+    if is_direct_opinion:
+        actor_trainable_parameters = [
+            parameter
+            for parameter in loss_module.actor_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        critic_trainable_parameters = [
+            parameter
+            for parameter in loss_module.critic_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        if not actor_trainable_parameters:
+            raise RuntimeError("M5 EvidenceNet has no trainable parameters.")
+        evidence_lr_scale = float(
+            opinion_policy_config["evidence_learning_rate_scale"]
+        )
+        optim = torch.optim.Adam(
+            [
+                {
+                    "params": actor_trainable_parameters,
+                    "lr": parameters.lr * evidence_lr_scale,
+                    "lr_scale": evidence_lr_scale,
+                    "group_name": "evidence",
+                },
+                {
+                    "params": critic_trainable_parameters,
+                    "lr": parameters.lr,
+                    "lr_scale": 1.0,
+                    "group_name": "critic",
+                },
+            ]
+        )
+    else:
+        optim = torch.optim.Adam(loss_module.parameters(), parameters.lr)
+    optimization_parameters = [
+        parameter for parameter in loss_module.parameters() if parameter.requires_grad
+    ]
 
     pbar = tqdm(total=parameters.n_iters, desc="epi_rew_mean = 0")
 
@@ -464,7 +644,7 @@ def mappo_cavs(
                 loss_value.backward()
 
                 torch.nn.utils.clip_grad_norm_(
-                    loss_module.parameters(), parameters.max_grad_norm
+                    optimization_parameters, parameters.max_grad_norm
                 )  # Optional
 
                 optim.step()
@@ -519,6 +699,30 @@ def mappo_cavs(
         total_collision_rate = (
             (collision_with_agents | collision_with_lanelets).float().mean().item()
         )
+        opinion_iteration_metrics = {}
+        if is_direct_opinion:
+            raw_b_collected = tensordict_data.get(
+                ("agents", "opinion", "raw_b")
+            )
+            gated_b_collected = tensordict_data.get(
+                ("agents", "opinion", "b")
+            )
+            residual_collected = tensordict_data.get(
+                ("agents", "opinion", "residual")
+            )
+            pair_mask_collected = tensordict_data.get(
+                ("agents", "info", "pair_mask")
+            )
+            opinion_iteration_metrics = {
+                "raw_b_abs_mean": float(raw_b_collected.abs().mean().item()),
+                "gated_b_abs_mean": float(gated_b_collected.abs().mean().item()),
+                "speed_residual_abs_mean": float(
+                    residual_collected.abs().mean().item()
+                ),
+                "active_pair_fraction": float(
+                    pair_mask_collected.float().mean().item()
+                ),
+            }
         pbar.set_description(
             f"Episode mean reward = {episode_reward_mean:.2f}", refresh=False
         )
@@ -573,7 +777,8 @@ def mappo_cavs(
             lr_decay = (parameters.lr - parameters.lr_min) * (
                 1 - (pbar.n / parameters.n_iters)
             )
-            param_group["lr"] = parameters.lr_min + lr_decay
+            scheduled_lr = parameters.lr_min + lr_decay
+            param_group["lr"] = scheduled_lr * param_group.get("lr_scale", 1.0)
             if pbar.n % 10 == 0:
                 print(f"Learning rate updated to {param_group['lr']}.")
 
@@ -597,13 +802,35 @@ def mappo_cavs(
                     "loss_objective": loss_objective_sum / loss_update_count,
                     "loss_critic": loss_critic_sum / loss_update_count,
                     "loss_entropy": loss_entropy_sum / loss_update_count,
-                    "learning_rate": float(optim.param_groups[0]["lr"]),
+                    "learning_rate": float(
+                        optim.param_groups[-1]["lr"]
+                        if is_direct_opinion
+                        else optim.param_groups[0]["lr"]
+                    ),
+                    **(
+                        {
+                            "evidence_learning_rate": float(
+                                optim.param_groups[0]["lr"]
+                            ),
+                            "critic_learning_rate": float(
+                                optim.param_groups[1]["lr"]
+                            ),
+                        }
+                        if is_direct_opinion
+                        else {}
+                    ),
+                    **opinion_iteration_metrics,
                     "rollout_seconds": float(rollout_seconds),
                     "optimization_seconds": float(optimization_seconds),
                     "iteration_seconds": float(iteration_seconds),
                 }
             )
-            write_metrics(artifact_run_directory, artifact_iterations)
+            write_metrics(
+                artifact_run_directory,
+                artifact_iterations,
+                method=artifact_method,
+                stage=artifact_stage,
+            )
             write_training_status(
                 artifact_run_directory,
                 status="running",
@@ -617,25 +844,54 @@ def mappo_cavs(
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
 
     if artifact_logging_enabled:
-        # Keep the upstream filename for main_testing.py and expose a stable,
-        # method-specific bridge for the later Opinion training stages.
-        torch.save(
-            policy.state_dict(),
-            artifact_run_directory / "final_base_actor.pth",
-        )
-        torch.save(
-            {
-                "schema_version": ARTIFACT_SCHEMA_VERSION,
-                "method": "base_mappo",
-                "iteration": int(pbar.n),
-                "base_actor_state": policy.state_dict(),
-                "critic_state": critic.state_dict(),
-                "optimizer_state": optim.state_dict(),
-                "resolved_config": dict(parameters.to_dict()),
-                "torch_rng_state": torch.get_rng_state(),
-            },
-            artifact_run_directory / "final_checkpoint.pt",
-        )
+        if is_direct_opinion:
+            if base_actor_source_state is None or opinion_bridge is None:
+                raise RuntimeError("M5 checkpoint source state is unavailable.")
+            torch.save(
+                base_actor_source_state,
+                artifact_run_directory / "final_base_actor.pth",
+            )
+            torch.save(
+                policy.state_dict(),
+                artifact_run_directory / "final_opinion_policy.pth",
+            )
+            torch.save(
+                {
+                    "schema_version": ARTIFACT_SCHEMA_VERSION,
+                    "method": "opinion_marl",
+                    "stage": "evidence_direct",
+                    "iteration": int(pbar.n),
+                    "base_actor_state": base_actor_source_state,
+                    "evidence_state": opinion_bridge.evidence_net.state_dict(),
+                    "opinion_policy_state": policy.state_dict(),
+                    "critic_state": critic.state_dict(),
+                    "optimizer_state": optim.state_dict(),
+                    "resolved_base_config": dict(parameters.to_dict()),
+                    "opinion_runtime_config": dict(opinion_policy_config),
+                    "torch_rng_state": torch.get_rng_state(),
+                },
+                artifact_run_directory / "final_checkpoint.pt",
+            )
+        else:
+            # Keep the upstream filename for main_testing.py and expose a
+            # stable bridge for later Opinion training stages.
+            torch.save(
+                policy.state_dict(),
+                artifact_run_directory / "final_base_actor.pth",
+            )
+            torch.save(
+                {
+                    "schema_version": ARTIFACT_SCHEMA_VERSION,
+                    "method": "base_mappo",
+                    "iteration": int(pbar.n),
+                    "base_actor_state": policy.state_dict(),
+                    "critic_state": critic.state_dict(),
+                    "optimizer_state": optim.state_dict(),
+                    "resolved_config": dict(parameters.to_dict()),
+                    "torch_rng_state": torch.get_rng_state(),
+                },
+                artifact_run_directory / "final_checkpoint.pt",
+            )
 
     if (
         parameters.is_using_prioritized_marl

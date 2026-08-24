@@ -32,8 +32,11 @@ def train_base(
     supplementary_snapshots: Optional[Mapping[str, Mapping[str, Any]]] = None,
     comparison_payload: Optional[Mapping[str, Any]] = None,
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
+    opinion_policy_config: Optional[Mapping[str, object]] = None,
+    artifact_method: str = "base_mappo",
+    artifact_stage: str = "base",
 ) -> Path:
-    """Run Base-MAPPO, optionally with the M4 information-only side channel."""
+    """Run Base-MAPPO, optionally with the staged M4/M5 Opinion side paths."""
 
     output_root = str(Path(parameters.where_to_save).expanduser().resolve())
     run_directory = create_run_directory(
@@ -51,6 +54,8 @@ def train_base(
         run_directory=run_directory,
         source_config=dict(source_config),
         resolved_config=dict(parameters.to_dict()),
+        method=artifact_method,
+        stage=artifact_stage,
     )
     try:
         for filename, payload in (supplementary_snapshots or {}).items():
@@ -63,6 +68,9 @@ def train_base(
         mappo_cavs(
             parameters=parameters,
             opinion_pair_info_config=opinion_pair_info_config,
+            opinion_policy_config=opinion_policy_config,
+            artifact_method=artifact_method,
+            artifact_stage=artifact_stage,
         )
         write_training_status(
             run_directory,

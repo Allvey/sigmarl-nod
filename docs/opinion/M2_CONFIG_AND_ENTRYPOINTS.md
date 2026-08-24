@@ -86,6 +86,13 @@ Evidence learning rate   = 0.1 × Actor learning rate
 
 第一版只允许修改速度分量 `action[0]`，不允许意见直接控制转向 `action[1]`。
 
+### M5 Policy Bridge 扩展字段
+
+从 M5 起 strict schema 还要求 `opinion.policy_bridge`。M2–M4 配置固定
+`enabled=false`；M5 的 `evidence` 配置固定 `enabled=true`、
+`mode=direct_evidence` 和 `freeze_base_actor=true`。完整语义见
+[`M5_POLICY_BRIDGE.md`](M5_POLICY_BRIDGE.md)。
+
 ## 4. 配置启动前检查
 
 `utilities/opinion/config.py` 会在创建环境或输出目录之前拒绝：

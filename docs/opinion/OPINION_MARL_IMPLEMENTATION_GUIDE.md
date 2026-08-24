@@ -1,6 +1,6 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0、R1、M2、M3、M4 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1、M2、M3、M4、M5 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
@@ -19,10 +19,11 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 3. 阅读 [`M2_CONFIG_AND_ENTRYPOINTS.md`](M2_CONFIG_AND_ENTRYPOINTS.md)；
 4. 阅读 [`M3_MATH_MODULES.md`](M3_MATH_MODULES.md)；
 5. 阅读 [`M4_CONFLICT_GRAPH.md`](M4_CONFLICT_GRAPH.md)；
-6. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
-7. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
-8. 查看本文件第 10 节，只执行下一个未完成阶段；
-9. 每次实现后更新阶段状态、验证命令和真实结果。
+6. 阅读 [`M5_POLICY_BRIDGE.md`](M5_POLICY_BRIDGE.md)；
+7. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
+8. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
+9. 查看本文件第 10 节，只执行下一个未完成阶段；
+10. 每次实现后更新阶段状态、验证命令和真实结果。
 
 可复制给新 Session：
 
@@ -36,14 +37,15 @@ Opinion Dynamics + MARL。
 3. docs/opinion/M2_CONFIG_AND_ENTRYPOINTS.md
 4. docs/opinion/M3_MATH_MODULES.md
 5. docs/opinion/M4_CONFLICT_GRAPH.md
-6. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
-7. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
+6. docs/opinion/M5_POLICY_BRIDGE.md
+7. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
+8. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
 
 不要恢复 docs/archive_tsc 中的代码设计。TSC 只作为外部实验基线；新方法禁止依赖
 TopologyLearner、priority、leader、Stackelberg、action predictor 或 opponent
-modeling。Base 必须走 SigmaRL 1.2.0 原始向量化 MAPPO；Evidence/Joint 才使用
-连续 chunk。先检查里程碑状态，只实现下一个阶段；保证训练/测试入口完整，实际训练
-和性能判断由用户手动完成。
+modeling。Base 必须走 SigmaRL 1.2.0 原始向量化 MAPPO；M5 Direct Evidence 仍用
+扁平 PPO，只有 M6 后的 stateful Evidence/Joint 才进入连续 chunk。先检查里程碑
+状态，只实现下一个阶段；保证训练/测试入口完整，实际训练和性能判断由用户手动完成。
 ```
 
 ### 0.1 当前解释器约定
@@ -277,7 +279,7 @@ tests/test_base_entrypoint.py
 | 原始文件 | 允许修改 |
 |---|---|
 | `main_training.py` | R1 独立 Base run 包装，保持标准无参数入口 |
-| `main_testing.py` | R1 定位最近成功 Base run，保持标准无参数入口 |
+| `main_testing.py` | R1 定位最近成功 Base run；无 completed run 时允许加载最新在训 run 的 reward 最优中间策略 |
 | `utilities/mappo_cavs.py` | R1 种子、指标、计时和 Base 产物钩子；不得改变 PPO 数据流 |
 | `utilities/helper_training.py` | R1 seed 与 artifact metadata |
 | `config.json` | Base seed 和稳定输出根目录 |
@@ -428,7 +430,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 | M2：Opinion 配置与独立入口 | 已完成 | 不导入 TSC，不改变 Base；用户手动训练 |
 | M3：Evidence/Dynamics/Residual | 已完成 | 数学、边界、梯度测试；用户手动运行 |
 | M4：ConflictGraph 环境接口 | 已完成 | gated info/reset，Base 不变；用户手动训练 |
-| M5：Policy 与 Base checkpoint bridge | 未开始 | 分布、边界和权重一致 |
+| M5：Policy 与 Base checkpoint bridge | 已完成 | Direct Evidence、冻结 Base、速度 residual；用户手动训练 |
 | M6：Stateful Collector | 未开始 | global ID、每步一次、reset |
 | M7：Sequence Buffer | 未开始 | 不跨 env/done，保存 z_init |
 | M8：批量 chunk Sequence PPO | 未开始 | log-prob/梯度正确且性能达标 |
@@ -600,14 +602,22 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - R0 已在现有 `sigmarl-nod` 环境中设置 user-site 隔离并补齐固定依赖；
 - R1 已保持原始向量化 MAPPO 主循环，并增加唯一 run、配置快照、逐轮指标/耗时、
   曲线 PDF、Base Actor/Critic 和完整最终 checkpoint；
-- `main_testing.py` 已通过 `latest_run.json` 与最近成功 Base run 及训练场景对齐；
+- `main_testing.py` 已通过 `latest_run.json` 与最近成功 Base run 及训练场景对齐；若
+  尚无 completed run，也可自动加载最新在训 run 的 `reward<value>_policy.pth`，并支持
+  `--run-dir`/`--checkpoint` 精确选择；
 - M2 已新增 strict typed Opinion schema、完整/pilot 配置和独立训练/测试入口；
-- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径，开启未实现阶段会明确
-  失败，不会静默伪装为 Opinion 训练；
+- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径；当前只有 M5 的
+  `evidence/direct_evidence` 是已开放的 active Opinion 阶段，其余会明确失败；
 - M3 已实现反对称有界 EvidenceNet、无可训练参数的固定 OpinionDynamics、归一化
-  有界速度 Residual 以及标准库参考测试；模块尚未接入环境或 Actor；
+  有界速度 Residual 以及标准库参考测试；M5 已接入 Evidence/Residual，Dynamics
+  仍等待 M6 的真实跨步状态；
 - M4 已实现复用原最近邻 ID 的 ConflictGraph、固定 10 维 pair feature、CPA 冲突
   mask、urgency/confidence 与单 agent reset 脉冲；这些张量只进入环境 `info`；
+- M5 已实现 Base Actor/Critic checkpoint 桥、冻结 Base Actor、可训练 EvidenceNet、
+  `z_direct=b`、有界速度 residual、最终分布 log-prob 和车辆 0 实时诊断面板；
+- M5 训练优先使用 completed Base；开发阶段若不存在 completed Base，也可从最新
+  running/failed run 加载同 reward 的中间 Actor/Critic 对，并在配置快照中标记来源
+  状态；正式性能实验仍使用完整 Base；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M5：加载 Base Actor 权重并建立 residual Policy Bridge；这是第一
-  个会改变动作分布、需要与 Base 比较性能趋势的阶段。
+- 下一实现步骤是 M6：按 global agent ID 维护跨时间 `z_dense`，并严格处理 agent
+  reset 与 episode done；M5 的 `z_direct` 不能被表述为最终连续意见。

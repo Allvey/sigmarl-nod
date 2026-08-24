@@ -81,12 +81,15 @@ for the complete artifact contract and commands.
 
 `/scenarios/road_traffic.py` defines the RL environment, such as observation function and reward function. Besides, it provides an interactive interface, which also visualizes the environment. To open the interface, simply run this file. You can use `arrow keys` to control agents and use the `tab key` to switch between agents. Adjust the parameter `scenario_type` to choose a scenario. All available scenarios are listed in the variable `SCENARIOS` in `utilities/constants.py`. It is recommended to use the virtual visualization to check if the environment is as expected before training.
 ### Testing
-After a successful full training, run `python main_testing.py`. The command reads
-`config.json`, resolves the latest completed run, restores its resolved training
-configuration and loads `final_policy.pth`; no source-code path edit is needed.
+Run `python main_testing.py` after the first best-so-far checkpoint has been
+written. The command reads `config.json`, restores the selected run's resolved
+training configuration, and prefers `final_policy.pth`. If training is still in
+progress and no final policy exists, it selects the highest-reward
+`reward<value>_policy.pth` from the newest testable run.
 Use `python main_testing.py --config configs/base/pilot.json` for the latest pilot
 run, or `python main_testing.py --run-dir <run-directory>` to reproduce one exact
-historical run.
+historical/in-progress run. Use `--checkpoint <path-to-policy.pth>` to select one
+exact final or reward-named policy.
 
 ### Opinion-MARL staged entrypoints
 

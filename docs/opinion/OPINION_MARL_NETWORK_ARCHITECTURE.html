@@ -31,7 +31,7 @@
 <blockquote>
 <p>代码底座：SigmaRL 1.2.0<br>
 理论真源：<a href="opinion_dynamics_marl_technical_route.md"><code>opinion_dynamics_marl_technical_route.md</code></a><br>
-实施状态：M4 已完成，M5–M10 按图中标记逐步实现<br>
+实施状态：M5 已完成，M6–M10 按图中标记逐步实现<br>
 更新日期：2026-08-24</p>
 </blockquote>
 <h2 id="1-整体网络结构">1. 整体网络结构 </h2>
@@ -73,7 +73,7 @@
         Q["q = tanh(z/z₀)&lt;br/&gt;urgency 归一化聚合"]
         DELTA["有界速度残差 Δμ&lt;br/&gt;[-max_abs,max_abs]"]
 
-        BRIDGE["Policy Bridge&lt;br/&gt;[M5]&lt;br/&gt;速度loc + Δμ&lt;br/&gt;转向loc不变&lt;br/&gt;scale不变"]
+        BRIDGE["Policy Bridge&lt;br/&gt;[M5 已实现]&lt;br/&gt;速度loc + Δμ&lt;br/&gt;转向loc不变&lt;br/&gt;scale不变"]
         DIST["TanhNormal"]
         ACTION["action [E,N,2]&lt;br/&gt;+ log_prob"]
     end
@@ -150,9 +150,9 @@
 <td>否，Policy 不读取</td>
 </tr>
 <tr>
-<td>M5</td>
+<td>M5，已完成</td>
 <td>Base Actor 与 residual 的 Policy Bridge</td>
-<td>加载 Base 权重，将 residual 加到速度 loc</td>
+<td>加载 Base 权重，以 <code>z_direct=b</code> 将 residual 加到速度 loc</td>
 <td>是，首次改变动作分布</td>
 </tr>
 <tr>

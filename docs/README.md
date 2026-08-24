@@ -11,12 +11,13 @@ MARL 方法与旧 TSC 实现明确分开。
 4. [`opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](opinion/M2_CONFIG_AND_ENTRYPOINTS.md)
 5. [`opinion/M3_MATH_MODULES.md`](opinion/M3_MATH_MODULES.md)
 6. [`opinion/M4_CONFLICT_GRAPH.md`](opinion/M4_CONFLICT_GRAPH.md)
-7. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
-8. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
-9. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
-10. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
-11. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
-12. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
+7. [`opinion/M5_POLICY_BRIDGE.md`](opinion/M5_POLICY_BRIDGE.md)
+8. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
+9. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
+10. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
+11. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
+12. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
+13. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
 
 ## 目录职责
 
@@ -29,7 +30,8 @@ docs/
 │   ├── OPINION_MARL_NETWORK_ARCHITECTURE.md
 │   ├── M2_CONFIG_AND_ENTRYPOINTS.md
 │   ├── M3_MATH_MODULES.md
-│   └── M4_CONFLICT_GRAPH.md
+│   ├── M4_CONFLICT_GRAPH.md
+│   └── M5_POLICY_BRIDGE.md
 ├── sigmarl_1_2_0/
 │   ├── CODEBASE_AUDIT.md
 │   ├── R0_USAGE.md
@@ -78,8 +80,8 @@ Stackelberg 等旧设计。它们可以帮助理解历史决策和构造外部 T
 
 当前根目录以 SigmaRL 1.2.0 原始源码为底座；恢复时的核心代码、配置和资源已与
 基线 commit 逐文件核对，且真实 reset 和 3-step rollout 已通过。此后只叠加了本
-指南记录的 R0/R1/M2/M3/M4 修改，没有引入 TSC；M4 只向环境 `info` 增加 gated
-pair tensors，尚未接入 Actor。
+指南记录的 R0/R1/M2/M3/M4/M5 修改，没有引入 TSC；M5 使用冻结 Base Actor 和
+当前帧 Direct Evidence，只修正速度 location，尚未维护连续意见状态。
 
 现有 `sigmarl-nod` Conda 环境已经实施 user-site 隔离和依赖补全。R0、R1 代码实现
 已完成；实际训练和测试由用户按照
@@ -96,5 +98,5 @@ tag:        1.2.0
 commit:     5fe715bdfba4ff3e33d901d69dfa220f1222c060
 ```
 
-下一实现步骤为 M5 Base Actor checkpoint bridge 与速度 residual 接线。旧 TSC 文件
-不得批量复制回根目录。
+下一实现步骤为 M6 Stateful Collector 与按 global agent ID 维护的 `z_dense`。旧
+TSC 文件不得批量复制回根目录。
