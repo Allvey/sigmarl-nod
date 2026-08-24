@@ -4,6 +4,7 @@
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
+> 结构图：[`OPINION_MARL_NETWORK_ARCHITECTURE.md`](OPINION_MARL_NETWORK_ARCHITECTURE.md)  
 > 对齐日期：2026-08-24
 
 ## 0. 新 Session 先读这里

@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600" role="img" aria-labelledby="title desc">
+  <title id="title">Opinion Dynamics + MARL network structure</title>
+  <desc id="desc">The complete execution and training architecture, with milestones M3 through M10 mapped to their corresponding components.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#15803D"/>
+    </marker>
+    <style>
+      .title { font: 700 40px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #0F172A; }
+      .subtitle { font: 400 20px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #475569; }
+      .cluster-title { font: 700 25px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #1E293B; }
+      .node-title { font: 700 22px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #0F172A; text-anchor: middle; }
+      .node-text { font: 400 18px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #334155; text-anchor: middle; }
+      .edge-label { font: 600 17px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #334155; text-anchor: middle; paint-order: stroke; stroke: #FFFFFF; stroke-width: 7px; stroke-linejoin: round; }
+      .legend { font: 400 18px "Arial Unicode MS", "PingFang SC", Arial, sans-serif; fill: #334155; }
+      .cluster { fill: #F8FAFC; stroke: #CBD5E1; stroke-width: 2.5; rx: 24; }
+      .base { fill: #F1F5F9; stroke: #64748B; stroke-width: 3; rx: 18; }
+      .m3 { fill: #DCFCE7; stroke: #16A34A; stroke-width: 4; rx: 18; }
+      .m4 { fill: #FFEDD5; stroke: #EA580C; stroke-width: 4; rx: 18; }
+      .planned { fill: #DBEAFE; stroke: #2563EB; stroke-width: 3; rx: 18; }
+      .state { fill: #F3E8FF; stroke: #9333EA; stroke-width: 3; rx: 18; }
+      .edge { fill: none; stroke: #475569; stroke-width: 3; marker-end: url(#arrow); }
+      .edge-green { fill: none; stroke: #15803D; stroke-width: 3.5; marker-end: url(#arrow-green); }
+      .dash { fill: none; stroke: #64748B; stroke-width: 3; stroke-dasharray: 11 9; marker-end: url(#arrow); }
+      .thin-dash { fill: none; stroke: #94A3B8; stroke-width: 2.5; stroke-dasharray: 9 8; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="2400" height="1600" fill="#FFFFFF"/>
+  <text x="1200" y="58" class="title" text-anchor="middle">Opinion Dynamics + MARL：整体网络结构与里程碑对应</text>
+  <text x="1200" y="94" class="subtitle" text-anchor="middle">绿色：M3 已实现　橙色：M4 下一步　蓝色/紫色：M5–M10 计划结构　灰色：SigmaRL Base 保持不变</text>
+
+  <!-- Physical information layer -->
+  <rect x="45" y="125" width="2310" height="270" class="cluster"/>
+  <text x="75" y="162" class="cluster-title">物理环境与交互信息层</text>
+
+  <rect x="85" y="205" width="255" height="105" class="base"/>
+  <text x="212" y="243" class="node-title">道路交通环境</text>
+  <text x="212" y="274" class="node-text">位置 · 速度 · 航向</text>
+
+  <rect x="430" y="170" width="300" height="88" class="base"/>
+  <text x="580" y="204" class="node-title">原始局部观测 oᵢ</text>
+  <text x="580" y="234" class="node-text">[E,N,32] · 保持不变</text>
+
+  <rect x="430" y="282" width="300" height="88" class="m4"/>
+  <text x="580" y="316" class="node-title">ConflictGraph [M4]</text>
+  <text x="580" y="346" class="node-text">当前状态的短时常速外推</text>
+
+  <rect x="825" y="245" width="350" height="125" class="m4"/>
+  <text x="1000" y="279" class="node-title">车辆对物理信息 [M4]</text>
+  <text x="1000" y="310" class="node-text">χᵢⱼ [E,N,K,10]</text>
+  <text x="1000" y="340" class="node-text">urgency · confidence · mask</text>
+
+  <rect x="1275" y="245" width="285" height="125" class="m4"/>
+  <text x="1417" y="279" class="node-title">neighbor_track_ids</text>
+  <text x="1417" y="310" class="node-text">仅用于状态查表</text>
+  <text x="1417" y="340" class="node-text">不进入神经网络</text>
+
+  <rect x="1660" y="245" width="285" height="125" class="m4"/>
+  <text x="1802" y="279" class="node-title">agent_reset_mask</text>
+  <text x="1802" y="310" class="node-text">episode / 单车重置</text>
+  <text x="1802" y="340" class="node-text">清理旧意见关联</text>
+
+  <path d="M340 240 L430 214" class="edge"/>
+  <path d="M340 275 L430 326" class="edge"/>
+  <path d="M730 326 L825 307" class="edge"/>
+  <path d="M340 290 C760 390, 1080 190, 1275 286" class="thin-dash"/>
+  <path d="M340 300 C900 430, 1460 190, 1660 286" class="thin-dash"/>
+
+  <!-- Decentralized policy -->
+  <rect x="45" y="425" width="2310" height="650" class="cluster"/>
+  <text x="75" y="463" class="cluster-title">分散式执行策略：每辆车只使用当前局部物理信息与自身维护的意见</text>
+
+  <rect x="425" y="495" width="325" height="108" class="base"/>
+  <text x="587" y="532" class="node-title">SigmaRL Base Actor</text>
+  <text x="587" y="563" class="node-text">共享 MLP：32→256→256→4</text>
+  <text x="587" y="589" class="node-text">可学习</text>
+
+  <rect x="835" y="495" width="345" height="108" class="base"/>
+  <text x="1007" y="532" class="node-title">Base 分布参数</text>
+  <text x="1007" y="563" class="node-text">base_loc [速度, 转向]</text>
+  <text x="1007" y="589" class="node-text">base_scale</text>
+
+  <rect x="700" y="660" width="355" height="128" class="m3"/>
+  <text x="877" y="695" class="node-title">OpinionEvidenceNet [M3]</text>
+  <text x="877" y="726" class="node-text">G(χᵢⱼ) − G(swap χᵢⱼ)</text>
+  <text x="877" y="756" class="node-text">共享 MLP · 可学习</text>
+
+  <rect x="1120" y="660" width="290" height="128" class="m3"/>
+  <text x="1265" y="695" class="node-title">有界物理证据</text>
+  <text x="1265" y="726" class="node-text">raw_b → b</text>
+  <text x="1265" y="756" class="node-text">b = raw_b·ρ·c·mask</text>
+
+  <rect x="1480" y="660" width="330" height="128" class="m3"/>
+  <text x="1645" y="695" class="node-title">OpinionDynamics [M3]</text>
+  <text x="1645" y="726" class="node-text">遗忘 + 自强化 + 当前证据</text>
+  <text x="1645" y="756" class="node-text">固定 · 无可训练参数</text>
+
+  <rect x="1465" y="875" width="350" height="122" class="state"/>
+  <text x="1640" y="911" class="node-title">z_dense 状态管理 [M6]</text>
+  <text x="1640" y="942" class="node-text">按 自车ID—邻车ID 保存 z</text>
+  <text x="1640" y="971" class="node-text">gather / scatter · 每步一次</text>
+
+  <rect x="1870" y="850" width="285" height="122" class="m3"/>
+  <text x="2012" y="886" class="node-title">OpinionResidual [M3]</text>
+  <text x="2012" y="917" class="node-text">q=tanh(z/z₀)</text>
+  <text x="2012" y="946" class="node-text">归一化聚合 · 有界 Δμ</text>
+
+  <rect x="1995" y="500" width="300" height="145" class="planned"/>
+  <text x="2145" y="538" class="node-title">Policy Bridge [M5]</text>
+  <text x="2145" y="570" class="node-text">速度 loc + Δμ</text>
+  <text x="2145" y="599" class="node-text">转向 loc 不变</text>
+  <text x="2145" y="628" class="node-text">scale 不变</text>
+
+  <rect x="1995" y="690" width="300" height="92" class="planned"/>
+  <text x="2145" y="727" class="node-title">TanhNormal</text>
+  <text x="2145" y="758" class="node-text">最终策略分布</text>
+
+  <rect x="1995" y="990" width="300" height="70" class="planned"/>
+  <text x="2145" y="1022" class="node-title">action [E,N,2]</text>
+  <text x="2145" y="1048" class="node-text">+ log_prob</text>
+
+  <path d="M580 258 L580 495" class="edge"/>
+  <path d="M750 549 L835 549" class="edge"/>
+  <path d="M1175 307 C1080 440, 980 535, 930 660" class="edge"/>
+  <path d="M1055 724 L1120 724" class="edge-green"/>
+  <path d="M1410 724 L1480 724" class="edge-green"/>
+  <path d="M1417 370 C1420 570, 1510 740, 1560 875" class="dash"/>
+  <text x="1450" y="612" class="edge-label">只做身份关联</text>
+  <path d="M1802 370 C1830 595, 1750 760, 1710 875" class="dash"/>
+  <path d="M1640 875 L1640 788" class="edge"/>
+  <text x="1565" y="837" class="edge-label">z_prev</text>
+  <path d="M1810 724 C1880 750, 1880 805, 1870 875" class="edge-green"/>
+  <text x="1865" y="790" class="edge-label">z_next</text>
+  <path d="M1810 755 C1840 805, 1800 866, 1815 915" class="dash"/>
+  <path d="M1180 549 C1500 500, 1720 510, 1995 555" class="edge"/>
+  <path d="M2155 850 C2260 800, 2290 690, 2200 645" class="edge-green"/>
+  <text x="2260" y="760" class="edge-label">Δμ（仅速度）</text>
+  <path d="M2145 645 L2145 690" class="edge"/>
+  <path d="M2145 782 L2145 990" class="edge"/>
+  <path d="M1995 1025 C1860 1080, 320 1110, 210 310" class="thin-dash"/>
+  <text x="615" y="1055" class="edge-label">env.step(action) → 下一物理状态</text>
+
+  <!-- Training layer -->
+  <rect x="45" y="1110" width="2310" height="430" class="cluster"/>
+  <text x="75" y="1148" class="cluster-title">中心化训练结构（执行部署时移除 Critic、Buffer 与 Trainer）</text>
+
+  <rect x="95" y="1210" width="320" height="112" class="state"/>
+  <text x="255" y="1247" class="node-title">Stateful Collector [M6]</text>
+  <text x="255" y="1278" class="node-text">action · reward · done</text>
+  <text x="255" y="1307" class="node-text">ID映射 · z · reset</text>
+
+  <rect x="490" y="1210" width="315" height="112" class="planned"/>
+  <text x="647" y="1247" class="node-title">Sequence Buffer [M7]</text>
+  <text x="647" y="1278" class="node-text">连续 chunk · z_init</text>
+  <text x="647" y="1307" class="node-text">不跨 env / done</text>
+
+  <rect x="880" y="1210" width="315" height="112" class="planned"/>
+  <text x="1037" y="1247" class="node-title">Sequence PPO [M8]</text>
+  <text x="1037" y="1278" class="node-text">时间维展开</text>
+  <text x="1037" y="1307" class="node-text">chunk batch 并行</text>
+
+  <rect x="1270" y="1210" width="315" height="112" class="base"/>
+  <text x="1427" y="1247" class="node-title">中心化 Critic</text>
+  <text x="1427" y="1278" class="node-text">只读原始联合 observation</text>
+  <text x="1427" y="1307" class="node-text">不读取 z · 仅训练期</text>
+
+  <rect x="1660" y="1175" width="350" height="112" class="planned"/>
+  <text x="1835" y="1212" class="node-title">三阶段 Trainer [M9]</text>
+  <text x="1835" y="1243" class="node-text">Base → Evidence → Joint</text>
+  <text x="1835" y="1272" class="node-text">冻结 / 解冻 / checkpoint</text>
+
+  <rect x="1660" y="1360" width="350" height="112" class="planned"/>
+  <text x="1835" y="1397" class="node-title">评估与诊断 [M10]</text>
+  <text x="1835" y="1428" class="node-text">raw_b · b · z · residual</text>
+  <text x="1835" y="1457" class="node-text">曲线 · PDF · 可视化</text>
+
+  <path d="M415 1266 L490 1266" class="edge"/>
+  <path d="M805 1266 L880 1266" class="edge"/>
+  <path d="M1270 1266 L1195 1266" class="edge"/>
+  <text x="1230" y="1244" class="edge-label">value</text>
+  <path d="M1660 1231 L1195 1231" class="dash"/>
+  <path d="M1030 1210 C1010 1080, 950 900, 900 788" class="dash"/>
+  <text x="930" y="1072" class="edge-label">Actor loss → EvidenceNet</text>
+  <path d="M970 1210 C800 1050, 650 780, 600 603" class="dash"/>
+  <text x="710" y="1005" class="edge-label">Actor loss → Base Actor</text>
+  <path d="M1100 1210 C1260 1090, 1450 1010, 1530 788" class="thin-dash"/>
+  <text x="1320" y="1085" class="edge-label">通过固定 Dynamics 反传；不更新其参数</text>
+  <path d="M1835 1287 L1835 1360" class="dash"/>
+  <path d="M2145 1060 C2200 1250, 2090 1390, 2010 1416" class="thin-dash"/>
+
+  <!-- Footer legend -->
+  <rect x="95" y="1465" width="24" height="24" class="m3"/>
+  <text x="132" y="1484" class="legend">M3 已实现</text>
+  <rect x="285" y="1465" width="24" height="24" class="m4"/>
+  <text x="322" y="1484" class="legend">M4 下一步</text>
+  <rect x="475" y="1465" width="24" height="24" class="planned"/>
+  <text x="512" y="1484" class="legend">M5–M10 计划</text>
+  <rect x="690" y="1465" width="24" height="24" class="base"/>
+  <text x="727" y="1484" class="legend">SigmaRL Base 不变</text>
+  <line x1="950" y1="1477" x2="1020" y2="1477" stroke="#64748B" stroke-width="3" stroke-dasharray="11 9" marker-end="url(#arrow)"/>
+  <text x="1040" y="1484" class="legend">虚线：状态管理或仅训练期连接</text>
+  <text x="1200" y="1568" class="subtitle" text-anchor="middle">核心语义：b = 瞬时证据　·　z = 跨时间意见　·　Δμ = 对速度决策的有界修正</text>
+</svg>

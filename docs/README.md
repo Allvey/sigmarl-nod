@@ -7,14 +7,15 @@ MARL 方法与旧 TSC 实现明确分开。
 
 1. [`opinion/opinion_dynamics_marl_technical_route.md`](opinion/opinion_dynamics_marl_technical_route.md)
 2. [`opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md`](opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md)
-3. [`opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](opinion/M2_CONFIG_AND_ENTRYPOINTS.md)
-4. [`opinion/M3_MATH_MODULES.md`](opinion/M3_MATH_MODULES.md)
-5. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
-6. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
-7. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
-8. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
-9. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
-10. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
+3. [`opinion/OPINION_MARL_NETWORK_ARCHITECTURE.md`](opinion/OPINION_MARL_NETWORK_ARCHITECTURE.md)
+4. [`opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](opinion/M2_CONFIG_AND_ENTRYPOINTS.md)
+5. [`opinion/M3_MATH_MODULES.md`](opinion/M3_MATH_MODULES.md)
+6. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
+7. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
+8. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
+9. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
+10. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
+11. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
 
 ## 目录职责
 
@@ -24,6 +25,7 @@ docs/
 ├── opinion/
 │   ├── opinion_dynamics_marl_technical_route.md
 │   ├── OPINION_MARL_IMPLEMENTATION_GUIDE.md
+│   ├── OPINION_MARL_NETWORK_ARCHITECTURE.md
 │   ├── M2_CONFIG_AND_ENTRYPOINTS.md
 │   └── M3_MATH_MODULES.md
 ├── sigmarl_1_2_0/
