@@ -757,6 +757,17 @@ def mappo_cavs(
                         policy=policy,
                         critic=critic,
                     )
+                if is_direct_opinion:
+                    if opinion_bridge is None:
+                        raise RuntimeError(
+                            "M5 EvidenceNet is unavailable while saving a checkpoint."
+                        )
+                    torch.save(
+                        opinion_bridge.evidence_net.state_dict(),
+                        parameters.where_to_save
+                        + parameters.model_name
+                        + "_evidence_net.pth",
+                    )
             else:
                 # Save only the mean episode reward list and parameters
                 parameters.episode_reward_mean_current = (
@@ -842,6 +853,15 @@ def mappo_cavs(
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
+    if is_direct_opinion:
+        if opinion_bridge is None:
+            raise RuntimeError(
+                "M5 EvidenceNet is unavailable while saving the final model."
+            )
+        torch.save(
+            opinion_bridge.evidence_net.state_dict(),
+            parameters.where_to_save + "final_evidence_net.pth",
+        )
 
     if artifact_logging_enabled:
         if is_direct_opinion:

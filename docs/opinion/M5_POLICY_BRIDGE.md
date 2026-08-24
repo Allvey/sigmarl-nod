@@ -148,6 +148,8 @@ python main_testing_opinion.py \
 M5 run 在原 R1 产物基础上增加：
 
 ```text
+reward<value>_evidence_net.pth  # 每次刷新最优中间策略时保存
+final_evidence_net.pth          # EvidenceNet 独立 state_dict
 final_opinion_policy.pth
 final_checkpoint.pt:
   stage = evidence_direct
@@ -159,8 +161,14 @@ final_checkpoint.pt:
   opinion_runtime_config
 ```
 
-`final_policy.pth` 保留为测试兼容入口；M5 run 中的 `final_base_actor.pth` 是冻结 Base
-Actor 的原始状态，而不是 Opinion Policy 的别名。
+`reward<value>_policy.pth` 和 `final_policy.pth` 都是完整 Opinion Policy state_dict，
+其中已经包含冻结 Base Actor 与 EvidenceNet；独立的 `*_evidence_net.pth` 用于参数分析、
+消融和后续阶段初始化。`final_policy.pth` 保留为测试兼容入口；M5 run 中的
+`final_base_actor.pth` 是冻结 Base Actor 的原始状态，而不是 Opinion Policy 的别名。
+
+M3 的 `OpinionDynamics` 与 `OpinionResidual` 当前没有可训练参数，因此不会生成对应
+权重文件；M4 的 ConflictGraph 是确定性物理计算，也没有网络权重。M5 当前新增且真正
+被优化的 Actor 侧网络只有 EvidenceNet。
 
 `metrics.json` 额外记录：
 

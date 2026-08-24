@@ -615,6 +615,9 @@ Learned evidence + fixed nonlinear dynamics（Full）
   mask、urgency/confidence 与单 agent reset 脉冲；这些张量只进入环境 `info`；
 - M5 已实现 Base Actor/Critic checkpoint 桥、冻结 Base Actor、可训练 EvidenceNet、
   `z_direct=b`、有界速度 residual、最终分布 log-prob 和车辆 0 实时诊断面板；
+- M5 的完整 Opinion Policy、Critic 和 EvidenceNet 均写入 run 目录；EvidenceNet 同时
+  保存 reward 最优中间 `reward<value>_evidence_net.pth` 与最终
+  `final_evidence_net.pth`，方便独立分析和后续阶段初始化；
 - M5 训练优先使用 completed Base；开发阶段若不存在 completed Base，也可从最新
   running/failed run 加载同 reward 的中间 Actor/Critic 对，并在配置快照中标记来源
   状态；正式性能实验仍使用完整 Base；
