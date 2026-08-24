@@ -114,5 +114,6 @@ R0 已原地执行：
 R0 实现状态：已完成
 R1 实现状态：已完成，待用户手动训练形成真实性能基线
 M2 实现状态：已完成，待用户手动执行 Base/no-op 训练
-下一实现步骤：M3 Evidence、固定 Dynamics 与有界 Residual
+M3 实现状态：已完成，待用户手动执行数学检查与 Base/no-op 训练
+下一实现步骤：M4 gated ConflictGraph 与环境 pair-info 接口
 ```

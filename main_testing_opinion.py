@@ -1,4 +1,4 @@
-"""Opinion-MARL testing entry point for the current implemented stage."""
+"""Opinion-MARL testing entry point for the current Base/no-op stage."""
 
 import argparse
 from pathlib import Path
@@ -7,7 +7,7 @@ from typing import Optional
 from main_testing import test_base
 from utilities.opinion.config import (
     load_opinion_experiment,
-    require_m2_base_mode,
+    require_base_noop_mode,
 )
 
 
@@ -19,13 +19,13 @@ def main(
     run_directory: Optional[Path] = None,
 ) -> None:
     experiment = load_opinion_experiment(config_file)
-    require_m2_base_mode(experiment)
+    require_base_noop_mode(experiment)
     test_base(experiment.config.output_root, run_directory)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test an Opinion-MARL run (M2 Base/no-op mode)."
+        description="Test an Opinion-MARL run (current Base/no-op mode)."
     )
     parser.add_argument(
         "--config",

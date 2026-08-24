@@ -1,10 +1,10 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0、R1、M2 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1、M2、M3 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 对齐日期：2026-08-23
+> 对齐日期：2026-08-24
 
 ## 0. 新 Session 先读这里
 
@@ -16,10 +16,11 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 1. 阅读本文件；
 2. 阅读技术路线全文；
 3. 阅读 [`M2_CONFIG_AND_ENTRYPOINTS.md`](M2_CONFIG_AND_ENTRYPOINTS.md)；
-4. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
-5. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
-6. 查看本文件第 10 节，只执行下一个未完成阶段；
-7. 每次实现后更新阶段状态、验证命令和真实结果。
+4. 阅读 [`M3_MATH_MODULES.md`](M3_MATH_MODULES.md)；
+5. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
+6. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
+7. 查看本文件第 10 节，只执行下一个未完成阶段；
+8. 每次实现后更新阶段状态、验证命令和真实结果。
 
 可复制给新 Session：
 
@@ -31,8 +32,9 @@ Opinion Dynamics + MARL。
 1. docs/opinion/opinion_dynamics_marl_technical_route.md
 2. docs/opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md
 3. docs/opinion/M2_CONFIG_AND_ENTRYPOINTS.md
-4. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
-5. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
+4. docs/opinion/M3_MATH_MODULES.md
+5. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
+6. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
 
 不要恢复 docs/archive_tsc 中的代码设计。TSC 只作为外部实验基线；新方法禁止依赖
 TopologyLearner、priority、leader、Stackelberg、action predictor 或 opponent
@@ -421,7 +423,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 | R0：恢复 SigmaRL 1.2.0 原始代码 | 已完成 | 环境原地隔离，标准训练/测试入口已统一 |
 | R1：原始 Base 速度与产物基线 | 已完成 | 固定小预算与 wall time；用户手动训练 |
 | M2：Opinion 配置与独立入口 | 已完成 | 不导入 TSC，不改变 Base；用户手动训练 |
-| M3：Evidence/Dynamics/Residual | 未开始 | 数学、边界、梯度测试 |
+| M3：Evidence/Dynamics/Residual | 已完成 | 数学、边界、梯度测试；用户手动运行 |
 | M4：ConflictGraph 环境接口 | 未开始 | gated info/reset，Base 不变 |
 | M5：Policy 与 Base checkpoint bridge | 未开始 | 分布、边界和权重一致 |
 | M6：Stateful Collector | 未开始 | global ID、每步一次、reset |
@@ -495,7 +497,7 @@ Level C：formal comparison
 | R0 | 原始 Base tiny smoke | 行为不应改变 | shape/有限值/优化一步/保存加载通过 |
 | R1 | 原始 Base pilot | 建立参照 | 固化曲线、碰撞、速度和耗时区间 |
 | M2 | `use_opinion_marl=false` 训练 | 应与 Base 等价 | 同 seed 动作/log-prob 合同一致，指标落入 R1 区间 |
-| M3 | 数学模块测试 + residual gain=0 的 Base 训练 | 应与 Base 等价 | 新模块可反传，但关闭后不影响 Base |
+| M3 | 数学模块测试 + 模块未接线的 Base 训练 | 应与 Base 等价 | 新模块可反传，但关闭后不影响 Base |
 | M4 | pair info 开启但不被 Policy 使用 | 应与 Base 近似一致 | 原始 observation/reward/action 不变，开销被记录 |
 | M5 | Direct evidence residual pilot | 开始出现协调信号 | 数值稳定、无碰撞灾难性回退，并与同信息预算 Direct 基线比较 |
 | M6 | Stateful rollout + 冻结 Opinion pilot | 不要求立即提升 | global-ID/reset 正确，连续运行无状态串扰 |
@@ -537,7 +539,7 @@ outputs/milestone_validation/<milestone>/<run_id>/
 - `b` 有界且受 urgency/confidence 门控；
 - `z=0` 附近稳定性和临界紧迫度符合理论；
 - 证据符号翻转能驱动意见翻转；
-- mask edge 不更新；
+- `pair_mask=false` 时不接收 evidence/自强化，已有意见只执行确定性衰减；
 - residual 有界且不随 K 无限制增大。
 
 ### 状态测试
@@ -585,7 +587,7 @@ Learned evidence + fixed nonlinear dynamics（Full）
 
 ## 13. 当前状态说明
 
-截至 2026-08-23：
+截至 2026-08-24：
 
 - 文档已统一到 SigmaRL 1.2.0；
 - 旧 TSC 文档已移入 `docs/archive_tsc/`；
@@ -599,6 +601,8 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - M2 已新增 strict typed Opinion schema、完整/pilot 配置和独立训练/测试入口；
 - M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径，开启未实现阶段会明确
   失败，不会静默伪装为 Opinion 训练；
+- M3 已实现反对称有界 EvidenceNet、无可训练参数的固定 OpinionDynamics、归一化
+  有界速度 Residual 以及标准库参考测试；模块尚未接入环境或 Actor；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M3：实现 Evidence、固定 OpinionDynamics 和有界 Residual 的纯数学
-  模块，并先保持 residual/no-op 训练行为。
+- 下一实现步骤是 M4：在 `road_traffic.py` 中增加 gated ConflictGraph、10 维车辆对
+  特征和 reset 信息，但仍不改变 Base observation/action/reward。

@@ -37,9 +37,9 @@ action           [2,4,2]
 
 上述 smoke 是环境修复前的既有证据；R0 已在现有 Conda 环境中实施 user-site 隔离
 和依赖补全，R1 已在原始 MAPPO 快速路径外围增加可复现产物；M2 又在不修改 Base
-算法的前提下建立了独立 typed Opinion 配置和入口。按用户要求，实际训练与测试由
-用户手动执行。M2 使用说明见
-[`../opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](../opinion/M2_CONFIG_AND_ENTRYPOINTS.md)。
+算法的前提下建立了独立 typed Opinion 配置和入口；M3 已实现尚未接入 Actor 的纯
+数学模块。按用户要求，实际训练与测试由用户手动执行。当前说明见
+[`../opinion/M3_MATH_MODULES.md`](../opinion/M3_MATH_MODULES.md)。
 
 以后如果基础 tag 改变，必须建立新的版本目录，不得直接覆盖本目录并继续沿用
 `sigmarl_1_2_0` 名称。

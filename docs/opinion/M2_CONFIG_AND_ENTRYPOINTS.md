@@ -1,6 +1,6 @@
 # M2：Opinion 配置与独立训练/测试入口
 
-> 实现状态：代码与文档已完成，实际训练和测试由用户手动执行  
+> 实现状态：已完成；后续状态见 M3 文档  
 > 当前可执行阶段：`stage=base`、`use_opinion_marl=false`  
 > 当前算法行为：SigmaRL 1.2.0 Base-MAPPO
 
@@ -167,11 +167,12 @@ M2 run 仍使用 R1 的产物合同：配置快照、逐轮 metrics、timing、P
 Critic 和完整最终 checkpoint。`config_resolved.json` 只包含实际送入 Base 的
 `Parameters`；`opinion_config_resolved.json` 单独记录尚未启用的 Opinion 合同。
 
-下一步 M3 将新增纯数学模块：
+M3 已新增纯数学模块：
 
 - `OpinionEvidenceNet`；
 - 固定 `OpinionDynamics`；
 - 有界 `OpinionResidual`。
 
-M3 首先以 residual/no-op 方式保持训练入口可运行，不接管 Stateful Collector。
-
+M3 仍以“数学模块已存在但尚未接线”的 no-op 方式保持训练入口可运行，不接管
+Stateful Collector。具体见
+[`M3_MATH_MODULES.md`](M3_MATH_MODULES.md)。

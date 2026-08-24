@@ -475,11 +475,16 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
     )
 
 
-def require_m2_base_mode(experiment: LoadedOpinionExperiment) -> None:
+def require_base_noop_mode(experiment: LoadedOpinionExperiment) -> None:
     """Fail explicitly instead of silently treating an enabled method as Base."""
 
     if experiment.config.use_opinion_marl or experiment.config.stage != "base":
         raise NotImplementedError(
-            "Opinion execution is introduced in M3-M9. For M2, use "
+            "M3 provides pure math modules; active Opinion execution is "
+            "introduced in M5-M9. For the current trainable no-op path, use "
             "stage='base' with use_opinion_marl=false."
         )
+
+
+# Compatibility for sessions or scripts created during M2.
+require_m2_base_mode = require_base_noop_mode
