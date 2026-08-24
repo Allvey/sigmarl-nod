@@ -1,4 +1,4 @@
-"""Opinion-MARL testing entry point for the current Base/no-op stage."""
+"""Opinion-MARL testing entry point through the M4 information-only stage."""
 
 import argparse
 from pathlib import Path
@@ -20,12 +20,19 @@ def main(
 ) -> None:
     experiment = load_opinion_experiment(config_file)
     require_base_noop_mode(experiment)
-    test_base(experiment.config.output_root, run_directory)
+    conflict_config = experiment.config.opinion.conflict_graph
+    test_base(
+        experiment.config.output_root,
+        run_directory,
+        opinion_pair_info_config=(
+            conflict_config.to_dict() if conflict_config.emit_pair_info else None
+        ),
+    )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test an Opinion-MARL run (current Base/no-op mode)."
+        description="Test an Opinion-MARL run through the M4 information stage."
     )
     parser.add_argument(
         "--config",

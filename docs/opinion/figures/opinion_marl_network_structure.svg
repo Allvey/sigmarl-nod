@@ -46,11 +46,11 @@
   <text x="580" y="234" class="node-text">[E,N,32] · 保持不变</text>
 
   <rect x="430" y="282" width="300" height="88" class="m4"/>
-  <text x="580" y="316" class="node-title">ConflictGraph [M4]</text>
+  <text x="580" y="316" class="node-title">ConflictGraph [M4 已实现]</text>
   <text x="580" y="346" class="node-text">当前状态的短时常速外推</text>
 
   <rect x="825" y="245" width="350" height="125" class="m4"/>
-  <text x="1000" y="279" class="node-title">车辆对物理信息 [M4]</text>
+  <text x="1000" y="279" class="node-title">车辆对物理信息 [M4 已实现]</text>
   <text x="1000" y="310" class="node-text">χᵢⱼ [E,N,K,10]</text>
   <text x="1000" y="340" class="node-text">urgency · confidence · mask</text>
 

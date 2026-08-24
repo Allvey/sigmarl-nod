@@ -2,7 +2,7 @@
 
 > 代码底座：SigmaRL 1.2.0  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 实施状态：M3 已完成，M4–M10 按图中标记逐步实现  
+> 实施状态：M4 已完成，M5–M10 按图中标记逐步实现  
 > 更新日期：2026-08-24
 
 ## 1. 整体网络结构
@@ -13,7 +13,7 @@ flowchart TB
 
     subgraph PHYS["物理交互信息层"]
         OBS["原始局部观测 oᵢ<br/>[E,N,32]<br/>保持 SigmaRL 不变"]
-        CG["ConflictGraph<br/>[M4]"]
+        CG["ConflictGraph<br/>[M4 已实现]"]
         PAIR["车辆对特征 χᵢⱼ<br/>[E,N,K,10]"]
         GATE["urgency ρ / confidence c<br/>pair_mask"]
         IDS["neighbor_track_ids<br/>仅用于状态关联"]
@@ -106,7 +106,7 @@ flowchart TB
 | 阶段 | 对应结构 | 主要工作 | 是否改变动作 |
 |---|---|---|---|
 | M3，已完成 | EvidenceNet、OpinionDynamics、OpinionResidual | 实现纯数学映射、边界和梯度接口 | 否，尚未接线 |
-| M4 | ConflictGraph、pair features、urgency/confidence、track IDs、reset mask | 从真实车辆状态生成物理交互信息 | 否，Policy 不读取 |
+| M4，已完成 | ConflictGraph、pair features、urgency/confidence、track IDs、reset mask | 从真实车辆状态生成物理交互信息 | 否，Policy 不读取 |
 | M5 | Base Actor 与 residual 的 Policy Bridge | 加载 Base 权重，将 residual 加到速度 loc | 是，首次改变动作分布 |
 | M6 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次 | 是，形成真实时间记忆 |
 | M7 | Sequence Buffer | 保存连续 chunk、`z_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
@@ -165,4 +165,3 @@ leader、通行权或学习拓扑。
 
 中心化 Critic、Sequence Buffer 和 PPO 只在训练阶段使用。部署时每辆车根据自身局部
 观测、当前可见邻车及本地保存的意见状态分散执行。
-

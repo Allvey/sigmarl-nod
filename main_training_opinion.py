@@ -1,9 +1,4 @@
-"""Opinion-MARL training entry point.
-
-M2 provides the typed configuration and M3 provides pure mathematical modules.
-The executable path remains Base/no-op until environment features and the
-policy bridge are introduced in M4-M5.
-"""
+"""Opinion-MARL training entry point through the M4 information-only stage."""
 
 import argparse
 from pathlib import Path
@@ -22,10 +17,12 @@ DEFAULT_CONFIG_FILE = Path("config_opinion.json")
 def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
     experiment = load_opinion_experiment(config_file)
     require_base_noop_mode(experiment)
+    conflict_config = experiment.config.opinion.conflict_graph
+    emits_pair_info = conflict_config.emit_pair_info
     return train_base(
         parameters=experiment.parameters,
         source_config=experiment.source_config,
-        run_label="opinion-off-base",
+        run_label="m4-pair-info" if emits_pair_info else "opinion-off-base",
         supplementary_snapshots={
             "base_config_source.json": experiment.base_source_config,
             "opinion_config_resolved.json": experiment.resolved_opinion_config(),
@@ -36,14 +33,22 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             "status": "pending_user_validation",
             "expected_behavior": "base_equivalent",
             "automated_performance_validation": False,
-            "note": "M2 has Opinion disabled and reuses the R1 Base path.",
+            "note": (
+                "M4 emits physical pair tensors through environment info, but "
+                "the policy, reward, action, and optimizer remain Base-equivalent."
+                if emits_pair_info
+                else "Opinion is disabled and reuses the R1 Base path."
+            ),
         },
+        opinion_pair_info_config=(
+            conflict_config.to_dict() if emits_pair_info else None
+        ),
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train the staged Opinion-MARL method (current Base/no-op mode)."
+        description="Train the staged Opinion-MARL method through M4."
     )
     parser.add_argument(
         "--config",

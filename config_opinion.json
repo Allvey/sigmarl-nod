@@ -7,6 +7,7 @@
     "output_root": "outputs/opinion/base/",
     "opinion": {
         "conflict_graph": {
+            "emit_pair_info": false,
             "candidate_count": 2,
             "pair_feature_dim": 10,
             "prediction_horizon_seconds": 3.0,

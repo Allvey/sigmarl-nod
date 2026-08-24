@@ -7,7 +7,7 @@ import json
 import os
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from vmas.simulator.utils import save_video
 
@@ -39,6 +39,7 @@ def _load_run_parameters(run_directory: Path) -> Parameters:
 def test_base(
     output_root: str,
     run_directory: Optional[Path] = None,
+    opinion_pair_info_config: Optional[Mapping[str, object]] = None,
 ) -> None:
     if run_directory is None:
         run_directory = resolve_latest_run(output_root)
@@ -68,7 +69,10 @@ def test_base(
     parameters.is_visualize_lane_boundary = False
     parameters.is_visualize_extra_info = True
 
-    env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
+    env, policy, priority_module, parameters = mappo_cavs(
+        parameters=parameters,
+        opinion_pair_info_config=opinion_pair_info_config,
+    )
     rollout_result = env.rollout(
         max_steps=parameters.max_steps - 1,
         policy=policy,

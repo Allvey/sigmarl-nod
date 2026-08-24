@@ -7,6 +7,7 @@
 import time
 import random
 from pathlib import Path
+from typing import Mapping, Optional
 
 from termcolor import colored, cprint
 
@@ -83,7 +84,10 @@ from utilities.experiment_artifacts import (
 )
 
 
-def mappo_cavs(parameters: Parameters):
+def mappo_cavs(
+    parameters: Parameters,
+    opinion_pair_info_config: Optional[Mapping[str, object]] = None,
+):
     # Preserve the upstream default (seed 0) while making it explicit in the
     # resolved configuration for reproducible Base runs.
     random.seed(parameters.seed)
@@ -93,6 +97,8 @@ def mappo_cavs(parameters: Parameters):
     scenario = ScenarioRoadTraffic()
 
     scenario.parameters = parameters
+    if opinion_pair_info_config is not None:
+        scenario.configure_opinion_pair_info(dict(opinion_pair_info_config))
 
     # Using multi-threads to handle file writing
     # pool = ThreadPoolExecutor(128)
@@ -115,10 +121,41 @@ def mappo_cavs(parameters: Parameters):
     artifact_run_directory = Path(parameters.where_to_save)
     artifact_iterations = []
 
-    env = TransformedEnvCustom(
-        env,
-        RewardSum(in_keys=[env.reward_key], out_keys=[("agents", "episode_reward")]),
+    reward_sum = RewardSum(
+        in_keys=[env.reward_key], out_keys=[("agents", "episode_reward")]
     )
+    emits_opinion_pair_info = bool(
+        opinion_pair_info_config
+        and opinion_pair_info_config.get("emit_pair_info", False)
+    )
+    if emits_opinion_pair_info:
+        # TorchRL 0.2.1's VMAS wrapper casts every info leaf to float32.
+        # Restore the M4 public contract after the wrapper, while leaving the
+        # standard Base transform stack byte-for-byte equivalent in behavior.
+        from torchrl.envs.transforms import Compose, DTypeCastTransform
+
+        env_transform = Compose(
+            reward_sum,
+            DTypeCastTransform(
+                torch.float32,
+                torch.long,
+                in_keys=[("agents", "info", "neighbor_ids")],
+                in_keys_inv=[],
+            ),
+            DTypeCastTransform(
+                torch.float32,
+                torch.bool,
+                in_keys=[
+                    ("agents", "info", "pair_mask"),
+                    ("agents", "info", "agent_reset_mask"),
+                ],
+                in_keys_inv=[],
+            ),
+        )
+    else:
+        env_transform = reward_sum
+
+    env = TransformedEnvCustom(env, env_transform)
 
     check_env_specs(env)
 

@@ -31,8 +31,9 @@ def train_base(
     run_label: str = "base",
     supplementary_snapshots: Optional[Mapping[str, Mapping[str, Any]]] = None,
     comparison_payload: Optional[Mapping[str, Any]] = None,
+    opinion_pair_info_config: Optional[Mapping[str, object]] = None,
 ) -> Path:
-    """Run the unchanged Base-MAPPO path inside one isolated R1 run."""
+    """Run Base-MAPPO, optionally with the M4 information-only side channel."""
 
     output_root = str(Path(parameters.where_to_save).expanduser().resolve())
     run_directory = create_run_directory(
@@ -59,7 +60,10 @@ def train_base(
                 )
             atomic_write_json(run_directory / filename, dict(payload))
 
-        mappo_cavs(parameters=parameters)
+        mappo_cavs(
+            parameters=parameters,
+            opinion_pair_info_config=opinion_pair_info_config,
+        )
         write_training_status(
             run_directory,
             status="completed",

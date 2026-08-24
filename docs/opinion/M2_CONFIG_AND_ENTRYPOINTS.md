@@ -47,6 +47,7 @@ Base 配置和 Opinion 配置作为两个 typed 对象并列传递。Opinion 字
 ### ConflictGraph
 
 ```text
+emit_pair_info           = false（M4 pilot 单独设为 true）
 candidate_count          = 2
 pair_feature_dim         = 10
 prediction_horizon       = 3.0 s

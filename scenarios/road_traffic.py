@@ -97,6 +97,11 @@ class ScenarioRoadTraffic(BaseScenario):
     For other parameters, see the class Parameter defined in this file.
     """
 
+    def configure_opinion_pair_info(self, config: Dict[str, object]) -> None:
+        """Store an optional M4 side-channel config before VMAS builds the world."""
+
+        self._opinion_pair_info_options = dict(config)
+
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         self._init_params(batch_dim, device, **kwargs)
         world = self._init_world(batch_dim, device)
@@ -340,6 +345,40 @@ class ScenarioRoadTraffic(BaseScenario):
             self.parameters.n_nearing_agents_observed, self.parameters.n_agents - 1
         )
         self.n_agents = self.parameters.n_agents
+
+        # M4 is an explicitly gated information side channel. The standard
+        # Base entry never supplies this config and therefore never imports or
+        # constructs Opinion modules.
+        self._opinion_pair_info_enabled = False
+        self._opinion_conflict_graph = None
+        self._opinion_pair_info_cache = None
+        self._opinion_agent_reset_mask = None
+        opinion_options = getattr(self, "_opinion_pair_info_options", None)
+        if opinion_options is not None:
+            from utilities.opinion.config import ConflictGraphConfig
+
+            conflict_config = ConflictGraphConfig.from_dict(opinion_options)
+            self._opinion_pair_info_enabled = conflict_config.emit_pair_info
+            if self._opinion_pair_info_enabled:
+                if (
+                    conflict_config.candidate_count
+                    != self.parameters.n_nearing_agents_observed
+                ):
+                    raise ValueError(
+                        "ConflictGraph candidate_count must equal SigmaRL's "
+                        "n_nearing_agents_observed."
+                    )
+                from utilities.opinion.conflict_graph import ConflictGraph
+
+                self._opinion_conflict_graph = ConflictGraph(
+                    config=conflict_config,
+                    max_speed=self.max_speed,
+                )
+                self._opinion_agent_reset_mask = torch.zeros(
+                    (batch_dim, self.n_agents),
+                    device=device,
+                    dtype=torch.bool,
+                )
 
         # Timer for the first env
         self.timer = Timer(
@@ -1051,6 +1090,15 @@ class ScenarioRoadTraffic(BaseScenario):
 
         if is_reset_single_agent:
             assert env_index is not None
+
+        if self._opinion_pair_info_enabled:
+            self._opinion_pair_info_cache = None
+            if env_index is None:
+                self._opinion_agent_reset_mask[:] = True
+            elif is_reset_single_agent:
+                self._opinion_agent_reset_mask[env_index, agent_index] = True
+            else:
+                self._opinion_agent_reset_mask[env_index, :] = True
 
         for env_i in (
             [env_index] if env_index is not None else range(self.world.batch_dim)
@@ -2053,6 +2101,8 @@ class ScenarioRoadTraffic(BaseScenario):
         agent_index = self.world.agents.index(agent)
 
         if agent_index == 0:  # Avoid repeated computations
+            if self._opinion_pair_info_enabled:
+                self._opinion_pair_info_cache = None
             self._update_observation_and_normalize(agent, agent_index)
 
         # Observation of other agents
@@ -2721,6 +2771,27 @@ class ScenarioRoadTraffic(BaseScenario):
 
         return is_done
 
+    def _get_opinion_pair_info(self):
+        """Build M4 tensors once after all local observations selected neighbors."""
+
+        if self._opinion_pair_info_cache is None:
+            positions = torch.stack(
+                [world_agent.state.pos for world_agent in self.world.agents], dim=1
+            )
+            velocities = torch.stack(
+                [world_agent.state.vel for world_agent in self.world.agents], dim=1
+            )
+            yaws = torch.stack(
+                [world_agent.state.rot for world_agent in self.world.agents], dim=1
+            )
+            self._opinion_pair_info_cache = self._opinion_conflict_graph(
+                positions=positions,
+                velocities=velocities,
+                yaws=yaws,
+                neighbor_ids=self.observations.nearing_agents_indices,
+            )
+        return self._opinion_pair_info_cache
+
     def info(self, agent: Agent) -> Dict[str, Tensor]:
         """
         This function computes the info dict for "agent" in a vectorized way
@@ -2794,6 +2865,25 @@ class ScenarioRoadTraffic(BaseScenario):
                 else {}
             ),
         }
+
+        if self._opinion_pair_info_enabled:
+            pair_info = self._get_opinion_pair_info()
+            info.update(
+                {
+                    "pair_features": pair_info.pair_features[:, agent_index],
+                    "neighbor_ids": pair_info.neighbor_ids[:, agent_index],
+                    "pair_mask": pair_info.pair_mask[:, agent_index],
+                    "urgency": pair_info.urgency[:, agent_index],
+                    "confidence": pair_info.confidence[:, agent_index],
+                    "agent_reset_mask": self._opinion_agent_reset_mask[
+                        :, agent_index
+                    ].clone(),
+                }
+            )
+            # VMAS requests info once for each agent. Cloning above lets all
+            # slices expose the same one-step reset pulse before it is cleared.
+            if agent_index == self.n_agents - 1:
+                self._opinion_agent_reset_mask.zero_()
 
         return info
 

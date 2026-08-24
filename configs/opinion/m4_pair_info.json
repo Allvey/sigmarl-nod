@@ -3,11 +3,11 @@
     "method": "opinion_marl",
     "stage": "base",
     "use_opinion_marl": false,
-    "base_config": "../base/pilot.json",
-    "output_root": "outputs/opinion_pilot/base/",
+    "base_config": "../../config.json",
+    "output_root": "outputs/opinion/m4_pair_info/",
     "opinion": {
         "conflict_graph": {
-            "emit_pair_info": false,
+            "emit_pair_info": true,
             "candidate_count": 2,
             "pair_feature_dim": 10,
             "prediction_horizon_seconds": 3.0,

@@ -31,7 +31,7 @@
 <blockquote>
 <p>代码底座：SigmaRL 1.2.0<br>
 理论真源：<a href="opinion_dynamics_marl_technical_route.md"><code>opinion_dynamics_marl_technical_route.md</code></a><br>
-实施状态：M3 已完成，M4–M10 按图中标记逐步实现<br>
+实施状态：M4 已完成，M5–M10 按图中标记逐步实现<br>
 更新日期：2026-08-24</p>
 </blockquote>
 <h2 id="1-整体网络结构">1. 整体网络结构 </h2>
@@ -40,7 +40,7 @@
 
     subgraph PHYS["物理交互信息层"]
         OBS["原始局部观测 oᵢ&lt;br/&gt;[E,N,32]&lt;br/&gt;保持 SigmaRL 不变"]
-        CG["ConflictGraph&lt;br/&gt;[M4]"]
+        CG["ConflictGraph&lt;br/&gt;[M4 已实现]"]
         PAIR["车辆对特征 χᵢⱼ&lt;br/&gt;[E,N,K,10]"]
         GATE["urgency ρ / confidence c&lt;br/&gt;pair_mask"]
         IDS["neighbor_track_ids&lt;br/&gt;仅用于状态关联"]
@@ -144,7 +144,7 @@
 <td>否，尚未接线</td>
 </tr>
 <tr>
-<td>M4</td>
+<td>M4，已完成</td>
 <td>ConflictGraph、pair features、urgency/confidence、track IDs、reset mask</td>
 <td>从真实车辆状态生成物理交互信息</td>
 <td>否，Policy 不读取</td>

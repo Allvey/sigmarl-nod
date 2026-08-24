@@ -180,14 +180,14 @@ python main_testing_opinion.py
 所以 M3 不应带来 reward 或 collision 提升，也不应产生额外训练耗时。此处验证的是
 “加入数学模块文件没有破坏 Base 训练闭环”。
 
-## 8. 下一步
+## 8. 后续衔接
 
-M4 修改 `scenarios/road_traffic.py`，在 Opinion 开启时额外构造：
+M4 已在 `scenarios/road_traffic.py` 增加显式门控，并在开启时额外构造：
 
 ```text
 pair_features, neighbor_ids, pair_mask,
 urgency, confidence, agent_reset_mask
 ```
 
-M4 仍不让这些信息进入 Actor，因此训练性能仍应接近 Base；真实动作改变从 M5 开始。
-
+具体合同与命令见 [`M4_CONFLICT_GRAPH.md`](M4_CONFLICT_GRAPH.md)。M4 仍不让这些
+信息进入 Actor，因此训练性能仍应接近 Base；真实动作改变从 M5 开始。

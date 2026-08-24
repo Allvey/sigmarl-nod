@@ -86,6 +86,7 @@ def _string(value: Any, location: str) -> str:
 
 @dataclass(frozen=True)
 class ConflictGraphConfig:
+    emit_pair_info: bool
     candidate_count: int
     pair_feature_dim: int
     prediction_horizon_seconds: float
@@ -100,6 +101,10 @@ class ConflictGraphConfig:
         raw = _object(raw, "opinion.conflict_graph")
         _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.conflict_graph")
         result = cls(
+            emit_pair_info=_boolean(
+                raw["emit_pair_info"],
+                "opinion.conflict_graph.emit_pair_info",
+            ),
             candidate_count=_integer(
                 raw["candidate_count"], "opinion.conflict_graph.candidate_count"
             ),
@@ -150,6 +155,9 @@ class ConflictGraphConfig:
                 "conflict_distance_meters must be smaller than sensing_distance_meters."
             )
         return result
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -480,9 +488,10 @@ def require_base_noop_mode(experiment: LoadedOpinionExperiment) -> None:
 
     if experiment.config.use_opinion_marl or experiment.config.stage != "base":
         raise NotImplementedError(
-            "M3 provides pure math modules; active Opinion execution is "
-            "introduced in M5-M9. For the current trainable no-op path, use "
-            "stage='base' with use_opinion_marl=false."
+            "M4 provides the gated physical pair-info side channel; active "
+            "Opinion policy execution is introduced in M5-M9. For the current "
+            "trainable information-only path, use stage='base' with "
+            "use_opinion_marl=false."
         )
 
 
