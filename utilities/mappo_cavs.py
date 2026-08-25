@@ -242,12 +242,6 @@ def mappo_cavs(
         opinion_policy_config
         and opinion_policy_config.get("use_base_ppo_update", False)
     )
-    if use_base_ppo_update:
-        residual_values = opinion_policy_config.get("residual", {})
-        if residual_values.get("apply_to_action", True):
-            raise ValueError(
-                "Base PPO update is only valid when residual.apply_to_action=false."
-            )
     is_sequence_buffer = bool(
         is_stateful_opinion
         and opinion_policy_config

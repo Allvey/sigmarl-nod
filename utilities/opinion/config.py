@@ -356,10 +356,13 @@ class SequencePPOConfig:
     evidence_learning_rate_scale: float
     neutral_loss_coefficient: float
     magnitude_loss_coefficient: float
+    use_base_ppo_update: bool = False
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "SequencePPOConfig":
         raw = _object(raw, "opinion.sequence_ppo")
+        raw = dict(raw)
+        raw.setdefault("use_base_ppo_update", False)
         _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.sequence_ppo")
         result = cls(
             enabled=_boolean(
@@ -388,6 +391,10 @@ class SequencePPOConfig:
                 raw["magnitude_loss_coefficient"],
                 "opinion.sequence_ppo.magnitude_loss_coefficient",
             ),
+            use_base_ppo_update=_boolean(
+                raw["use_base_ppo_update"],
+                "opinion.sequence_ppo.use_base_ppo_update",
+            ),
         )
         if result.evidence_learning_rate_scale > 1.0:
             raise OpinionConfigError(
@@ -400,6 +407,10 @@ class SequencePPOConfig:
         if result.train_evidence and not result.enabled:
             raise OpinionConfigError(
                 "sequence_ppo.train_evidence=true requires sequence_ppo.enabled=true."
+            )
+        if result.use_base_ppo_update and not result.enabled:
+            raise OpinionConfigError(
+                "use_base_ppo_update=true requires sequence_ppo.enabled=true."
             )
         return result
 
@@ -604,6 +615,10 @@ class OpinionExperimentConfig:
                     "Non-Base stages require policy_bridge.enabled=true."
                 )
         opinion = OpinionConfig.from_dict(raw["opinion"])
+        if opinion.sequence_ppo.use_base_ppo_update and stage != "joint":
+            raise OpinionConfigError(
+                "use_base_ppo_update=true is only supported by M9 stage='joint'."
+            )
         if stage in {"base", "evidence"} and opinion.sequence_ppo.enabled:
             raise OpinionConfigError(
                 "Base/evidence stages require sequence_ppo.enabled=false."

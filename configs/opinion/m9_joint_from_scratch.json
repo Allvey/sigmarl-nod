@@ -36,7 +36,7 @@
             "gain": 0.1,
             "max_abs": 0.25,
             "action_index": 0,
-            "apply_to_action": false
+            "apply_to_action": true
         },
         "policy_bridge": {
             "enabled": true,
@@ -58,7 +58,8 @@
             "chunk_length": 16,
             "evidence_learning_rate_scale": 1.0,
             "neutral_loss_coefficient": 0.01,
-            "magnitude_loss_coefficient": 0.001
+            "magnitude_loss_coefficient": 0.001,
+            "use_base_ppo_update": true
         },
         "trainer": {
             "enabled": true,

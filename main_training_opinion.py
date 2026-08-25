@@ -76,7 +76,7 @@ def main(
         trainer_config.enabled and trainer_config.initialization == "none"
     )
     if initialize_from_scratch:
-        use_base_ppo_update = not experiment.config.opinion.residual.apply_to_action
+        use_base_ppo_update = sequence_config.use_base_ppo_update
         opinion_policy_config = {
             "mode": bridge_config.mode,
             "freeze_base_actor": bridge_config.freeze_base_actor,
@@ -368,13 +368,15 @@ def main(
                     }
                 )
         if trainer_config.enabled:
+            use_base_ppo_update = sequence_config.use_base_ppo_update
             opinion_policy_config.update(
                 {
                     "dynamics": opinion_values["dynamics"],
                     "freeze_evidence": stateful_config.freeze_evidence,
                     "zero_threshold": stateful_config.zero_threshold,
-                    "sequence_buffer_enabled": True,
-                    "sequence_evidence_training": True,
+                    "use_base_ppo_update": use_base_ppo_update,
+                    "sequence_buffer_enabled": not use_base_ppo_update,
+                    "sequence_evidence_training": not use_base_ppo_update,
                     "chunk_length": sequence_config.chunk_length,
                     "neutral_loss_coefficient": (
                         sequence_config.neutral_loss_coefficient
