@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from utilities.experiment_artifacts import (
+    resolve_evidence_critic_pair,
     resolve_latest_testable_run,
     resolve_policy_checkpoint,
     resolve_policy_critic_pair,
@@ -83,6 +84,19 @@ class TestingCheckpointResolutionTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FileNotFoundError, "matching critic"):
                 resolve_policy_critic_pair(run_directory)
+
+    def test_m5_evidence_requires_same_reward_critic(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_directory = Path(temporary_directory)
+            evidence = run_directory / "reward2.50_evidence_net.pth"
+            critic = run_directory / "reward2.50_critic.pth"
+            evidence.touch()
+            critic.touch()
+
+            self.assertEqual(
+                resolve_evidence_critic_pair(run_directory),
+                (evidence.resolve(), critic.resolve()),
+            )
 
 
 if __name__ == "__main__":

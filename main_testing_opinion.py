@@ -1,4 +1,4 @@
-"""Opinion-MARL testing entry point through the M5 Direct-Evidence stage."""
+"""Opinion-MARL testing entry point through the M6 Stateful stage."""
 
 import argparse
 from pathlib import Path
@@ -7,7 +7,7 @@ from typing import Optional
 from main_testing import test_base
 from utilities.opinion.config import (
     load_opinion_experiment,
-    require_m5_supported_mode,
+    require_m6_supported_mode,
 )
 
 
@@ -20,9 +20,10 @@ def main(
     checkpoint_path: Optional[Path] = None,
 ) -> None:
     experiment = load_opinion_experiment(config_file)
-    require_m5_supported_mode(experiment)
+    require_m6_supported_mode(experiment)
     conflict_config = experiment.config.opinion.conflict_graph
     bridge_config = experiment.config.opinion.policy_bridge
+    stateful_config = experiment.config.opinion.stateful
     opinion_policy_config = None
     if bridge_config.enabled:
         # Preserve JSON list types expected by the strict runtime parsers.
@@ -36,6 +37,14 @@ def main(
                 "evidence_learning_rate_scale"
             ],
         }
+        if stateful_config.enabled:
+            opinion_policy_config.update(
+                {
+                    "dynamics": opinion_values["dynamics"],
+                    "freeze_evidence": stateful_config.freeze_evidence,
+                    "zero_threshold": stateful_config.zero_threshold,
+                }
+            )
     test_base(
         experiment.config.output_root,
         run_directory,
@@ -60,7 +69,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test an Opinion-MARL run through the M5 Direct-Evidence stage."
+        description="Test an Opinion-MARL run through the M6 Stateful stage."
     )
     parser.add_argument(
         "--config",

@@ -41,6 +41,12 @@
             "freeze_base_actor": true,
             "visualize_agent_id": 0
         },
+        "stateful": {
+            "enabled": false,
+            "evidence_output_root": null,
+            "freeze_evidence": false,
+            "zero_threshold": 1e-06
+        },
         "sequence_ppo": {
             "chunk_length": 16,
             "evidence_learning_rate_scale": 0.1,

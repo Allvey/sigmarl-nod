@@ -93,6 +93,10 @@ Evidence learning rate   = 0.1 × Actor learning rate
 `mode=direct_evidence` 和 `freeze_base_actor=true`。完整语义见
 [`M5_POLICY_BRIDGE.md`](M5_POLICY_BRIDGE.md)。
 
+从 M6 起 strict schema 还要求 `opinion.stateful`。M2–M5 配置固定为 disabled、
+`evidence_output_root=null`；M6 配置固定 `enabled=true`、指定 M5 输出根目录并冻结
+EvidenceNet。完整语义见 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)。
+
 ## 4. 配置启动前检查
 
 `utilities/opinion/config.py` 会在创建环境或输出目录之前拒绝：

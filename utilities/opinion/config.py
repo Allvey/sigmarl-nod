@@ -11,7 +11,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from utilities.helper_training import Parameters
 
@@ -82,6 +82,12 @@ def _string(value: Any, location: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise OpinionConfigError(f"{location} must be a non-empty string.")
     return value
+
+
+def _optional_string(value: Any, location: str) -> Optional[str]:
+    if value is None:
+        return None
+    return _string(value, location)
 
 
 @dataclass(frozen=True)
@@ -293,13 +299,56 @@ class PolicyBridgeConfig:
                 minimum=0,
             ),
         )
-        if result.mode != "direct_evidence":
+        if result.mode not in {"direct_evidence", "stateful_opinion"}:
             raise OpinionConfigError(
-                "The M5 policy bridge requires mode='direct_evidence'."
+                "policy_bridge.mode must be 'direct_evidence' or "
+                "'stateful_opinion'."
             )
         if result.enabled and not result.freeze_base_actor:
             raise OpinionConfigError(
                 "M5 requires policy_bridge.freeze_base_actor=true."
+            )
+        return result
+
+
+@dataclass(frozen=True)
+class StatefulOpinionConfig:
+    enabled: bool
+    evidence_output_root: Optional[str]
+    freeze_evidence: bool
+    zero_threshold: float
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "StatefulOpinionConfig":
+        raw = _object(raw, "opinion.stateful")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.stateful")
+        result = cls(
+            enabled=_boolean(raw["enabled"], "opinion.stateful.enabled"),
+            evidence_output_root=_optional_string(
+                raw["evidence_output_root"],
+                "opinion.stateful.evidence_output_root",
+            ),
+            freeze_evidence=_boolean(
+                raw["freeze_evidence"], "opinion.stateful.freeze_evidence"
+            ),
+            zero_threshold=_number(
+                raw["zero_threshold"],
+                "opinion.stateful.zero_threshold",
+                strictly_positive=True,
+            ),
+        )
+        if result.enabled:
+            if result.evidence_output_root is None:
+                raise OpinionConfigError(
+                    "Enabled stateful opinion requires evidence_output_root."
+                )
+            if not result.freeze_evidence:
+                raise OpinionConfigError(
+                    "M6 requires stateful.freeze_evidence=true until sequence PPO."
+                )
+        elif result.evidence_output_root is not None:
+            raise OpinionConfigError(
+                "Disabled stateful opinion requires evidence_output_root=null."
             )
         return result
 
@@ -347,6 +396,7 @@ class OpinionConfig:
     dynamics: DynamicsConfig
     residual: ResidualConfig
     policy_bridge: PolicyBridgeConfig
+    stateful: StatefulOpinionConfig
     sequence_ppo: SequencePPOConfig
 
     @classmethod
@@ -359,6 +409,7 @@ class OpinionConfig:
             dynamics=DynamicsConfig.from_dict(raw["dynamics"]),
             residual=ResidualConfig.from_dict(raw["residual"]),
             policy_bridge=PolicyBridgeConfig.from_dict(raw["policy_bridge"]),
+            stateful=StatefulOpinionConfig.from_dict(raw["stateful"]),
             sequence_ppo=SequencePPOConfig.from_dict(raw["sequence_ppo"]),
         )
 
@@ -490,6 +541,16 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
         raise OpinionConfigError(
             "An enabled policy bridge requires conflict_graph.emit_pair_info=true."
         )
+    is_stateful_mode = opinion.policy_bridge.mode == "stateful_opinion"
+    if opinion.stateful.enabled != is_stateful_mode:
+        raise OpinionConfigError(
+            "stateful.enabled must be true exactly when "
+            "policy_bridge.mode='stateful_opinion'."
+        )
+    if is_stateful_mode and not opinion.policy_bridge.enabled:
+        raise OpinionConfigError(
+            "The stateful policy mode requires policy_bridge.enabled=true."
+        )
     if opinion.policy_bridge.visualize_agent_id >= parameters.n_agents:
         raise OpinionConfigError(
             "policy_bridge.visualize_agent_id must be a valid global agent ID."
@@ -505,7 +566,7 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
     ):
         raise OpinionConfigError(
             "Milestone entrypoints start a new stage; loading/resume is not "
-            "available through M5."
+            "available through M6."
         )
     if parameters.is_testing_mode:
         raise OpinionConfigError("The referenced Base config must be a training config.")
@@ -546,6 +607,13 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
         raise OpinionConfigError(
             "policy_bridge.base_output_root and output_root must be isolated."
         )
+    if config.opinion.stateful.evidence_output_root is not None and (
+        Path(config.opinion.stateful.evidence_output_root).expanduser().resolve()
+        == Path(config.output_root).expanduser().resolve()
+    ):
+        raise OpinionConfigError(
+            "stateful.evidence_output_root and output_root must be isolated."
+        )
     _validate_base_contract(parameters, config.opinion)
     return LoadedOpinionExperiment(
         config_path=config_path,
@@ -564,12 +632,36 @@ def require_m5_supported_mode(experiment: LoadedOpinionExperiment) -> None:
     bridge_enabled = experiment.config.opinion.policy_bridge.enabled
     if stage == "base" and not bridge_enabled:
         return
-    if stage == "evidence" and bridge_enabled:
+    if (
+        stage == "evidence"
+        and bridge_enabled
+        and experiment.config.opinion.policy_bridge.mode == "direct_evidence"
+        and not experiment.config.opinion.stateful.enabled
+    ):
         return
     raise NotImplementedError(
         "M5 supports stage='base' without the bridge, or stage='evidence' "
         "with the direct-evidence bridge. Stateful/joint execution starts in "
         "M6-M9."
+    )
+
+
+def require_m6_supported_mode(experiment: LoadedOpinionExperiment) -> None:
+    """Allow Base/M4, M5 direct evidence, and M6 stateful rollout modes."""
+
+    stage = experiment.config.stage
+    bridge = experiment.config.opinion.policy_bridge
+    stateful = experiment.config.opinion.stateful
+    if stage == "base" and not bridge.enabled and not stateful.enabled:
+        return
+    if stage == "evidence" and bridge.enabled:
+        if bridge.mode == "direct_evidence" and not stateful.enabled:
+            return
+        if bridge.mode == "stateful_opinion" and stateful.enabled:
+            return
+    raise NotImplementedError(
+        "M6 supports Base/M4, M5 direct-evidence, or M6 stateful-opinion "
+        "execution. Joint and sequence-PPO optimization start in M7-M9."
     )
 
 

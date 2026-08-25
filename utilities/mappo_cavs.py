@@ -136,19 +136,22 @@ def mappo_cavs(
         # TorchRL 0.2.1's VMAS wrapper casts every info leaf to float32.
         # Restore the M4 public contract after the wrapper, while leaving the
         # standard Base transform stack byte-for-byte equivalent in behavior.
-        from torchrl.envs.transforms import Compose, DTypeCastTransform
+        from torchrl.envs.transforms import Compose
+        from utilities.opinion.transforms import DiscreteDTypeCastTransform
 
         env_transform = Compose(
             reward_sum,
-            DTypeCastTransform(
+            DiscreteDTypeCastTransform(
                 torch.float32,
                 torch.long,
+                n=parameters.n_agents,
                 in_keys=[("agents", "info", "neighbor_ids")],
                 in_keys_inv=[],
             ),
-            DTypeCastTransform(
+            DiscreteDTypeCastTransform(
                 torch.float32,
                 torch.bool,
+                n=2,
                 in_keys=[
                     ("agents", "info", "pair_mask"),
                     ("agents", "info", "agent_reset_mask"),
@@ -211,15 +214,20 @@ def mappo_cavs(
         ),  # log probability favors numerical stability and gradient calculation
     )  # we'll need the log-prob for the PPO loss
 
-    is_direct_opinion = bool(
-        opinion_policy_config
-        and opinion_policy_config.get("mode") == "direct_evidence"
+    opinion_mode = (
+        str(opinion_policy_config.get("mode"))
+        if opinion_policy_config
+        else ""
     )
+    is_direct_opinion = opinion_mode == "direct_evidence"
+    is_stateful_opinion = opinion_mode == "stateful_opinion"
+    is_opinion_policy = is_direct_opinion or is_stateful_opinion
     opinion_bridge = None
+    state_tracker = None
     base_actor_source_state = None
-    if is_direct_opinion:
+    if is_opinion_policy:
         if not emits_opinion_pair_info:
-            raise ValueError("The M5 policy bridge requires M4 pair info.")
+            raise ValueError("The Opinion policy bridge requires M4 pair info.")
         if not parameters.is_load_model:
             base_actor_checkpoint = Path(
                 str(opinion_policy_config["base_actor_checkpoint"])
@@ -233,6 +241,13 @@ def mappo_cavs(
                 map_location=parameters.device,
             )
             base_policy.load_state_dict(base_actor_source_state, strict=True)
+            if artifact_logging_enabled:
+                # Preserve the exact frozen source immediately so an interrupted
+                # M5/M6 run never depends on a later-deleted reward checkpoint.
+                torch.save(
+                    base_actor_source_state,
+                    artifact_run_directory / "source_base_actor.pth",
+                )
             print(
                 colored(
                     f"[INFO] Loaded frozen Base Actor: {base_actor_checkpoint}",
@@ -240,10 +255,20 @@ def mappo_cavs(
                 )
             )
 
-        from utilities.opinion.config import EvidenceConfig, ResidualConfig
+        from utilities.opinion.config import (
+            DynamicsConfig,
+            EvidenceConfig,
+            ResidualConfig,
+        )
+        from utilities.opinion.dynamics import OpinionDynamics
         from utilities.opinion.evidence_net import OpinionEvidenceNet
-        from utilities.opinion.policy import DirectEvidencePolicyBridge
+        from utilities.opinion.policy import (
+            DirectEvidencePolicyBridge,
+            StatefulOpinionPolicyBridge,
+            StatefulOpinionPolicyController,
+        )
         from utilities.opinion.residual import OpinionResidual
+        from utilities.opinion.state import OpinionStateTracker
 
         evidence_config = EvidenceConfig.from_dict(
             opinion_policy_config["evidence"]
@@ -255,25 +280,82 @@ def mappo_cavs(
             pair_feature_dim=int(opinion_pair_info_config["pair_feature_dim"]),
             config=evidence_config,
         ).to(parameters.device)
+        if is_stateful_opinion and not parameters.is_load_model:
+            evidence_checkpoint = Path(
+                str(opinion_policy_config["evidence_checkpoint"])
+            )
+            if not evidence_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"M5 EvidenceNet checkpoint not found: {evidence_checkpoint}"
+                )
+            evidence_net.load_state_dict(
+                torch.load(evidence_checkpoint, map_location=parameters.device),
+                strict=True,
+            )
+            print(
+                colored(
+                    f"[INFO] Loaded frozen M5 EvidenceNet: {evidence_checkpoint}",
+                    "red",
+                )
+            )
         residual = OpinionResidual.from_config(residual_config).to(parameters.device)
-        opinion_bridge = DirectEvidencePolicyBridge(
-            base_policy_net=policy_net,
-            evidence_net=evidence_net,
-            residual=residual,
-            freeze_base_actor=bool(
-                opinion_policy_config.get("freeze_base_actor", True)
-            ),
-        ).to(parameters.device)
-        opinion_policy_module = TensorDictModule(
-            opinion_bridge,
-            in_keys=[
+        if is_stateful_opinion:
+            dynamics_config = DynamicsConfig.from_dict(
+                opinion_policy_config["dynamics"]
+            )
+            dynamics = OpinionDynamics.from_config(dynamics_config).to(
+                parameters.device
+            )
+            opinion_bridge = StatefulOpinionPolicyBridge(
+                base_policy_net=policy_net,
+                evidence_net=evidence_net,
+                dynamics=dynamics,
+                residual=residual,
+                dt=parameters.dt,
+                freeze_base_actor=bool(
+                    opinion_policy_config.get("freeze_base_actor", True)
+                ),
+                freeze_evidence=bool(
+                    opinion_policy_config.get("freeze_evidence", True)
+                ),
+            ).to(parameters.device)
+            opinion_in_keys = [
                 observation_key,
                 ("agents", "info", "pair_features"),
                 ("agents", "info", "urgency"),
                 ("agents", "info", "confidence"),
                 ("agents", "info", "pair_mask"),
-            ],
-            out_keys=[
+                ("agents", "opinion", "z_prev"),
+            ]
+            opinion_out_keys = [
+                ("agents", "loc"),
+                ("agents", "scale"),
+                ("agents", "opinion", "base_loc"),
+                ("agents", "opinion", "raw_b"),
+                ("agents", "opinion", "b"),
+                ("agents", "opinion", "z_next"),
+                ("agents", "opinion", "q"),
+                ("agents", "opinion", "normalized_weights"),
+                ("agents", "opinion", "aggregate"),
+                ("agents", "opinion", "residual"),
+            ]
+        else:
+            opinion_bridge = DirectEvidencePolicyBridge(
+                base_policy_net=policy_net,
+                evidence_net=evidence_net,
+                residual=residual,
+                freeze_base_actor=bool(
+                    opinion_policy_config.get("freeze_base_actor", True)
+                ),
+            ).to(parameters.device)
+            opinion_in_keys = [
+                observation_key,
+                ("agents", "info", "pair_features"),
+                ("agents", "info", "urgency"),
+                ("agents", "info", "confidence"),
+                ("agents", "info", "pair_mask"),
+            ]
+            opinion_out_keys = [
                 ("agents", "loc"),
                 ("agents", "scale"),
                 ("agents", "opinion", "base_loc"),
@@ -281,7 +363,11 @@ def mappo_cavs(
                 ("agents", "opinion", "b"),
                 ("agents", "opinion", "direct_z"),
                 ("agents", "opinion", "residual"),
-            ],
+            ]
+        opinion_policy_module = TensorDictModule(
+            opinion_bridge,
+            in_keys=opinion_in_keys,
+            out_keys=opinion_out_keys,
         )
         policy = ProbabilisticActor(
             module=opinion_policy_module,
@@ -296,8 +382,25 @@ def mappo_cavs(
             return_log_prob=True,
             log_prob_key=("agents", "sample_log_prob"),
         )
+        policy_for_collection = policy
+        if is_stateful_opinion:
+            decay_factor = 1.0 - (
+                float(parameters.dt)
+                * float(dynamics_config.response_rate)
+                * float(dynamics_config.decay_rate)
+            )
+            state_tracker = OpinionStateTracker(
+                n_agents=parameters.n_agents,
+                decay_factor=decay_factor,
+                zero_threshold=float(opinion_policy_config["zero_threshold"]),
+            )
+            policy_for_collection = StatefulOpinionPolicyController(
+                policy=policy,
+                state_tracker=state_tracker,
+            ).to(parameters.device)
     else:
         policy = base_policy
+        policy_for_collection = policy
 
     mappo = True  # IPPO (Independent PPO) if False
 
@@ -323,7 +426,7 @@ def mappo_cavs(
         out_keys=[("agents", "state_value")],
     )
 
-    if is_direct_opinion and not parameters.is_load_model:
+    if is_opinion_policy and not parameters.is_load_model:
         base_critic_checkpoint = Path(
             str(opinion_policy_config["base_critic_checkpoint"])
         )
@@ -337,7 +440,7 @@ def mappo_cavs(
         )
         print(
             colored(
-                f"[INFO] Initialized M5 Critic from: {base_critic_checkpoint}",
+                f"[INFO] Initialized Opinion Critic from: {base_critic_checkpoint}",
                 "red",
             )
         )
@@ -452,7 +555,7 @@ def mappo_cavs(
         if not parameters.is_continue_train:
             print(colored("[INFO] Training will not continue.", "blue"))
 
-            return env, policy, priority_module, parameters
+            return env, policy_for_collection, priority_module, parameters
         else:
             print(
                 colored("[INFO] Training will continue with the loaded model.", "red")
@@ -470,7 +573,7 @@ def mappo_cavs(
 
     collector = SyncDataCollectorCustom(
         env,
-        policy,
+        policy_for_collection,
         priority_module=priority_module,
         device=parameters.device,
         storing_device=parameters.device,
@@ -550,6 +653,32 @@ def mappo_cavs(
                     "lr_scale": 1.0,
                     "group_name": "critic",
                 },
+            ]
+        )
+    elif is_stateful_opinion:
+        critic_trainable_parameters = [
+            parameter
+            for parameter in loss_module.critic_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        if not critic_trainable_parameters:
+            raise RuntimeError("M6 Critic has no trainable parameters.")
+        if any(
+            parameter.requires_grad
+            for parameter in loss_module.actor_params.values(True, True)
+        ):
+            raise RuntimeError(
+                "M6 requires Base Actor and EvidenceNet to remain frozen until "
+                "sequence PPO is implemented."
+            )
+        optim = torch.optim.Adam(
+            [
+                {
+                    "params": critic_trainable_parameters,
+                    "lr": parameters.lr,
+                    "lr_scale": 1.0,
+                    "group_name": "critic",
+                }
             ]
         )
     else:
@@ -700,7 +829,7 @@ def mappo_cavs(
             (collision_with_agents | collision_with_lanelets).float().mean().item()
         )
         opinion_iteration_metrics = {}
-        if is_direct_opinion:
+        if is_opinion_policy:
             raw_b_collected = tensordict_data.get(
                 ("agents", "opinion", "raw_b")
             )
@@ -723,6 +852,37 @@ def mappo_cavs(
                     pair_mask_collected.float().mean().item()
                 ),
             }
+            if is_stateful_opinion:
+                z_prev_collected = tensordict_data.get(
+                    ("agents", "opinion", "z_prev")
+                )
+                z_next_collected = tensordict_data.get(
+                    ("agents", "opinion", "z_next")
+                )
+                opinion_iteration_metrics.update(
+                    {
+                        "stateful_z_abs_mean": float(
+                            z_next_collected.abs().mean().item()
+                        ),
+                        "stateful_z_max_abs": float(
+                            z_next_collected.abs().max().item()
+                        ),
+                        "stateful_delta_z_abs_mean": float(
+                            (z_next_collected - z_prev_collected)
+                            .abs()
+                            .mean()
+                            .item()
+                        ),
+                        "agent_reset_fraction": float(
+                            tensordict_data.get(
+                                ("agents", "info", "agent_reset_mask")
+                            )
+                            .float()
+                            .mean()
+                            .item()
+                        ),
+                    }
+                )
         pbar.set_description(
             f"Episode mean reward = {episode_reward_mean:.2f}", refresh=False
         )
@@ -757,10 +917,10 @@ def mappo_cavs(
                         policy=policy,
                         critic=critic,
                     )
-                if is_direct_opinion:
+                if is_opinion_policy:
                     if opinion_bridge is None:
                         raise RuntimeError(
-                            "M5 EvidenceNet is unavailable while saving a checkpoint."
+                            "Opinion EvidenceNet is unavailable while saving a checkpoint."
                         )
                     torch.save(
                         opinion_bridge.evidence_net.state_dict(),
@@ -815,7 +975,7 @@ def mappo_cavs(
                     "loss_entropy": loss_entropy_sum / loss_update_count,
                     "learning_rate": float(
                         optim.param_groups[-1]["lr"]
-                        if is_direct_opinion
+                        if is_opinion_policy
                         else optim.param_groups[0]["lr"]
                     ),
                     **(
@@ -828,6 +988,17 @@ def mappo_cavs(
                             ),
                         }
                         if is_direct_opinion
+                        else {}
+                    ),
+                    **(
+                        {
+                            "evidence_learning_rate": 0.0,
+                            "critic_learning_rate": float(
+                                optim.param_groups[0]["lr"]
+                            ),
+                            "stateful_evidence_frozen": True,
+                        }
+                        if is_stateful_opinion
                         else {}
                     ),
                     **opinion_iteration_metrics,
@@ -853,20 +1024,29 @@ def mappo_cavs(
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
-    if is_direct_opinion:
+    if is_opinion_policy:
         if opinion_bridge is None:
             raise RuntimeError(
-                "M5 EvidenceNet is unavailable while saving the final model."
+                "Opinion EvidenceNet is unavailable while saving the final model."
             )
         torch.save(
             opinion_bridge.evidence_net.state_dict(),
             parameters.where_to_save + "final_evidence_net.pth",
         )
+    if is_stateful_opinion:
+        if state_tracker is None:
+            raise RuntimeError(
+                "M6 state tracker is unavailable while saving the final model."
+            )
+        torch.save(
+            state_tracker.snapshot(),
+            parameters.where_to_save + "final_opinion_state.pt",
+        )
 
     if artifact_logging_enabled:
-        if is_direct_opinion:
+        if is_opinion_policy:
             if base_actor_source_state is None or opinion_bridge is None:
-                raise RuntimeError("M5 checkpoint source state is unavailable.")
+                raise RuntimeError("Opinion checkpoint source state is unavailable.")
             torch.save(
                 base_actor_source_state,
                 artifact_run_directory / "final_base_actor.pth",
@@ -879,7 +1059,7 @@ def mappo_cavs(
                 {
                     "schema_version": ARTIFACT_SCHEMA_VERSION,
                     "method": "opinion_marl",
-                    "stage": "evidence_direct",
+                    "stage": artifact_stage,
                     "iteration": int(pbar.n),
                     "base_actor_state": base_actor_source_state,
                     "evidence_state": opinion_bridge.evidence_net.state_dict(),
@@ -888,6 +1068,11 @@ def mappo_cavs(
                     "optimizer_state": optim.state_dict(),
                     "resolved_base_config": dict(parameters.to_dict()),
                     "opinion_runtime_config": dict(opinion_policy_config),
+                    "terminal_opinion_state": (
+                        state_tracker.snapshot()
+                        if state_tracker is not None
+                        else None
+                    ),
                     "torch_rng_state": torch.get_rng_state(),
                 },
                 artifact_run_directory / "final_checkpoint.pt",

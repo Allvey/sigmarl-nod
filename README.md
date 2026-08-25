@@ -102,11 +102,16 @@ python main_training_opinion.py --config configs/opinion/pilot.json
 python main_testing_opinion.py --config configs/opinion/pilot.json
 ```
 
-At M3, `stage=base` and `use_opinion_marl=false`; therefore these commands still
-use the same Base-MAPPO path and do not claim an Opinion performance improvement.
-M3 has implemented the pure Evidence, fixed Dynamics, and bounded Residual math
-modules without connecting them to the environment or Actor. See
-[`docs/opinion/M3_MATH_MODULES.md`](docs/opinion/M3_MATH_MODULES.md).
+M6 now provides stateful global-ID opinion rollout after a compatible M5 run:
+
+```bash
+python main_training_opinion.py --config configs/opinion/m6_stateful_opinion.json
+python main_testing_opinion.py --config configs/opinion/m6_stateful_opinion.json
+```
+
+Base Actor and M5 EvidenceNet remain frozen at M6; only the unchanged Central
+Critic is optimized until M7/M8 add sequence training. See
+[`docs/opinion/M6_STATEFUL_OPINION.md`](docs/opinion/M6_STATEFUL_OPINION.md).
 
 ## Customize Your Own Maps
 We support maps customized in <a href="https://josm.openstreetmap.de/" target="_blank">JOSM</a>, an open-source editor for ​OpenStreetMap. Follow these steps:

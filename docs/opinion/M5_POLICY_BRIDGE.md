@@ -2,7 +2,7 @@
 
 > 实现状态：已完成；训练和性能由用户手动验证  
 > 本阶段首次改变动作分布  
-> 下一阶段：M6 Stateful Collector 与连续意见状态
+> 后续状态：M6 Stateful Collector 已完成，见 `M6_STATEFUL_OPINION.md`
 
 ## 1. M5 的定位
 
@@ -110,6 +110,12 @@ configs/opinion/m5_direct_evidence_pilot.json
     "base_output_root": "outputs/base_pilot/",
     "freeze_base_actor": true,
     "visualize_agent_id": 0
+},
+"stateful": {
+    "enabled": false,
+    "evidence_output_root": null,
+    "freeze_evidence": false,
+    "zero_threshold": 1e-6
 }
 ```
 
@@ -148,6 +154,7 @@ python main_testing_opinion.py \
 M5 run 在原 R1 产物基础上增加：
 
 ```text
+source_base_actor.pth            # stage 启动即保存，训练中断也保留
 reward<value>_evidence_net.pth  # 每次刷新最优中间策略时保存
 final_evidence_net.pth          # EvidenceNet 独立 state_dict
 final_opinion_policy.pth
@@ -165,6 +172,8 @@ final_checkpoint.pt:
 其中已经包含冻结 Base Actor 与 EvidenceNet；独立的 `*_evidence_net.pth` 用于参数分析、
 消融和后续阶段初始化。`final_policy.pth` 保留为测试兼容入口；M5 run 中的
 `final_base_actor.pth` 是冻结 Base Actor 的原始状态，而不是 Opinion Policy 的别名。
+`source_base_actor.pth` 在进入训练循环前立即写入，防止来源是 reward 中间 checkpoint
+且随后被 Base 的更优 checkpoint 清理，保证 M6 仍能复用完全相同的冻结 Actor。
 
 M3 的 `OpinionDynamics` 与 `OpinionResidual` 当前没有可训练参数，因此不会生成对应
 权重文件；M4 的 ConflictGraph 是确定性物理计算，也没有网络权重。M5 当前新增且真正
@@ -212,8 +221,8 @@ time。但单个 pilot 只用于发现方向和数值问题，不能形成论文
 参考测试为 `tests/opinion/test_m5_policy_bridge.py`。按项目约定，本 Session 不运行
 测试、训练或性能评估。
 
-## 10. M6 交接
+## 10. M6 交接（已完成）
 
-M6 将用 `neighbor_ids` 和 `agent_reset_mask` 建立 `[E,N,N]` 的 `z_dense`，把
-`z_direct=b` 替换成固定 OpinionDynamics 的逐步更新。M6 不应破坏本阶段已经验证的
-Base checkpoint、最终分布和诊断字段。
+M6 已用 `neighbor_ids` 和 `agent_reset_mask` 建立 `[E,N,N]` 的 `z_dense`，把
+`z_direct=b` 替换成固定 OpinionDynamics 的逐步更新，同时保留 M5 配置和 checkpoint
+加载路径作为 Direct Evidence 消融。详见 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)。

@@ -1,11 +1,11 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0、R1、M2、M3、M4、M5 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1、M2、M3、M4、M5、M6 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
 > 结构图：[`OPINION_MARL_NETWORK_ARCHITECTURE.md`](OPINION_MARL_NETWORK_ARCHITECTURE.md)  
-> 对齐日期：2026-08-24
+> 对齐日期：2026-08-25
 
 ## 0. 新 Session 先读这里
 
@@ -431,7 +431,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 | M3：Evidence/Dynamics/Residual | 已完成 | 数学、边界、梯度测试；用户手动运行 |
 | M4：ConflictGraph 环境接口 | 已完成 | gated info/reset，Base 不变；用户手动训练 |
 | M5：Policy 与 Base checkpoint bridge | 已完成 | Direct Evidence、冻结 Base、速度 residual；用户手动训练 |
-| M6：Stateful Collector | 未开始 | global ID、每步一次、reset |
+| M6：Stateful Collector | 已完成 | global ID、每步一次、reset；用户手动训练 |
 | M7：Sequence Buffer | 未开始 | 不跨 env/done，保存 z_init |
 | M8：批量 chunk Sequence PPO | 未开始 | log-prob/梯度正确且性能达标 |
 | M9：三阶段 Trainer/Checkpoint | 未开始 | Base→Evidence→Joint smoke |
@@ -606,11 +606,11 @@ Learned evidence + fixed nonlinear dynamics（Full）
   尚无 completed run，也可自动加载最新在训 run 的 `reward<value>_policy.pth`，并支持
   `--run-dir`/`--checkpoint` 精确选择；
 - M2 已新增 strict typed Opinion schema、完整/pilot 配置和独立训练/测试入口；
-- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径；当前只有 M5 的
-  `evidence/direct_evidence` 是已开放的 active Opinion 阶段，其余会明确失败；
+- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径；当前 M5
+  `direct_evidence` 与 M6 `stateful_opinion` 是已开放模式，joint 会明确失败；
 - M3 已实现反对称有界 EvidenceNet、无可训练参数的固定 OpinionDynamics、归一化
-  有界速度 Residual 以及标准库参考测试；M5 已接入 Evidence/Residual，Dynamics
-  仍等待 M6 的真实跨步状态；
+  有界速度 Residual 以及标准库参考测试；M5 已接入 Evidence/Residual，M6 已将
+  Dynamics 接入真实跨步状态；
 - M4 已实现复用原最近邻 ID 的 ConflictGraph、固定 10 维 pair feature、CPA 冲突
   mask、urgency/confidence 与单 agent reset 脉冲；这些张量只进入环境 `info`；
 - M5 已实现 Base Actor/Critic checkpoint 桥、冻结 Base Actor、可训练 EvidenceNet、
@@ -621,6 +621,12 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - M5 训练优先使用 completed Base；开发阶段若不存在 completed Base，也可从最新
   running/failed run 加载同 reward 的中间 Actor/Critic 对，并在配置快照中标记来源
   状态；正式性能实验仍使用完整 Base；
+- M6 已新增 `OpinionStateTracker`、纯 `StatefulOpinionPolicyBridge` 与 rollout-only
+  controller；`z_dense[E,N,N]` 按 global ID gather/scatter，partial reset 清理行列，
+  episode done 清理环境切片，非候选状态只衰减一次；
+- M6 从同一 Base Actor 对应的 M5 EvidenceNet 继续，冻结 Base/Evidence，只训练原
+  Central Critic；真正的 Evidence 时间梯度必须等待 M7 Sequence Buffer 与 M8
+  Sequence PPO；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M6：按 global agent ID 维护跨时间 `z_dense`，并严格处理 agent
-  reset 与 episode done；M5 的 `z_direct` 不能被表述为最终连续意见。
+- 下一实现步骤是 M7：保存不跨 env/done 的连续 chunk、`z_init`、ID/mask 与旧
+  log-prob，为 M8 Sequence PPO 提供合法输入。

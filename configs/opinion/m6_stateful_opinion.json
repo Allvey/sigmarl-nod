@@ -1,13 +1,13 @@
 {
     "schema_version": 1,
     "method": "opinion_marl",
-    "stage": "base",
-    "use_opinion_marl": false,
-    "base_config": "../base/pilot.json",
-    "output_root": "outputs/opinion_pilot/base/",
+    "stage": "evidence",
+    "use_opinion_marl": true,
+    "base_config": "../../config.json",
+    "output_root": "outputs/opinion/m6_stateful_opinion/",
     "opinion": {
         "conflict_graph": {
-            "emit_pair_info": false,
+            "emit_pair_info": true,
             "candidate_count": 2,
             "pair_feature_dim": 10,
             "prediction_horizon_seconds": 3.0,
@@ -35,16 +35,16 @@
             "action_index": 0
         },
         "policy_bridge": {
-            "enabled": false,
-            "mode": "direct_evidence",
-            "base_output_root": "outputs/base_pilot/",
+            "enabled": true,
+            "mode": "stateful_opinion",
+            "base_output_root": "outputs/base/",
             "freeze_base_actor": true,
             "visualize_agent_id": 0
         },
         "stateful": {
-            "enabled": false,
-            "evidence_output_root": null,
-            "freeze_evidence": false,
+            "enabled": true,
+            "evidence_output_root": "outputs/opinion/m5_direct_evidence/",
+            "freeze_evidence": true,
             "zero_threshold": 1e-06
         },
         "sequence_ppo": {

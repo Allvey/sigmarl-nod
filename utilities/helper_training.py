@@ -533,6 +533,12 @@ class SyncDataCollectorCustom(SyncDataCollector):
             self._tensordict_out.update(self._tensordict)
             with torch.no_grad():
                 self._tensordict_out = self.policy(self._tensordict_out.to(self.device))
+            # This call only discovers/preallocates policy output keys. A
+            # stateful rollout policy must not treat it as a physical
+            # environment step; start the real collection from a clean state.
+            reset_policy_state = getattr(self.policy, "reset_state", None)
+            if callable(reset_policy_state):
+                reset_policy_state()
 
         if (
             self.env.base_env.scenario_name.parameters.is_using_prioritized_marl

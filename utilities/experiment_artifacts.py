@@ -21,6 +21,9 @@ ARTIFACT_SCHEMA_VERSION = 1
 _INTERMEDIATE_POLICY_PATTERN = re.compile(
     r"^reward(-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))_policy\.pth$"
 )
+_INTERMEDIATE_EVIDENCE_PATTERN = re.compile(
+    r"^reward(-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))_evidence_net\.pth$"
+)
 
 
 def _utc_now() -> str:
@@ -349,6 +352,82 @@ def resolve_policy_critic_pair(
             f"policy={policy_checkpoint}, expected_critic={critic_checkpoint}"
         )
     return policy_checkpoint, critic_checkpoint
+
+
+def resolve_evidence_critic_pair(run_directory: Path) -> tuple[Path, Path]:
+    """Resolve M5 EvidenceNet and its final/reward-matched critic."""
+
+    run_directory = Path(run_directory).expanduser().resolve()
+    final_evidence = run_directory / "final_evidence_net.pth"
+    if final_evidence.is_file():
+        critic = run_directory / "final_critic.pth"
+        if not critic.is_file():
+            raise FileNotFoundError(
+                f"Final EvidenceNet has no matching critic: {critic}"
+            )
+        return final_evidence, critic
+
+    candidates = []
+    for candidate in run_directory.glob("reward*_evidence_net.pth"):
+        match = _INTERMEDIATE_EVIDENCE_PATTERN.fullmatch(candidate.name)
+        if match and candidate.is_file():
+            candidates.append((float(match.group(1)), candidate))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No standalone M5 EvidenceNet found in {run_directory}. Expected "
+            "final_evidence_net.pth or reward<value>_evidence_net.pth. Restart "
+            "M5 with the current saving logic before starting M6."
+        )
+    _, evidence = max(candidates, key=lambda item: (item[0], item[1].name))
+    reward_prefix = evidence.name[: -len("_evidence_net.pth")]
+    critic = evidence.with_name(f"{reward_prefix}_critic.pth")
+    if not critic.is_file():
+        raise FileNotFoundError(
+            "The selected M5 EvidenceNet has no matching critic: "
+            f"evidence={evidence}, expected_critic={critic}"
+        )
+    return evidence, critic
+
+
+def resolve_latest_evidence_run(output_root: str) -> Path:
+    """Resolve a completed or newest M5 run with standalone Evidence/Critic."""
+
+    root = Path(output_root).expanduser().resolve()
+    pointer_path = root / "latest_run.json"
+    checked = set()
+    if pointer_path.is_file():
+        completed_run = resolve_latest_run(output_root)
+        checked.add(completed_run)
+        try:
+            resolve_evidence_critic_pair(completed_run)
+            return completed_run
+        except FileNotFoundError:
+            pass
+
+    runs_root = root / "runs"
+    candidates = (
+        sorted(
+            (path.resolve() for path in runs_root.iterdir() if path.is_dir()),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+            reverse=True,
+        )
+        if runs_root.is_dir()
+        else []
+    )
+    for candidate in candidates:
+        if candidate in checked or not (
+            candidate / "config_resolved.json"
+        ).is_file():
+            continue
+        try:
+            resolve_evidence_critic_pair(candidate)
+            return candidate
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(
+        f"No M5 run with a standalone EvidenceNet/Critic pair was found under "
+        f"{root}. Restart M5 with the current saving logic first."
+    )
 
 
 def resolve_latest_testable_run(output_root: str) -> Path:

@@ -46,6 +46,12 @@ def update_opinion_visualization(
     raw_b = _optional_tensor(tensordict, ("agents", "opinion", "raw_b"))
     gated_b = _optional_tensor(tensordict, ("agents", "opinion", "b"))
     direct_z = _optional_tensor(tensordict, ("agents", "opinion", "direct_z"))
+    z_prev = _optional_tensor(tensordict, ("agents", "opinion", "z_prev"))
+    z_next = _optional_tensor(tensordict, ("agents", "opinion", "z_next"))
+    q = _optional_tensor(tensordict, ("agents", "opinion", "q"))
+    normalized_weights = _optional_tensor(
+        tensordict, ("agents", "opinion", "normalized_weights")
+    )
     residual = _optional_tensor(tensordict, ("agents", "opinion", "residual"))
 
     def scalar(tensor: torch.Tensor, *indices) -> float:
@@ -85,7 +91,7 @@ def update_opinion_visualization(
             f"j={neighbor_id} | mask={int(is_active)} | "
             f"tCPA={t_cpa:.2f}s | dCPA={d_cpa:.2f}m"
         )
-        if raw_b is None or gated_b is None or direct_z is None:
+        if raw_b is None or gated_b is None:
             lines.append(
                 f"  rho={scalar(urgency, environment_id, ego_id, candidate_index):.3f} "
                 f"conf={scalar(confidence, environment_id, ego_id, candidate_index):.3f} "
@@ -99,10 +105,29 @@ def update_opinion_visualization(
                 f"raw_b={scalar(raw_b, environment_id, ego_id, candidate_index):+.3f} "
                 f"b={scalar(gated_b, environment_id, ego_id, candidate_index):+.3f}"
             )
-            lines.append(
-                f"  z_direct={scalar(direct_z, environment_id, ego_id, candidate_index):+.3f} "
-                "| z_stateful=N/A (M6)"
-            )
+            if z_prev is not None and z_next is not None:
+                previous = scalar(
+                    z_prev, environment_id, ego_id, candidate_index
+                )
+                updated = scalar(
+                    z_next, environment_id, ego_id, candidate_index
+                )
+                lines.append(
+                    f"  z_prev={previous:+.3f} z_next={updated:+.3f} "
+                    f"dz={updated - previous:+.3f}"
+                )
+                if q is not None and normalized_weights is not None:
+                    lines.append(
+                        f"  q={scalar(q, environment_id, ego_id, candidate_index):+.3f} "
+                        f"weight={scalar(normalized_weights, environment_id, ego_id, candidate_index):.3f}"
+                    )
+            elif direct_z is not None:
+                lines.append(
+                    f"  z_direct={scalar(direct_z, environment_id, ego_id, candidate_index):+.3f} "
+                    "| z_stateful=N/A (M6)"
+                )
+            else:
+                lines.append("  z=N/A")
 
     base_env = env.base_env
     scenario = getattr(base_env, "scenario_name", None)

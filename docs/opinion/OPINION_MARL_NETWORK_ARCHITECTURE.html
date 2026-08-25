@@ -31,8 +31,8 @@
 <blockquote>
 <p>代码底座：SigmaRL 1.2.0<br>
 理论真源：<a href="opinion_dynamics_marl_technical_route.md"><code>opinion_dynamics_marl_technical_route.md</code></a><br>
-实施状态：M5 已完成，M6–M10 按图中标记逐步实现<br>
-更新日期：2026-08-24</p>
+实施状态：M6 已完成，M7–M10 按图中标记逐步实现<br>
+更新日期：2026-08-25</p>
 </blockquote>
 <h2 id="1-整体网络结构">1. 整体网络结构 </h2>
 <div class="mermaid">flowchart TB
@@ -63,7 +63,7 @@
         RAWB["反对称原始证据&lt;br/&gt;raw_b = bmax·tanh((Gᵢⱼ-Gⱼᵢ)/T)"]
         B["物理门控证据&lt;br/&gt;b = raw_b·ρ·c·mask"]
 
-        STATE["z_dense 状态表&lt;br/&gt;按 自车ID—邻车ID 保存&lt;br/&gt;[M6]"]
+        STATE["z_dense 状态表&lt;br/&gt;按 自车ID—邻车ID 保存&lt;br/&gt;[M6 已实现]"]
         GATHER["根据 neighbor_track_ids&lt;br/&gt;gather z_prev"]
         DYN["固定 OpinionDynamics&lt;br/&gt;[M3 已实现]&lt;br/&gt;遗忘 + 自强化 + 当前证据"]
         ZNEXT["z_next&lt;br/&gt;连续、带记忆的意见"]
@@ -101,7 +101,7 @@
     ACTION --&gt; ENV
 
     subgraph TRAIN["中心化训练结构"]
-        ROLLOUT["Stateful Collector&lt;br/&gt;[M6]&lt;br/&gt;保存物理步、z和ID映射"]
+        ROLLOUT["Stateful Collector&lt;br/&gt;[M6 已实现]&lt;br/&gt;保存物理步、z和ID映射"]
         BUFFER["连续 Sequence Buffer&lt;br/&gt;[M7]&lt;br/&gt;保存 chunk 与 z_init"]
         PPO["Sequence PPO&lt;br/&gt;[M8]&lt;br/&gt;时间维展开、chunk维并行"]
         CRITIC["中心化 Critic&lt;br/&gt;原始联合 observation&lt;br/&gt;不读取 z"]
@@ -156,9 +156,9 @@
 <td>是，首次改变动作分布</td>
 </tr>
 <tr>
-<td>M6</td>
+<td>M6，已完成</td>
 <td><code>z_dense</code>、Stateful Collector</td>
-<td>按车辆身份维护跨时间意见，每步只更新一次</td>
+<td>按车辆身份维护跨时间意见，每步只更新一次；冻结 Evidence</td>
 <td>是，形成真实时间记忆</td>
 </tr>
 <tr>
@@ -223,6 +223,8 @@ leader、通行权或学习拓扑。</p>
 两路合并 → TanhNormal → action
 </code></pre><p>中心化 Critic、Sequence Buffer 和 PPO 只在训练阶段使用。部署时每辆车根据自身局部<br>
 观测、当前可见邻车及本地保存的意见状态分散执行。</p>
+<p>M6 当前只训练不读取 <code>z</code> 的原 Central Critic，Base Actor 与
+EvidenceNet 冻结；图中 PPO 到 Actor/Evidence 的时间梯度是 M8 的目标结构。</p>
 
       </div>
       

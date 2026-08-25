@@ -2,8 +2,8 @@
 
 > 代码底座：SigmaRL 1.2.0  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 实施状态：M5 已完成，M6–M10 按图中标记逐步实现  
-> 更新日期：2026-08-24
+> 实施状态：M6 已完成，M7–M10 按图中标记逐步实现  
+> 更新日期：2026-08-25
 
 ## 1. 整体网络结构
 
@@ -36,7 +36,7 @@ flowchart TB
         RAWB["反对称原始证据<br/>raw_b = bmax·tanh((Gᵢⱼ-Gⱼᵢ)/T)"]
         B["物理门控证据<br/>b = raw_b·ρ·c·mask"]
 
-        STATE["z_dense 状态表<br/>按 自车ID—邻车ID 保存<br/>[M6]"]
+        STATE["z_dense 状态表<br/>按 自车ID—邻车ID 保存<br/>[M6 已实现]"]
         GATHER["根据 neighbor_track_ids<br/>gather z_prev"]
         DYN["固定 OpinionDynamics<br/>[M3 已实现]<br/>遗忘 + 自强化 + 当前证据"]
         ZNEXT["z_next<br/>连续、带记忆的意见"]
@@ -74,7 +74,7 @@ flowchart TB
     ACTION --> ENV
 
     subgraph TRAIN["中心化训练结构"]
-        ROLLOUT["Stateful Collector<br/>[M6]<br/>保存物理步、z和ID映射"]
+        ROLLOUT["Stateful Collector<br/>[M6 已实现]<br/>保存物理步、z和ID映射"]
         BUFFER["连续 Sequence Buffer<br/>[M7]<br/>保存 chunk 与 z_init"]
         PPO["Sequence PPO<br/>[M8]<br/>时间维展开、chunk维并行"]
         CRITIC["中心化 Critic<br/>原始联合 observation<br/>不读取 z"]
@@ -108,7 +108,7 @@ flowchart TB
 | M3，已完成 | EvidenceNet、OpinionDynamics、OpinionResidual | 实现纯数学映射、边界和梯度接口 | 否，尚未接线 |
 | M4，已完成 | ConflictGraph、pair features、urgency/confidence、track IDs、reset mask | 从真实车辆状态生成物理交互信息 | 否，Policy 不读取 |
 | M5，已完成 | Base Actor 与 residual 的 Policy Bridge | 加载 Base 权重，以 `z_direct=b` 将 residual 加到速度 loc | 是，首次改变动作分布 |
-| M6 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次 | 是，形成真实时间记忆 |
+| M6，已完成 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次；冻结 Evidence | 是，形成真实时间记忆 |
 | M7 | Sequence Buffer | 保存连续 chunk、`z_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
 | M8 | Sequence PPO | 时间维展开意见动力学，使梯度训练 EvidenceNet | 改变训练方式 |
 | M9 | Base→Evidence→Joint Trainer | 冻结/解冻参数组，完成三阶段训练和 checkpoint | 改变参数优化范围 |
@@ -165,3 +165,7 @@ leader、通行权或学习拓扑。
 
 中心化 Critic、Sequence Buffer 和 PPO 只在训练阶段使用。部署时每辆车根据自身局部
 观测、当前可见邻车及本地保存的意见状态分散执行。
+
+M6 当前只训练不读取 `z` 的原 Central Critic，Base Actor 与 EvidenceNet 冻结；图中
+PPO 到 Actor/Evidence 的时间梯度是 M8 的目标结构，不代表 M6 已经使用扁平 PPO 更新
+循环策略。
