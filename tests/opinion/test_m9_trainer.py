@@ -122,6 +122,9 @@ class M9TrainerTests(unittest.TestCase):
         snapshots = mocked_train.call_args.kwargs["supplementary_snapshots"]
         resolved = snapshots["opinion_config_resolved.json"]
         self.assertTrue(runtime["initialize_from_scratch"])
+        self.assertTrue(runtime["use_base_ppo_update"])
+        self.assertFalse(runtime["sequence_buffer_enabled"])
+        self.assertFalse(runtime["sequence_evidence_training"])
         self.assertNotIn("base_actor_checkpoint", runtime)
         self.assertNotIn("base_critic_checkpoint", runtime)
         self.assertNotIn("initial_policy_checkpoint", runtime)

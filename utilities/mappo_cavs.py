@@ -238,10 +238,21 @@ def mappo_cavs(
     is_direct_opinion = opinion_mode == "direct_evidence"
     is_stateful_opinion = opinion_mode == "stateful_opinion"
     is_opinion_policy = is_direct_opinion or is_stateful_opinion
+    use_base_ppo_update = bool(
+        opinion_policy_config
+        and opinion_policy_config.get("use_base_ppo_update", False)
+    )
+    if use_base_ppo_update:
+        residual_values = opinion_policy_config.get("residual", {})
+        if residual_values.get("apply_to_action", True):
+            raise ValueError(
+                "Base PPO update is only valid when residual.apply_to_action=false."
+            )
     is_sequence_buffer = bool(
         is_stateful_opinion
         and opinion_policy_config
         and opinion_policy_config.get("sequence_buffer_enabled", False)
+        and not use_base_ppo_update
     )
     is_sequence_evidence_training = bool(
         is_sequence_buffer
@@ -1145,19 +1156,19 @@ def mappo_cavs(
                     evidence_gradient_norm_sum += float(
                         squared_gradient_norm.sqrt().item()
                     )
-                    if is_m9_trainer:
-                        squared_base_gradient_norm = torch.zeros(
-                            (), device=parameters.device
-                        )
-                        for parameter in opinion_bridge.base_policy_net.parameters():
-                            if parameter.grad is not None:
-                                squared_base_gradient_norm = (
-                                    squared_base_gradient_norm
-                                    + parameter.grad.detach().norm(2).square()
-                                )
-                        base_actor_gradient_norm_sum += float(
-                            squared_base_gradient_norm.sqrt().item()
-                        )
+                if is_m9_trainer:
+                    squared_base_gradient_norm = torch.zeros(
+                        (), device=parameters.device
+                    )
+                    for parameter in opinion_bridge.base_policy_net.parameters():
+                        if parameter.grad is not None:
+                            squared_base_gradient_norm = (
+                                squared_base_gradient_norm
+                                + parameter.grad.detach().norm(2).square()
+                            )
+                    base_actor_gradient_norm_sum += float(
+                        squared_base_gradient_norm.sqrt().item()
+                    )
 
                 torch.nn.utils.clip_grad_norm_(
                     optimization_parameters, parameters.max_grad_norm
