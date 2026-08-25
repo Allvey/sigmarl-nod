@@ -1,10 +1,10 @@
 {
     "schema_version": 1,
     "method": "opinion_marl",
-    "stage": "evidence",
+    "stage": "sequence_ppo",
     "use_opinion_marl": true,
     "base_config": "../../config.json",
-    "output_root": "outputs/opinion/m5_direct_evidence/",
+    "output_root": "outputs/opinion/m8_sequence_ppo/",
     "opinion": {
         "conflict_graph": {
             "emit_pair_info": true,
@@ -36,21 +36,21 @@
         },
         "policy_bridge": {
             "enabled": true,
-            "mode": "direct_evidence",
+            "mode": "stateful_opinion",
             "base_output_root": "outputs/base/",
             "freeze_base_actor": true,
             "visualize_agent_id": 0
         },
         "stateful": {
-            "enabled": false,
-            "evidence_output_root": null,
+            "enabled": true,
+            "evidence_output_root": "outputs/opinion/m5_direct_evidence/",
             "freeze_evidence": false,
             "zero_threshold": 1e-06
         },
         "sequence_ppo": {
-            "enabled": false,
-            "train_evidence": false,
-            "source_output_root": null,
+            "enabled": true,
+            "train_evidence": true,
+            "source_output_root": "outputs/opinion/m7_sequence_buffer/",
             "chunk_length": 16,
             "evidence_learning_rate_scale": 0.1,
             "neutral_loss_coefficient": 0.01,

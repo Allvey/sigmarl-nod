@@ -1,4 +1,4 @@
-"""Opinion-MARL testing entry point through the M7 Sequence-Buffer stage."""
+"""Opinion-MARL testing entry point through M8 sequence PPO."""
 
 import argparse
 from pathlib import Path
@@ -7,7 +7,7 @@ from typing import Optional
 from main_testing import test_base
 from utilities.opinion.config import (
     load_opinion_experiment,
-    require_m7_supported_mode,
+    require_m8_supported_mode,
 )
 
 
@@ -20,7 +20,7 @@ def main(
     checkpoint_path: Optional[Path] = None,
 ) -> None:
     experiment = load_opinion_experiment(config_file)
-    require_m7_supported_mode(experiment)
+    require_m8_supported_mode(experiment)
     conflict_config = experiment.config.opinion.conflict_graph
     bridge_config = experiment.config.opinion.policy_bridge
     stateful_config = experiment.config.opinion.stateful
@@ -69,7 +69,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test an Opinion-MARL run through the M7 stage."
+        description="Test an Opinion-MARL run through the M8 stage."
     )
     parser.add_argument(
         "--config",

@@ -49,6 +49,7 @@
         },
         "sequence_ppo": {
             "enabled": false,
+            "train_evidence": false,
             "source_output_root": null,
             "chunk_length": 16,
             "evidence_learning_rate_scale": 0.1,

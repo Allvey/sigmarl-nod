@@ -2,7 +2,7 @@
 
 > 代码底座：SigmaRL 1.2.0  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 实施状态：M7 已完成，M8–M10 按图中标记逐步实现  
+> 实施状态：M8 已完成，M9–M10 按图中标记逐步实现  
 > 更新日期：2026-08-25
 
 ## 1. 整体网络结构
@@ -76,7 +76,7 @@ flowchart TB
     subgraph TRAIN["中心化训练结构"]
         ROLLOUT["Stateful Collector<br/>[M6 已实现]<br/>保存物理步、z和ID映射"]
         BUFFER["连续 Sequence Buffer<br/>[M7 已实现]<br/>保存 chunk、z_init 与 edge_active_init"]
-        PPO["Sequence PPO<br/>[M8]<br/>时间维展开、chunk维并行"]
+        PPO["Sequence PPO<br/>[M8 已实现]<br/>时间维展开、chunk维并行"]
         CRITIC["中心化 Critic<br/>原始联合 observation<br/>不读取 z"]
         STAGES["三阶段 Trainer<br/>[M9]<br/>Base → Evidence → Joint"]
     end
@@ -88,7 +88,7 @@ flowchart TB
     ROLLOUT --> BUFFER --> PPO
     CRITIC -->|"value / advantage"| PPO
     STAGES --> PPO
-    PPO -->|"Actor loss 梯度"| BASE
+    PPO -. "Base 在 M8 冻结；M9 Joint 才开放" .-> BASE
     PPO -->|"Actor loss 梯度"| EVID
     PPO -->|"Critic loss"| CRITIC
     PPO -. "无参数更新" .-> DYN
@@ -110,7 +110,7 @@ flowchart TB
 | M5，已完成 | Base Actor 与 residual 的 Policy Bridge | 加载 Base 权重，以 `z_direct=b` 将 residual 加到速度 loc | 是，首次改变动作分布 |
 | M6，已完成 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次；冻结 Evidence | 是，形成真实时间记忆 |
 | M7，已完成 | Sequence Buffer | 保存连续 chunk、`z_init/edge_active_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
-| M8 | Sequence PPO | 时间维展开意见动力学，使梯度训练 EvidenceNet | 改变训练方式 |
+| M8，已完成 | Sequence PPO | 时间维展开意见动力学，使梯度训练 EvidenceNet；Base 仍冻结 | 改变训练方式 |
 | M9 | Base→Evidence→Joint Trainer | 冻结/解冻参数组，完成三阶段训练和 checkpoint | 改变参数优化范围 |
 | M10 | 评估、诊断、PDF、可视化 | 输出 `raw_b/b/z/residual`，评估时不更新参数 | 否 |
 | M11 | 正式实验与消融 | 多 seed 比较 Base、TSC、Direct、EMA、GRU 和完整方法 | 实验层 |
@@ -137,7 +137,7 @@ z：经过积累、遗忘和自强化后的连续意见
   → 修正 Base Actor 的速度 loc
   → TanhNormal 采样动作
   → 环境 reward
-  → PPO 更新 Base Actor 和 EvidenceNet
+  → M8 PPO 更新 EvidenceNet（Base Actor 冻结）
 ```
 
 ## 4. 邻车 ID 的边界
@@ -166,6 +166,6 @@ leader、通行权或学习拓扑。
 中心化 Critic、Sequence Buffer 和 PPO 只在训练阶段使用。部署时每辆车根据自身局部
 观测、当前可见邻车及本地保存的意见状态分散执行。
 
-M6 当前只训练不读取 `z` 的原 Central Critic，Base Actor 与 EvidenceNet 冻结；图中
-PPO 到 Actor/Evidence 的时间梯度是 M8 的目标结构，不代表 M6 已经使用扁平 PPO 更新
-循环策略。
+M6/M7 只训练不读取 `z` 的原 Central Critic，Base Actor 与 EvidenceNet 冻结；M8
+开始沿 chunk 时间维训练 EvidenceNet，但 Base Actor 仍冻结。Base Actor 是否在 Joint
+阶段开放由 M9 明确控制。

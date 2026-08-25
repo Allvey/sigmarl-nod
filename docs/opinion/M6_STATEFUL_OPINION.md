@@ -2,7 +2,7 @@
 
 > 实现状态：代码、配置、参考测试和文档已完成；运行由用户手动执行  
 > 训练边界：Base Actor 与 M5 EvidenceNet 冻结，仅训练原结构 Central Critic  
-> 后续状态：M7 Sequence Buffer 已完成，下一阶段为 M8 Sequence PPO
+> 后续状态：M7 Sequence Buffer 与 M8 Sequence PPO 已完成，下一阶段为 M9
 
 ## 1. 本阶段完成的因果链
 

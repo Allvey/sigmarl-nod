@@ -227,6 +227,10 @@ def mappo_cavs(
         and opinion_policy_config
         and opinion_policy_config.get("sequence_buffer_enabled", False)
     )
+    is_sequence_evidence_training = bool(
+        is_sequence_buffer
+        and opinion_policy_config.get("sequence_evidence_training", False)
+    )
     opinion_bridge = None
     state_tracker = None
     base_actor_source_state = None
@@ -413,7 +417,7 @@ def mappo_cavs(
                 )
             print(
                 colored(
-                    "[INFO] Initialized M7 policy from M6: "
+                    "[INFO] Initialized sequence policy from its source: "
                     f"{initial_policy_checkpoint}",
                     "red",
                 )
@@ -661,6 +665,34 @@ def mappo_cavs(
     )  # We build GAE
     GAE = loss_module.value_estimator  # Generalized Advantage Estimation
 
+    sequence_ppo_loss = None
+    if is_sequence_evidence_training:
+        from utilities.opinion.sequence_ppo import OpinionSequencePPOLoss
+
+        sequence_ppo_loss = OpinionSequencePPOLoss(
+            actor=policy,
+            bridge=opinion_bridge,
+            observation_key=observation_key,
+            action_key=env.action_key,
+            advantage_key=loss_module.tensor_keys.advantage,
+            n_agents=parameters.n_agents,
+            clip_epsilon=parameters.clip_epsilon,
+            entropy_coefficient=parameters.entropy_eps,
+            neutral_loss_coefficient=float(
+                opinion_policy_config["neutral_loss_coefficient"]
+            ),
+            magnitude_loss_coefficient=float(
+                opinion_policy_config["magnitude_loss_coefficient"]
+            ),
+            decay_factor=1.0
+            - (
+                float(parameters.dt)
+                * float(dynamics_config.response_rate)
+                * float(dynamics_config.decay_rate)
+            ),
+            zero_threshold=float(opinion_policy_config["zero_threshold"]),
+        )
+
     if is_direct_opinion:
         actor_trainable_parameters = [
             parameter
@@ -693,6 +725,50 @@ def mappo_cavs(
                 },
             ]
         )
+    elif is_stateful_opinion and is_sequence_evidence_training:
+        actor_trainable_parameters = [
+            parameter
+            for parameter in loss_module.actor_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        critic_trainable_parameters = [
+            parameter
+            for parameter in loss_module.critic_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        evidence_parameters = list(opinion_bridge.evidence_net.parameters())
+        if not actor_trainable_parameters or not evidence_parameters:
+            raise RuntimeError("M8 EvidenceNet has no trainable parameters.")
+        if {id(parameter) for parameter in actor_trainable_parameters} != {
+            id(parameter) for parameter in evidence_parameters
+        }:
+            raise RuntimeError(
+                "M8 actor parameters must contain only the shared EvidenceNet."
+            )
+        if any(
+            parameter.requires_grad
+            for parameter in opinion_bridge.base_policy_net.parameters()
+        ):
+            raise RuntimeError("M8 Base Actor must remain frozen.")
+        evidence_lr_scale = float(
+            opinion_policy_config["evidence_learning_rate_scale"]
+        )
+        optim = torch.optim.Adam(
+            [
+                {
+                    "params": evidence_parameters,
+                    "lr": parameters.lr * evidence_lr_scale,
+                    "lr_scale": evidence_lr_scale,
+                    "group_name": "evidence",
+                },
+                {
+                    "params": critic_trainable_parameters,
+                    "lr": parameters.lr,
+                    "lr_scale": 1.0,
+                    "group_name": "critic",
+                },
+            ]
+        )
     elif is_stateful_opinion:
         critic_trainable_parameters = [
             parameter
@@ -706,8 +782,7 @@ def mappo_cavs(
             for parameter in loss_module.actor_params.values(True, True)
         ):
             raise RuntimeError(
-                "M6/M7 require Base Actor and EvidenceNet to remain frozen until "
-                "sequence PPO is implemented."
+                "M6/M7 require Base Actor and EvidenceNet to remain frozen."
             )
         optim = torch.optim.Adam(
             [
@@ -722,7 +797,10 @@ def mappo_cavs(
     else:
         optim = torch.optim.Adam(loss_module.parameters(), parameters.lr)
     optimization_parameters = [
-        parameter for parameter in loss_module.parameters() if parameter.requires_grad
+        parameter
+        for group in optim.param_groups
+        for parameter in group["params"]
+        if parameter.requires_grad
     ]
 
     pbar = tqdm(total=parameters.n_iters, desc="epi_rew_mean = 0")
@@ -738,6 +816,14 @@ def mappo_cavs(
         loss_objective_sum = 0.0
         loss_critic_sum = 0.0
         loss_entropy_sum = 0.0
+        loss_regularization_sum = 0.0
+        evidence_gradient_norm_sum = 0.0
+        sequence_approx_kl_sum = 0.0
+        sequence_clip_fraction_sum = 0.0
+        sequence_log_prob_error_sum = 0.0
+        sequence_state_replay_error_sum = 0.0
+        sequence_neutral_penalty_sum = 0.0
+        sequence_magnitude_penalty_sum = 0.0
         loss_update_count = 0
 
         tensordict_data.set(
@@ -797,9 +883,14 @@ def mappo_cavs(
 
         for _ in range(parameters.num_epochs):
             if is_sequence_buffer:
-                mini_batches = sequence_buffer.iter_minibatches(
-                    minibatch_size=parameters.minibatch_size,
-                )
+                if is_sequence_evidence_training:
+                    mini_batches = sequence_buffer.iter_sequence_minibatches(
+                        minibatch_size=parameters.minibatch_size,
+                    )
+                else:
+                    mini_batches = sequence_buffer.iter_minibatches(
+                        minibatch_size=parameters.minibatch_size,
+                    )
             else:
                 def replay_minibatches():
                     for _ in range(
@@ -812,25 +903,64 @@ def mappo_cavs(
                 mini_batches = replay_minibatches()
             for mini_batch_data in mini_batches:
 
-                loss_vals = loss_module(mini_batch_data)
+                if is_sequence_evidence_training:
+                    loss_vals = sequence_ppo_loss(mini_batch_data)
+                    critic_batch = mini_batch_data.tensordict.reshape(-1)
+                    loss_vals["loss_critic"] = loss_module.loss_critic(
+                        critic_batch
+                    ).mean()
+                else:
+                    loss_vals = loss_module(mini_batch_data)
 
                 loss_objective_sum += (
                     loss_vals["loss_objective"].detach().mean().item()
                 )
                 loss_critic_sum += loss_vals["loss_critic"].detach().mean().item()
                 loss_entropy_sum += loss_vals["loss_entropy"].detach().mean().item()
+                if is_sequence_evidence_training:
+                    loss_regularization_sum += (
+                        loss_vals["loss_regularization"].detach().item()
+                    )
+                    sequence_approx_kl_sum += loss_vals["approx_kl"].item()
+                    sequence_clip_fraction_sum += loss_vals["clip_fraction"].item()
+                    sequence_log_prob_error_sum += loss_vals[
+                        "log_prob_abs_error"
+                    ].item()
+                    sequence_state_replay_error_sum += loss_vals[
+                        "state_replay_abs_error"
+                    ].item()
+                    sequence_neutral_penalty_sum += loss_vals[
+                        "neutral_penalty"
+                    ].item()
+                    sequence_magnitude_penalty_sum += loss_vals[
+                        "magnitude_penalty"
+                    ].item()
                 loss_update_count += 1
 
                 loss_value = (
                     loss_vals["loss_objective"]
                     + loss_vals["loss_critic"]
                     + loss_vals["loss_entropy"]
+                    + loss_vals.get("loss_regularization", 0.0)
                 )
 
                 assert not loss_value.isnan().any()
                 assert not loss_value.isinf().any()
 
                 loss_value.backward()
+
+                if is_sequence_evidence_training:
+                    squared_gradient_norm = torch.zeros(
+                        (), device=parameters.device
+                    )
+                    for parameter in opinion_bridge.evidence_net.parameters():
+                        if parameter.grad is not None:
+                            squared_gradient_norm = squared_gradient_norm + (
+                                parameter.grad.detach().norm(2).square()
+                            )
+                    evidence_gradient_norm_sum += float(
+                        squared_gradient_norm.sqrt().item()
+                    )
 
                 torch.nn.utils.clip_grad_norm_(
                     optimization_parameters, parameters.max_grad_norm
@@ -1033,6 +1163,39 @@ def mappo_cavs(
                     "loss_objective": loss_objective_sum / loss_update_count,
                     "loss_critic": loss_critic_sum / loss_update_count,
                     "loss_entropy": loss_entropy_sum / loss_update_count,
+                    **(
+                        {
+                            "loss_evidence_regularization": (
+                                loss_regularization_sum / loss_update_count
+                            ),
+                            "evidence_gradient_norm": (
+                                evidence_gradient_norm_sum / loss_update_count
+                            ),
+                            "sequence_approx_kl": (
+                                sequence_approx_kl_sum / loss_update_count
+                            ),
+                            "sequence_clip_fraction": (
+                                sequence_clip_fraction_sum / loss_update_count
+                            ),
+                            "sequence_log_prob_abs_error": (
+                                sequence_log_prob_error_sum / loss_update_count
+                            ),
+                            "sequence_state_replay_abs_error": (
+                                sequence_state_replay_error_sum
+                                / loss_update_count
+                            ),
+                            "evidence_neutral_penalty": (
+                                sequence_neutral_penalty_sum
+                                / loss_update_count
+                            ),
+                            "evidence_magnitude_penalty": (
+                                sequence_magnitude_penalty_sum
+                                / loss_update_count
+                            ),
+                        }
+                        if is_sequence_evidence_training
+                        else {}
+                    ),
                     "learning_rate": float(
                         optim.param_groups[-1]["lr"]
                         if is_opinion_policy
@@ -1047,16 +1210,24 @@ def mappo_cavs(
                                 optim.param_groups[1]["lr"]
                             ),
                         }
-                        if is_direct_opinion
+                        if is_direct_opinion or is_sequence_evidence_training
                         else {}
                     ),
                     **(
                         {
-                            "evidence_learning_rate": 0.0,
-                            "critic_learning_rate": float(
-                                optim.param_groups[0]["lr"]
+                            "evidence_learning_rate": (
+                                float(optim.param_groups[0]["lr"])
+                                if is_sequence_evidence_training
+                                else 0.0
                             ),
-                            "stateful_evidence_frozen": True,
+                            "critic_learning_rate": float(
+                                optim.param_groups[
+                                    1 if is_sequence_evidence_training else 0
+                                ]["lr"]
+                            ),
+                            "stateful_evidence_frozen": (
+                                not is_sequence_evidence_training
+                            ),
                         }
                         if is_stateful_opinion
                         else {}

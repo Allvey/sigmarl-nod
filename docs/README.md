@@ -14,7 +14,8 @@ MARL 方法与旧 TSC 实现明确分开。
 7. [`opinion/M5_POLICY_BRIDGE.md`](opinion/M5_POLICY_BRIDGE.md)
 8. [`opinion/M6_STATEFUL_OPINION.md`](opinion/M6_STATEFUL_OPINION.md)
 9. [`opinion/M7_SEQUENCE_BUFFER.md`](opinion/M7_SEQUENCE_BUFFER.md)
-10. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
+10. [`opinion/M8_SEQUENCE_PPO.md`](opinion/M8_SEQUENCE_PPO.md)
+11. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
 11. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
 12. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
 13. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
@@ -35,7 +36,8 @@ docs/
 │   ├── M4_CONFLICT_GRAPH.md
 │   ├── M5_POLICY_BRIDGE.md
 │   ├── M6_STATEFUL_OPINION.md
-│   └── M7_SEQUENCE_BUFFER.md
+│   ├── M7_SEQUENCE_BUFFER.md
+│   └── M8_SEQUENCE_PPO.md
 ├── sigmarl_1_2_0/
 │   ├── CODEBASE_AUDIT.md
 │   ├── R0_USAGE.md
@@ -84,9 +86,9 @@ Stackelberg 等旧设计。它们可以帮助理解历史决策和构造外部 T
 
 当前根目录以 SigmaRL 1.2.0 原始源码为底座；恢复时的核心代码、配置和资源已与
 基线 commit 逐文件核对，且真实 reset 和 3-step rollout 已通过。此后只叠加了本
-指南记录的 R0/R1/M2/M3/M4/M5/M6/M7 修改，没有引入 TSC；M6 已按 global agent ID
-维护连续意见状态，M7 已建立不跨环境或 episode 的连续 chunk Buffer。Base Actor 与
-M5 EvidenceNet 仍保持冻结。
+指南记录的 R0/R1/M2/M3/M4/M5/M6/M7/M8 修改，没有引入 TSC；M6 已按 global agent ID
+维护连续意见状态，M7 建立不跨环境或 episode 的连续 chunk Buffer，M8 已沿 chunk
+展开固定 Dynamics，并用 PPO Actor loss 训练 EvidenceNet。Base Actor 仍保持冻结。
 
 现有 `sigmarl-nod` Conda 环境已经实施 user-site 隔离和依赖补全。R0、R1 代码实现
 已完成；实际训练和测试由用户按照
@@ -103,4 +105,4 @@ tag:        1.2.0
 commit:     5fe715bdfba4ff3e33d901d69dfa220f1222c060
 ```
 
-下一实现步骤为 M8 Sequence PPO。旧 TSC 文件不得批量复制回根目录。
+下一实现步骤为 M9 阶段 Trainer/Checkpoint。旧 TSC 文件不得批量复制回根目录。

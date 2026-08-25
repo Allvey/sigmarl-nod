@@ -31,7 +31,7 @@
 <blockquote>
 <p>代码底座：SigmaRL 1.2.0<br>
 理论真源：<a href="opinion_dynamics_marl_technical_route.md"><code>opinion_dynamics_marl_technical_route.md</code></a><br>
-实施状态：M7 已完成，M8–M10 按图中标记逐步实现<br>
+实施状态：M8 已完成，M9–M10 按图中标记逐步实现<br>
 更新日期：2026-08-25</p>
 </blockquote>
 <h2 id="1-整体网络结构">1. 整体网络结构 </h2>
@@ -103,7 +103,7 @@
     subgraph TRAIN["中心化训练结构"]
         ROLLOUT["Stateful Collector&lt;br/&gt;[M6 已实现]&lt;br/&gt;保存物理步、z和ID映射"]
         BUFFER["连续 Sequence Buffer&lt;br/&gt;[M7 已实现]&lt;br/&gt;保存 chunk、z_init 与 edge_active_init"]
-        PPO["Sequence PPO&lt;br/&gt;[M8]&lt;br/&gt;时间维展开、chunk维并行"]
+        PPO["Sequence PPO&lt;br/&gt;[M8 已实现]&lt;br/&gt;时间维展开、chunk维并行"]
         CRITIC["中心化 Critic&lt;br/&gt;原始联合 observation&lt;br/&gt;不读取 z"]
         STAGES["三阶段 Trainer&lt;br/&gt;[M9]&lt;br/&gt;Base → Evidence → Joint"]
     end
@@ -115,7 +115,7 @@
     ROLLOUT --&gt; BUFFER --&gt; PPO
     CRITIC --&gt;|"value / advantage"| PPO
     STAGES --&gt; PPO
-    PPO --&gt;|"Actor loss 梯度"| BASE
+    PPO -. "Base 在 M8 冻结；M9 Joint 才开放" .-&gt; BASE
     PPO --&gt;|"Actor loss 梯度"| EVID
     PPO --&gt;|"Critic loss"| CRITIC
     PPO -. "无参数更新" .-&gt; DYN
@@ -168,9 +168,9 @@
 <td>不直接改变动作</td>
 </tr>
 <tr>
-<td>M8</td>
+<td>M8，已完成</td>
 <td>Sequence PPO</td>
-<td>时间维展开意见动力学，使梯度训练 EvidenceNet</td>
+<td>时间维展开意见动力学，使梯度训练 EvidenceNet；Base 仍冻结</td>
 <td>改变训练方式</td>
 </tr>
 <tr>
@@ -208,7 +208,7 @@ z：经过积累、遗忘和自强化后的连续意见
   → 修正 Base Actor 的速度 loc
   → TanhNormal 采样动作
   → 环境 reward
-  → PPO 更新 Base Actor 和 EvidenceNet
+  → M8 PPO 更新 EvidenceNet（Base Actor 冻结）
 </code></pre><h2 id="4-邻车-id-的边界">4. 邻车 ID 的边界 </h2>
 <p><code>neighbor_track_ids</code> 不属于神经网络特征。它只用于：</p>
 <pre data-role="codeBlock" data-info="text" class="language-text text"><code>当前候选槽位
@@ -223,8 +223,9 @@ leader、通行权或学习拓扑。</p>
 两路合并 → TanhNormal → action
 </code></pre><p>中心化 Critic、Sequence Buffer 和 PPO 只在训练阶段使用。部署时每辆车根据自身局部<br>
 观测、当前可见邻车及本地保存的意见状态分散执行。</p>
-<p>M6 当前只训练不读取 <code>z</code> 的原 Central Critic，Base Actor 与
-EvidenceNet 冻结；图中 PPO 到 Actor/Evidence 的时间梯度是 M8 的目标结构。</p>
+<p>M6/M7 只训练不读取 <code>z</code> 的原 Central Critic，Base Actor 与 EvidenceNet
+冻结；M8 开始沿 chunk 时间维训练 EvidenceNet，但 Base Actor 仍冻结。Base Actor
+是否在 Joint 阶段开放由 M9 明确控制。</p>
 
       </div>
       

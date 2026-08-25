@@ -107,10 +107,6 @@ class StatefulOpinionPolicyBridge(nn.Module):
         super().__init__()
         if not freeze_base_actor:
             raise ValueError("M6 requires a frozen Base Actor.")
-        if not freeze_evidence:
-            raise ValueError(
-                "M6 freezes EvidenceNet until sequence PPO is implemented."
-            )
         if float(dt) <= 0.0:
             raise ValueError("dt must be positive.")
         self.base_policy_net = base_policy_net
@@ -121,7 +117,7 @@ class StatefulOpinionPolicyBridge(nn.Module):
         for parameter in self.base_policy_net.parameters():
             parameter.requires_grad_(False)
         for parameter in self.evidence_net.parameters():
-            parameter.requires_grad_(False)
+            parameter.requires_grad_(not freeze_evidence)
 
     def forward(
         self,

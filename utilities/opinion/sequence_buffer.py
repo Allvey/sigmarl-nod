@@ -16,6 +16,24 @@ class SequenceChunk:
     trajectory_id: Optional[int]
 
 
+@dataclass(frozen=True)
+class SequenceMiniBatch:
+    """One batch of equal-length chunks for truncated sequence PPO."""
+
+    tensordict: object
+    z_init: torch.Tensor
+    edge_active_init: torch.Tensor
+    chunk_indices: torch.Tensor
+
+    @property
+    def chunk_length(self) -> int:
+        return int(self.tensordict.batch_size[1])
+
+    @property
+    def valid_steps(self) -> int:
+        return int(self.tensordict.batch_size[0] * self.chunk_length)
+
+
 class OpinionSequenceBuffer:
     """Index one ``[environment,time]`` rollout without destroying time order.
 
@@ -238,6 +256,62 @@ class OpinionSequenceBuffer:
                 for chunk in selected
             ]
             yield torch.cat(views, dim=0).reshape(-1).detach()
+
+    def iter_sequence_minibatches(
+        self,
+        minibatch_size: int,
+        generator: Optional[torch.Generator] = None,
+    ) -> Iterator[SequenceMiniBatch]:
+        """Yield time-preserving ``[chunk,time]`` mini-batches.
+
+        Chunks are bucketed by their real length.  This keeps every tensor
+        rectangular without allowing padded steps to enter the PPO objective,
+        and retains a vectorized chunk dimension while the dynamics unrolls
+        only over the short time dimension.
+        """
+
+        if type(minibatch_size) is not int or minibatch_size < self.chunk_length:
+            raise ValueError("minibatch_size must be >= chunk_length for M8.")
+
+        buckets = {}
+        for index, chunk in enumerate(self.chunks):
+            buckets.setdefault(chunk.length, []).append(index)
+
+        bucket_lengths = torch.randperm(
+            len(buckets), generator=generator, device="cpu"
+        ).tolist()
+        lengths = list(buckets)
+        for length_offset in bucket_lengths:
+            length = lengths[length_offset]
+            indices = buckets[length]
+            chunks_per_minibatch = max(1, minibatch_size // length)
+            order = torch.randperm(
+                len(indices), generator=generator, device="cpu"
+            ).tolist()
+            for offset in range(0, len(order), chunks_per_minibatch):
+                selected_indices = [
+                    indices[position]
+                    for position in order[offset : offset + chunks_per_minibatch]
+                ]
+                views = []
+                for index in selected_indices:
+                    chunk = self.chunks[index]
+                    views.append(
+                        self.rollout[
+                            chunk.environment_index,
+                            chunk.start : chunk.start + chunk.length,
+                        ]
+                    )
+                yield SequenceMiniBatch(
+                    tensordict=torch.stack(views, dim=0).detach(),
+                    z_init=self.z_init[selected_indices].detach(),
+                    edge_active_init=self.edge_active_init[
+                        selected_indices
+                    ].detach(),
+                    chunk_indices=torch.tensor(
+                        selected_indices, dtype=torch.long, device="cpu"
+                    ),
+                )
 
     def diagnostics(self) -> dict:
         return {

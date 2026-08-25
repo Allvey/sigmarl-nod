@@ -1,4 +1,4 @@
-"""Opinion-MARL training entry point through the M7 Sequence-Buffer stage."""
+"""Opinion-MARL training entry point through M8 sequence PPO."""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ from utilities.experiment_artifacts import (
 )
 from utilities.opinion.config import (
     load_opinion_experiment,
-    require_m7_supported_mode,
+    require_m8_supported_mode,
 )
 
 
@@ -59,7 +59,7 @@ def _resolve_m6_base_actor_source(
 
 def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
     experiment = load_opinion_experiment(config_file)
-    require_m7_supported_mode(experiment)
+    require_m8_supported_mode(experiment)
     conflict_config = experiment.config.opinion.conflict_graph
     emits_pair_info = conflict_config.emit_pair_info
     bridge_config = experiment.config.opinion.policy_bridge
@@ -224,50 +224,79 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
                         sequence_config.source_output_root
                     )
                     sequence_source_status = "incomplete"
+                    source_stage = "M7" if sequence_config.train_evidence else "M6"
+                    target_stage = "M8" if sequence_config.train_evidence else "M7"
                     print(
-                        "[WARNING] M7 is initialized from an incomplete M6 run. "
-                        "This is suitable for pipeline development only."
+                        f"[WARNING] {target_stage} is initialized from an "
+                        f"incomplete {source_stage} run. This is suitable for "
+                        "pipeline development only."
                     )
-                m6_policy_checkpoint, m6_critic_checkpoint = (
+                sequence_policy_checkpoint, sequence_critic_checkpoint = (
                     resolve_policy_critic_pair(sequence_source_run)
                 )
-                m6_opinion_snapshot = (
+                sequence_opinion_snapshot = (
                     sequence_source_run / "opinion_config_resolved.json"
                 )
-                if not m6_opinion_snapshot.is_file():
+                if not sequence_opinion_snapshot.is_file():
                     raise FileNotFoundError(
-                        "M7 requires the M6 opinion config snapshot: "
-                        f"{m6_opinion_snapshot}"
+                        "Sequence training requires its source opinion config "
+                        f"snapshot: {sequence_opinion_snapshot}"
                     )
-                with m6_opinion_snapshot.open("r", encoding="utf-8") as file:
-                    m6_source_config = json.load(file)
-                m6_opinion = m6_source_config.get("opinion", {})
-                m6_bridge = m6_opinion.get("policy_bridge", {})
-                m6_stateful = m6_opinion.get("stateful", {})
-                m6_sequence = m6_opinion.get("sequence_ppo", {})
-                if (
-                    m6_source_config.get("stage") != "evidence"
-                    or m6_bridge.get("mode") != "stateful_opinion"
-                    or m6_stateful.get("enabled") is not True
-                    or m6_sequence.get("enabled", False) is not False
-                ):
+                with sequence_opinion_snapshot.open("r", encoding="utf-8") as file:
+                    sequence_source_config = json.load(file)
+                source_opinion = sequence_source_config.get("opinion", {})
+                source_bridge = source_opinion.get("policy_bridge", {})
+                source_stateful = source_opinion.get("stateful", {})
+                source_sequence = source_opinion.get("sequence_ppo", {})
+                common_source_valid = (
+                    source_bridge.get("mode") == "stateful_opinion"
+                    and source_stateful.get("enabled") is True
+                )
+                if sequence_config.train_evidence:
+                    source_valid = (
+                        common_source_valid
+                        and sequence_source_config.get("stage") == "sequence"
+                        and source_stateful.get("freeze_evidence") is True
+                        and source_sequence.get("enabled") is True
+                        and source_sequence.get("train_evidence", False) is False
+                    )
+                    source_description = "an M7 frozen-Evidence Sequence-Buffer run"
+                else:
+                    source_valid = (
+                        common_source_valid
+                        and sequence_source_config.get("stage") == "evidence"
+                        and source_sequence.get("enabled", False) is False
+                    )
+                    source_description = (
+                        "an M6 Stateful run with Sequence Buffer disabled"
+                    )
+                if not source_valid:
                     raise ValueError(
-                        "M7 sequence_ppo.source_output_root must select an M6 "
-                        "Stateful run with Sequence Buffer disabled."
+                        "sequence_ppo.source_output_root must select "
+                        f"{source_description}."
                     )
                 for section_name in ("evidence", "dynamics", "residual"):
-                    if m6_opinion.get(section_name) != opinion_values[section_name]:
+                    if source_opinion.get(section_name) != opinion_values[section_name]:
                         raise ValueError(
-                            "M7 configuration does not match its M6 source at "
+                            "Sequence configuration does not match its source at "
                             f"opinion.{section_name}."
                         )
-                base_critic_checkpoint = m6_critic_checkpoint
+                base_critic_checkpoint = sequence_critic_checkpoint
                 opinion_policy_config.update(
                     {
-                        "base_critic_checkpoint": str(m6_critic_checkpoint),
-                        "initial_policy_checkpoint": str(m6_policy_checkpoint),
+                        "base_critic_checkpoint": str(sequence_critic_checkpoint),
+                        "initial_policy_checkpoint": str(sequence_policy_checkpoint),
                         "sequence_buffer_enabled": True,
+                        "sequence_evidence_training": (
+                            sequence_config.train_evidence
+                        ),
                         "chunk_length": sequence_config.chunk_length,
+                        "neutral_loss_coefficient": (
+                            sequence_config.neutral_loss_coefficient
+                        ),
+                        "magnitude_loss_coefficient": (
+                            sequence_config.magnitude_loss_coefficient
+                        ),
                     }
                 )
                 resolved_opinion_config.update(
@@ -276,11 +305,11 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
                             sequence_source_run
                         ),
                         "resolved_sequence_source_status": sequence_source_status,
-                        "resolved_m6_policy_checkpoint": str(
-                            m6_policy_checkpoint
+                        "resolved_sequence_policy_checkpoint": str(
+                            sequence_policy_checkpoint
                         ),
-                        "resolved_m6_critic_checkpoint": str(
-                            m6_critic_checkpoint
+                        "resolved_sequence_critic_checkpoint": str(
+                            sequence_critic_checkpoint
                         ),
                     }
                 )
@@ -298,7 +327,16 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             base_critic_checkpoint
         )
 
-    if sequence_config.enabled:
+    if sequence_config.enabled and sequence_config.train_evidence:
+        run_label = "m8-sequence-ppo"
+        artifact_stage = "evidence_sequence_ppo"
+        expected_behavior = "differentiable_opinion_sequence_ppo"
+        comparison_note = (
+            "M8 freezes the Base Actor, unrolls Opinion Dynamics through each "
+            "truncated chunk, and trains EvidenceNet from PPO advantage while "
+            "the Central Critic is optimized independently."
+        )
+    elif sequence_config.enabled:
         run_label = "m7-sequence-buffer"
         artifact_stage = "sequence_buffer"
         expected_behavior = "sequence_buffer_noop_policy"
@@ -359,7 +397,7 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train the staged Opinion-MARL method through M7."
+        description="Train the staged Opinion-MARL method through M8."
     )
     parser.add_argument(
         "--config",

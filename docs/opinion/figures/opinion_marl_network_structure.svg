@@ -31,7 +31,7 @@
 
   <rect width="2400" height="1600" fill="#FFFFFF"/>
   <text x="1200" y="58" class="title" text-anchor="middle">Opinion Dynamics + MARL：整体网络结构与里程碑对应</text>
-  <text x="1200" y="94" class="subtitle" text-anchor="middle">M3–M7 已实现　M8–M10 计划结构　SigmaRL Base 主干保持不变</text>
+  <text x="1200" y="94" class="subtitle" text-anchor="middle">M3–M8 已实现　M9–M10 计划结构　SigmaRL Base 主干保持不变</text>
 
   <!-- Physical information layer -->
   <rect x="45" y="125" width="2310" height="270" class="cluster"/>
@@ -158,8 +158,8 @@
   <text x="647" y="1278" class="node-text">连续 chunk · z_init · edge_active_init</text>
   <text x="647" y="1307" class="node-text">不跨 env / done</text>
 
-  <rect x="880" y="1210" width="315" height="112" class="planned"/>
-  <text x="1037" y="1247" class="node-title">Sequence PPO [M8]</text>
+  <rect x="880" y="1210" width="315" height="112" class="state"/>
+  <text x="1037" y="1247" class="node-title">Sequence PPO [M8 已实现]</text>
   <text x="1037" y="1278" class="node-text">时间维展开</text>
   <text x="1037" y="1307" class="node-text">chunk batch 并行</text>
 
@@ -186,7 +186,7 @@
   <path d="M1030 1210 C1010 1080, 950 900, 900 788" class="dash"/>
   <text x="930" y="1072" class="edge-label">Actor loss → EvidenceNet</text>
   <path d="M970 1210 C800 1050, 650 780, 600 603" class="dash"/>
-  <text x="710" y="1005" class="edge-label">Actor loss → Base Actor</text>
+  <text x="710" y="1005" class="edge-label">M9 Joint 才开放 Base Actor；M8 冻结</text>
   <path d="M1100 1210 C1260 1090, 1450 1010, 1530 788" class="thin-dash"/>
   <text x="1320" y="1085" class="edge-label">通过固定 Dynamics 反传；不更新其参数</text>
   <path d="M1835 1287 L1835 1360" class="dash"/>
@@ -196,9 +196,9 @@
   <rect x="95" y="1465" width="24" height="24" class="m3"/>
   <text x="132" y="1484" class="legend">M3 已实现</text>
   <rect x="285" y="1465" width="24" height="24" class="m4"/>
-  <text x="322" y="1484" class="legend">M4–M7 已实现</text>
+  <text x="322" y="1484" class="legend">M4–M8 已实现</text>
   <rect x="475" y="1465" width="24" height="24" class="planned"/>
-  <text x="512" y="1484" class="legend">M8–M10 计划</text>
+  <text x="512" y="1484" class="legend">M9–M10 计划</text>
   <rect x="690" y="1465" width="24" height="24" class="base"/>
   <text x="727" y="1484" class="legend">SigmaRL Base 不变</text>
   <line x1="950" y1="1477" x2="1020" y2="1477" stroke="#64748B" stroke-width="3" stroke-dasharray="11 9" marker-end="url(#arrow)"/>

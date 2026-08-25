@@ -18,7 +18,7 @@ from utilities.helper_training import Parameters
 
 OPINION_CONFIG_SCHEMA_VERSION = 1
 OPINION_METHOD = "opinion_marl"
-OPINION_STAGES = {"base", "evidence", "sequence", "joint"}
+OPINION_STAGES = {"base", "evidence", "sequence", "sequence_ppo", "joint"}
 
 
 class OpinionConfigError(ValueError):
@@ -342,10 +342,6 @@ class StatefulOpinionConfig:
                 raise OpinionConfigError(
                     "Enabled stateful opinion requires evidence_output_root."
                 )
-            if not result.freeze_evidence:
-                raise OpinionConfigError(
-                    "M6 requires stateful.freeze_evidence=true until sequence PPO."
-                )
         elif result.evidence_output_root is not None:
             raise OpinionConfigError(
                 "Disabled stateful opinion requires evidence_output_root=null."
@@ -356,6 +352,7 @@ class StatefulOpinionConfig:
 @dataclass(frozen=True)
 class SequencePPOConfig:
     enabled: bool
+    train_evidence: bool
     source_output_root: Optional[str]
     chunk_length: int
     evidence_learning_rate_scale: float
@@ -369,6 +366,9 @@ class SequencePPOConfig:
         result = cls(
             enabled=_boolean(
                 raw["enabled"], "opinion.sequence_ppo.enabled"
+            ),
+            train_evidence=_boolean(
+                raw["train_evidence"], "opinion.sequence_ppo.train_evidence"
             ),
             source_output_root=_optional_string(
                 raw["source_output_root"],
@@ -402,6 +402,10 @@ class SequencePPOConfig:
         if not result.enabled and result.source_output_root is not None:
             raise OpinionConfigError(
                 "Disabled sequence_ppo requires source_output_root=null."
+            )
+        if result.train_evidence and not result.enabled:
+            raise OpinionConfigError(
+                "sequence_ppo.train_evidence=true requires sequence_ppo.enabled=true."
             )
         return result
 
@@ -471,7 +475,7 @@ class OpinionExperimentConfig:
                 raise OpinionConfigError(
                     "stage='base' requires policy_bridge.enabled=false."
                 )
-            if stage in {"evidence", "sequence", "joint"} and bridge_enabled is not True:
+            if stage in {"evidence", "sequence", "sequence_ppo", "joint"} and bridge_enabled is not True:
                 raise OpinionConfigError(
                     "Non-Base stages require policy_bridge.enabled=true."
                 )
@@ -483,6 +487,31 @@ class OpinionExperimentConfig:
         if stage == "sequence" and not opinion.sequence_ppo.enabled:
             raise OpinionConfigError(
                 "stage='sequence' requires sequence_ppo.enabled=true."
+            )
+        if stage == "sequence" and opinion.sequence_ppo.train_evidence:
+            raise OpinionConfigError(
+                "M7 stage='sequence' requires sequence_ppo.train_evidence=false."
+            )
+        if stage == "sequence_ppo":
+            if not opinion.sequence_ppo.enabled:
+                raise OpinionConfigError(
+                    "stage='sequence_ppo' requires sequence_ppo.enabled=true."
+                )
+            if not opinion.sequence_ppo.train_evidence:
+                raise OpinionConfigError(
+                    "stage='sequence_ppo' requires train_evidence=true."
+                )
+            if not opinion.stateful.enabled or opinion.stateful.freeze_evidence:
+                raise OpinionConfigError(
+                    "M8 requires stateful.enabled=true and freeze_evidence=false."
+                )
+        if (
+            opinion.stateful.enabled
+            and stage != "sequence_ppo"
+            and not opinion.stateful.freeze_evidence
+        ):
+            raise OpinionConfigError(
+                "Stateful M6/M7 stages require freeze_evidence=true."
             )
         return cls(
             schema_version=schema_version,
@@ -736,6 +765,33 @@ def require_m7_supported_mode(experiment: LoadedOpinionExperiment) -> None:
     raise NotImplementedError(
         "M7 supports Base/M4, M5 Direct-Evidence, M6 Stateful, or M7 "
         "Sequence-Buffer execution. Evidence sequence gradients begin in M8."
+    )
+
+
+def require_m8_supported_mode(experiment: LoadedOpinionExperiment) -> None:
+    """Allow all implemented paths through M8 differentiable sequence PPO."""
+
+    try:
+        require_m7_supported_mode(experiment)
+        return
+    except NotImplementedError:
+        pass
+    bridge = experiment.config.opinion.policy_bridge
+    stateful = experiment.config.opinion.stateful
+    sequence = experiment.config.opinion.sequence_ppo
+    if (
+        experiment.config.stage == "sequence_ppo"
+        and bridge.enabled
+        and bridge.mode == "stateful_opinion"
+        and stateful.enabled
+        and not stateful.freeze_evidence
+        and sequence.enabled
+        and sequence.train_evidence
+    ):
+        return
+    raise NotImplementedError(
+        "M8 supports the existing M4-M7 modes or stage='sequence_ppo' with "
+        "stateful truncated-BPTT evidence training."
     )
 
 

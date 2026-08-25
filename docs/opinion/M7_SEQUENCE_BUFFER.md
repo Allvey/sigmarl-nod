@@ -72,6 +72,7 @@ M7 配置中的：
 ```json
 "sequence_ppo": {
     "enabled": true,
+    "train_evidence": false,
     "source_output_root": "outputs/opinion/m6_stateful_opinion/",
     "chunk_length": 16
 }

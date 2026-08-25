@@ -1,6 +1,6 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0、R1、M2、M3、M4、M5、M6、M7 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1、M2、M3、M4、M5、M6、M7、M8 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
@@ -20,7 +20,7 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 4. 阅读 [`M3_MATH_MODULES.md`](M3_MATH_MODULES.md)；
 5. 阅读 [`M4_CONFLICT_GRAPH.md`](M4_CONFLICT_GRAPH.md)；
 6. 阅读 [`M5_POLICY_BRIDGE.md`](M5_POLICY_BRIDGE.md)；
-7. 阅读 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md) 和 [`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md)；
+7. 阅读 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)、[`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md) 和 [`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md)；
 8. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
 8. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
 9. 查看本文件第 10 节，只执行下一个未完成阶段；
@@ -41,14 +41,16 @@ Opinion Dynamics + MARL。
 6. docs/opinion/M5_POLICY_BRIDGE.md
 7. docs/opinion/M6_STATEFUL_OPINION.md
 8. docs/opinion/M7_SEQUENCE_BUFFER.md
+9. docs/opinion/M8_SEQUENCE_PPO.md
 9. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
 10. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
 
 不要恢复 docs/archive_tsc 中的代码设计。TSC 只作为外部实验基线；新方法禁止依赖
 TopologyLearner、priority、leader、Stackelberg、action predictor 或 opponent
 modeling。Base 必须走 SigmaRL 1.2.0 原始向量化 MAPPO；M5 Direct Evidence 与 M6
-Stateful rollout 仍使用旧单步损失，M7 才构造连续 chunk，M8 才启用时序梯度。先检查里程碑
-状态，只实现下一个阶段；保证训练/测试入口完整，实际训练和性能判断由用户手动完成。
+M6 Stateful rollout 使用旧单步损失，M7 构造连续 chunk，M8 已启用只训练 EvidenceNet
+的时序 Actor 梯度。先检查里程碑状态，只实现下一个阶段；保证训练/测试入口完整，实际
+训练和性能判断由用户手动完成。
 ```
 
 ### 0.1 当前解释器约定
@@ -263,7 +265,7 @@ utilities/opinion/
 ├── policy.py
 ├── collector.py
 ├── sequence_buffer.py
-├── ppo_loss.py
+├── sequence_ppo.py
 ├── trainer.py
 ├── checkpoint.py
 ├── diagnostics.py
@@ -436,7 +438,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 | M5：Policy 与 Base checkpoint bridge | 已完成 | Direct Evidence、冻结 Base、速度 residual；用户手动训练 |
 | M6：Stateful Collector | 已完成 | global ID、每步一次、reset；用户手动训练 |
 | M7：Sequence Buffer | 已完成 | 不跨 env/done，保存 z_init/edge_active_init；用户手动训练 |
-| M8：批量 chunk Sequence PPO | 未开始 | log-prob/梯度正确且性能达标 |
+| M8：批量 chunk Sequence PPO | 已完成 | 时间展开、Evidence 梯度、独立 Critic；用户手动训练 |
 | M9：三阶段 Trainer/Checkpoint | 未开始 | Base→Evidence→Joint smoke |
 | M10：评估、诊断、PDF、可视化 | 未开始 | 无参数更新、产物完整 |
 | M11：消融与正式实验 | 未开始 | 多 seed、公平预算、统计报告 |
@@ -595,7 +597,7 @@ Learned evidence + fixed nonlinear dynamics（Full）
 
 ## 13. 当前状态说明
 
-截至 2026-08-24：
+截至 2026-08-25：
 
 - 文档已统一到 SigmaRL 1.2.0；
 - 旧 TSC 文档已移入 `docs/archive_tsc/`；
@@ -631,7 +633,13 @@ Learned evidence + fixed nonlinear dynamics（Full）
   Central Critic；
 - M7 从完整 M6 Policy/Critic 继续，新增只用于 stateful stage 的连续 chunk Buffer，
   保存 `z_init/edge_active_init`、ID/mask、旧 log-prob，不跨 environment、done 或
-  trajectory；短尾由 valid mask 表达，当前仍只训练 Critic；
+  trajectory；短尾由 valid mask 表达，M7 仍只训练 Critic；
+- M8 从 M7 Policy/Critic 继续，按真实 chunk 长度构造 `[chunk,time]` batch；Base Actor
+  固定，EvidenceNet 与 Critic 使用独立参数组，Actor loss 沿固定 Dynamics 的截断时间
+  展开训练 EvidenceNet，Critic loss 不进入 EvidenceNet；
+- M8 保存 EvidenceNet/完整 Policy/Critic/配置/曲线，并记录 evidence gradient、KL、
+  clip fraction、log-prob/state replay error 与正则项；使用方式见
+  [`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md)；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M8：按 chunk batch 并行、沿时间维展开动力学并让 Actor loss
-  合法训练 EvidenceNet。
+- 下一实现步骤是 M9：整理 Base→Evidence→Joint 的正式阶段编排、完整 resume 与
+  checkpoint 合同。
