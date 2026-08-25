@@ -2,7 +2,7 @@
 
 > 代码底座：SigmaRL 1.2.0  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 实施状态：M6 已完成，M7–M10 按图中标记逐步实现  
+> 实施状态：M7 已完成，M8–M10 按图中标记逐步实现  
 > 更新日期：2026-08-25
 
 ## 1. 整体网络结构
@@ -75,7 +75,7 @@ flowchart TB
 
     subgraph TRAIN["中心化训练结构"]
         ROLLOUT["Stateful Collector<br/>[M6 已实现]<br/>保存物理步、z和ID映射"]
-        BUFFER["连续 Sequence Buffer<br/>[M7]<br/>保存 chunk 与 z_init"]
+        BUFFER["连续 Sequence Buffer<br/>[M7 已实现]<br/>保存 chunk、z_init 与 edge_active_init"]
         PPO["Sequence PPO<br/>[M8]<br/>时间维展开、chunk维并行"]
         CRITIC["中心化 Critic<br/>原始联合 observation<br/>不读取 z"]
         STAGES["三阶段 Trainer<br/>[M9]<br/>Base → Evidence → Joint"]
@@ -109,7 +109,7 @@ flowchart TB
 | M4，已完成 | ConflictGraph、pair features、urgency/confidence、track IDs、reset mask | 从真实车辆状态生成物理交互信息 | 否，Policy 不读取 |
 | M5，已完成 | Base Actor 与 residual 的 Policy Bridge | 加载 Base 权重，以 `z_direct=b` 将 residual 加到速度 loc | 是，首次改变动作分布 |
 | M6，已完成 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次；冻结 Evidence | 是，形成真实时间记忆 |
-| M7 | Sequence Buffer | 保存连续 chunk、`z_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
+| M7，已完成 | Sequence Buffer | 保存连续 chunk、`z_init/edge_active_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
 | M8 | Sequence PPO | 时间维展开意见动力学，使梯度训练 EvidenceNet | 改变训练方式 |
 | M9 | Base→Evidence→Joint Trainer | 冻结/解冻参数组，完成三阶段训练和 checkpoint | 改变参数优化范围 |
 | M10 | 评估、诊断、PDF、可视化 | 输出 `raw_b/b/z/residual`，评估时不更新参数 | 否 |

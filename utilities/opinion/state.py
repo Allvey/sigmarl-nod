@@ -199,6 +199,16 @@ class OpinionStateTracker:
             self.edge_active.zero_()
         self._pending_active = None
 
+    def prepared_snapshot(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Clone the state used at the current physical-step boundary."""
+
+        if self.z_dense is None or self.edge_active is None:
+            raise RuntimeError("prepare_step must run before prepared_snapshot.")
+        return (
+            self.z_dense.detach().clone(),
+            self.edge_active.detach().clone(),
+        )
+
     def snapshot(self) -> dict:
         return {
             "z_dense": (

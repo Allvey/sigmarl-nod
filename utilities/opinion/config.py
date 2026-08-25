@@ -18,7 +18,7 @@ from utilities.helper_training import Parameters
 
 OPINION_CONFIG_SCHEMA_VERSION = 1
 OPINION_METHOD = "opinion_marl"
-OPINION_STAGES = {"base", "evidence", "joint"}
+OPINION_STAGES = {"base", "evidence", "sequence", "joint"}
 
 
 class OpinionConfigError(ValueError):
@@ -355,6 +355,8 @@ class StatefulOpinionConfig:
 
 @dataclass(frozen=True)
 class SequencePPOConfig:
+    enabled: bool
+    source_output_root: Optional[str]
     chunk_length: int
     evidence_learning_rate_scale: float
     neutral_loss_coefficient: float
@@ -365,6 +367,13 @@ class SequencePPOConfig:
         raw = _object(raw, "opinion.sequence_ppo")
         _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.sequence_ppo")
         result = cls(
+            enabled=_boolean(
+                raw["enabled"], "opinion.sequence_ppo.enabled"
+            ),
+            source_output_root=_optional_string(
+                raw["source_output_root"],
+                "opinion.sequence_ppo.source_output_root",
+            ),
             chunk_length=_integer(
                 raw["chunk_length"], "opinion.sequence_ppo.chunk_length", minimum=2
             ),
@@ -385,6 +394,14 @@ class SequencePPOConfig:
         if result.evidence_learning_rate_scale > 1.0:
             raise OpinionConfigError(
                 "evidence_learning_rate_scale must be <= 1 through M5."
+            )
+        if result.enabled and result.source_output_root is None:
+            raise OpinionConfigError(
+                "Enabled sequence_ppo requires source_output_root."
+            )
+        if not result.enabled and result.source_output_root is not None:
+            raise OpinionConfigError(
+                "Disabled sequence_ppo requires source_output_root=null."
             )
         return result
 
@@ -444,7 +461,7 @@ class OpinionExperimentConfig:
         use_opinion_marl = _boolean(raw["use_opinion_marl"], "use_opinion_marl")
         if (stage == "base") != (not use_opinion_marl):
             raise OpinionConfigError(
-                "stage='base' requires use_opinion_marl=false; evidence/joint "
+                "stage='base' requires use_opinion_marl=false; non-Base stages "
                 "require use_opinion_marl=true."
             )
         policy_bridge = _object(raw["opinion"], "opinion").get("policy_bridge")
@@ -454,10 +471,19 @@ class OpinionExperimentConfig:
                 raise OpinionConfigError(
                     "stage='base' requires policy_bridge.enabled=false."
                 )
-            if stage in {"evidence", "joint"} and bridge_enabled is not True:
+            if stage in {"evidence", "sequence", "joint"} and bridge_enabled is not True:
                 raise OpinionConfigError(
-                    "evidence/joint stages require policy_bridge.enabled=true."
+                    "Non-Base stages require policy_bridge.enabled=true."
                 )
+        opinion = OpinionConfig.from_dict(raw["opinion"])
+        if stage in {"base", "evidence"} and opinion.sequence_ppo.enabled:
+            raise OpinionConfigError(
+                "Base/evidence stages require sequence_ppo.enabled=false."
+            )
+        if stage == "sequence" and not opinion.sequence_ppo.enabled:
+            raise OpinionConfigError(
+                "stage='sequence' requires sequence_ppo.enabled=true."
+            )
         return cls(
             schema_version=schema_version,
             method=method,
@@ -465,7 +491,7 @@ class OpinionExperimentConfig:
             use_opinion_marl=use_opinion_marl,
             base_config=_string(raw["base_config"], "base_config"),
             output_root=_string(raw["output_root"], "output_root"),
-            opinion=OpinionConfig.from_dict(raw["opinion"]),
+            opinion=opinion,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -551,6 +577,10 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
         raise OpinionConfigError(
             "The stateful policy mode requires policy_bridge.enabled=true."
         )
+    if opinion.sequence_ppo.enabled and not opinion.stateful.enabled:
+        raise OpinionConfigError(
+            "Sequence Buffer requires stateful opinion to be enabled."
+        )
     if opinion.policy_bridge.visualize_agent_id >= parameters.n_agents:
         raise OpinionConfigError(
             "policy_bridge.visualize_agent_id must be a valid global agent ID."
@@ -566,7 +596,7 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
     ):
         raise OpinionConfigError(
             "Milestone entrypoints start a new stage; loading/resume is not "
-            "available through M6."
+            "available through M7."
         )
     if parameters.is_testing_mode:
         raise OpinionConfigError("The referenced Base config must be a training config.")
@@ -578,6 +608,13 @@ def _validate_base_contract(parameters: Parameters, opinion: OpinionConfig) -> N
     if chunk_length > parameters.max_steps or parameters.max_steps % chunk_length != 0:
         raise OpinionConfigError(
             "sequence_ppo.chunk_length must divide max_steps without remainder."
+        )
+    if (
+        opinion.sequence_ppo.enabled
+        and parameters.minibatch_size % chunk_length != 0
+    ):
+        raise OpinionConfigError(
+            "M7 minibatch_size must be divisible by sequence_ppo.chunk_length."
         )
 
 
@@ -613,6 +650,15 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
     ):
         raise OpinionConfigError(
             "stateful.evidence_output_root and output_root must be isolated."
+        )
+    if config.opinion.sequence_ppo.source_output_root is not None and (
+        Path(config.opinion.sequence_ppo.source_output_root)
+        .expanduser()
+        .resolve()
+        == Path(config.output_root).expanduser().resolve()
+    ):
+        raise OpinionConfigError(
+            "sequence_ppo.source_output_root and output_root must be isolated."
         )
     _validate_base_contract(parameters, config.opinion)
     return LoadedOpinionExperiment(
@@ -662,6 +708,34 @@ def require_m6_supported_mode(experiment: LoadedOpinionExperiment) -> None:
     raise NotImplementedError(
         "M6 supports Base/M4, M5 direct-evidence, or M6 stateful-opinion "
         "execution. Joint and sequence-PPO optimization start in M7-M9."
+    )
+
+
+def require_m7_supported_mode(experiment: LoadedOpinionExperiment) -> None:
+    """Allow all implemented paths through M7 Sequence Buffer."""
+
+    stage = experiment.config.stage
+    bridge = experiment.config.opinion.policy_bridge
+    stateful = experiment.config.opinion.stateful
+    sequence = experiment.config.opinion.sequence_ppo
+    if stage == "base" and not bridge.enabled and not stateful.enabled:
+        return
+    if stage == "evidence" and bridge.enabled and not sequence.enabled:
+        if bridge.mode == "direct_evidence" and not stateful.enabled:
+            return
+        if bridge.mode == "stateful_opinion" and stateful.enabled:
+            return
+    if (
+        stage == "sequence"
+        and bridge.enabled
+        and bridge.mode == "stateful_opinion"
+        and stateful.enabled
+        and sequence.enabled
+    ):
+        return
+    raise NotImplementedError(
+        "M7 supports Base/M4, M5 Direct-Evidence, M6 Stateful, or M7 "
+        "Sequence-Buffer execution. Evidence sequence gradients begin in M8."
     )
 
 

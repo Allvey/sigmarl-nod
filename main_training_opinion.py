@@ -1,4 +1,4 @@
-"""Opinion-MARL training entry point through the M6 Stateful stage."""
+"""Opinion-MARL training entry point through the M7 Sequence-Buffer stage."""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ from utilities.experiment_artifacts import (
 )
 from utilities.opinion.config import (
     load_opinion_experiment,
-    require_m6_supported_mode,
+    require_m7_supported_mode,
 )
 
 
@@ -59,11 +59,12 @@ def _resolve_m6_base_actor_source(
 
 def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
     experiment = load_opinion_experiment(config_file)
-    require_m6_supported_mode(experiment)
+    require_m7_supported_mode(experiment)
     conflict_config = experiment.config.opinion.conflict_graph
     emits_pair_info = conflict_config.emit_pair_info
     bridge_config = experiment.config.opinion.policy_bridge
     stateful_config = experiment.config.opinion.stateful
+    sequence_config = experiment.config.opinion.sequence_ppo
     opinion_policy_config = None
     resolved_opinion_config = experiment.resolved_opinion_config()
     if bridge_config.enabled:
@@ -212,6 +213,77 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             resolved_opinion_config["resolved_evidence_critic_checkpoint"] = str(
                 evidence_critic_checkpoint
             )
+            if sequence_config.enabled:
+                try:
+                    sequence_source_run = resolve_latest_run(
+                        sequence_config.source_output_root
+                    )
+                    sequence_source_status = "completed"
+                except FileNotFoundError:
+                    sequence_source_run = resolve_latest_testable_run(
+                        sequence_config.source_output_root
+                    )
+                    sequence_source_status = "incomplete"
+                    print(
+                        "[WARNING] M7 is initialized from an incomplete M6 run. "
+                        "This is suitable for pipeline development only."
+                    )
+                m6_policy_checkpoint, m6_critic_checkpoint = (
+                    resolve_policy_critic_pair(sequence_source_run)
+                )
+                m6_opinion_snapshot = (
+                    sequence_source_run / "opinion_config_resolved.json"
+                )
+                if not m6_opinion_snapshot.is_file():
+                    raise FileNotFoundError(
+                        "M7 requires the M6 opinion config snapshot: "
+                        f"{m6_opinion_snapshot}"
+                    )
+                with m6_opinion_snapshot.open("r", encoding="utf-8") as file:
+                    m6_source_config = json.load(file)
+                m6_opinion = m6_source_config.get("opinion", {})
+                m6_bridge = m6_opinion.get("policy_bridge", {})
+                m6_stateful = m6_opinion.get("stateful", {})
+                m6_sequence = m6_opinion.get("sequence_ppo", {})
+                if (
+                    m6_source_config.get("stage") != "evidence"
+                    or m6_bridge.get("mode") != "stateful_opinion"
+                    or m6_stateful.get("enabled") is not True
+                    or m6_sequence.get("enabled", False) is not False
+                ):
+                    raise ValueError(
+                        "M7 sequence_ppo.source_output_root must select an M6 "
+                        "Stateful run with Sequence Buffer disabled."
+                    )
+                for section_name in ("evidence", "dynamics", "residual"):
+                    if m6_opinion.get(section_name) != opinion_values[section_name]:
+                        raise ValueError(
+                            "M7 configuration does not match its M6 source at "
+                            f"opinion.{section_name}."
+                        )
+                base_critic_checkpoint = m6_critic_checkpoint
+                opinion_policy_config.update(
+                    {
+                        "base_critic_checkpoint": str(m6_critic_checkpoint),
+                        "initial_policy_checkpoint": str(m6_policy_checkpoint),
+                        "sequence_buffer_enabled": True,
+                        "chunk_length": sequence_config.chunk_length,
+                    }
+                )
+                resolved_opinion_config.update(
+                    {
+                        "resolved_sequence_source_run_directory": str(
+                            sequence_source_run
+                        ),
+                        "resolved_sequence_source_status": sequence_source_status,
+                        "resolved_m6_policy_checkpoint": str(
+                            m6_policy_checkpoint
+                        ),
+                        "resolved_m6_critic_checkpoint": str(
+                            m6_critic_checkpoint
+                        ),
+                    }
+                )
         resolved_opinion_config["resolved_base_run_directory"] = str(
             base_run_directory
         )
@@ -226,15 +298,40 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             base_critic_checkpoint
         )
 
-    run_label = (
-        "m6-stateful-opinion"
-        if stateful_config.enabled
-        else (
-            "m5-direct-evidence"
-            if bridge_config.enabled
-            else ("m4-pair-info" if emits_pair_info else "opinion-off-base")
+    if sequence_config.enabled:
+        run_label = "m7-sequence-buffer"
+        artifact_stage = "sequence_buffer"
+        expected_behavior = "sequence_buffer_noop_policy"
+        comparison_note = (
+            "M7 preserves complete time chunks and z_init while keeping the "
+            "M6 Actor/Evidence frozen; only the Central Critic is trained."
         )
-    )
+    elif stateful_config.enabled:
+        run_label = "m6-stateful-opinion"
+        artifact_stage = "stateful_rollout"
+        expected_behavior = "stateful_opinion_rollout"
+        comparison_note = (
+            "M6 freezes Base Actor and EvidenceNet, evolves z_dense once per "
+            "physical step, and trains only the unchanged Central Critic."
+        )
+    elif bridge_config.enabled:
+        run_label = "m5-direct-evidence"
+        artifact_stage = "evidence_direct"
+        expected_behavior = "direct_evidence_candidate"
+        comparison_note = (
+            "M5 freezes the Base Actor and trains a stateless EvidenceNet that "
+            "applies a bounded speed-location residual."
+        )
+    else:
+        run_label = "m4-pair-info" if emits_pair_info else "opinion-off-base"
+        artifact_stage = experiment.config.stage
+        expected_behavior = "base_equivalent"
+        comparison_note = (
+            "M4 emits physical pair tensors through environment info, but "
+            "policy, reward, action, and optimizer remain Base-equivalent."
+            if emits_pair_info
+            else "Opinion is disabled and reuses the R1 Base path."
+        )
     return train_base(
         parameters=experiment.parameters,
         source_config=experiment.source_config,
@@ -247,53 +344,22 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             "schema_version": ARTIFACT_SCHEMA_VERSION,
             "reference": "R1 Base-MAPPO with the same seed and budget",
             "status": "pending_user_validation",
-            "expected_behavior": (
-                "stateful_opinion_rollout"
-                if stateful_config.enabled
-                else (
-                    "direct_evidence_candidate"
-                    if bridge_config.enabled
-                    else "base_equivalent"
-                )
-            ),
+            "expected_behavior": expected_behavior,
             "automated_performance_validation": False,
-            "note": (
-                "M6 freezes Base Actor and EvidenceNet, evolves z_dense once per "
-                "physical step, and trains only the unchanged Central Critic."
-                if stateful_config.enabled
-                else (
-                    "M5 freezes the Base Actor and trains a stateless EvidenceNet "
-                    "that applies a bounded speed-location residual."
-                    if bridge_config.enabled
-                    else (
-                        "M4 emits physical pair tensors through environment info, "
-                        "but policy, reward, action, and optimizer remain Base-equivalent."
-                        if emits_pair_info
-                        else "Opinion is disabled and reuses the R1 Base path."
-                    )
-                )
-            ),
+            "note": comparison_note,
         },
         opinion_pair_info_config=(
             conflict_config.to_dict() if emits_pair_info else None
         ),
         opinion_policy_config=opinion_policy_config,
         artifact_method="opinion_marl",
-        artifact_stage=(
-            "stateful_rollout"
-            if stateful_config.enabled
-            else (
-                "evidence_direct"
-                if bridge_config.enabled
-                else experiment.config.stage
-            )
-        ),
+        artifact_stage=artifact_stage,
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train the staged Opinion-MARL method through M6."
+        description="Train the staged Opinion-MARL method through M7."
     )
     parser.add_argument(
         "--config",

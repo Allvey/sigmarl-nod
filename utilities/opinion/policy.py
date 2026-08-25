@@ -217,7 +217,14 @@ class StatefulOpinionPolicyController(nn.Module):
             reference=urgency,
             environment_done=environment_done,
         )
+        z_dense_prev, edge_active_prev = self.state_tracker.prepared_snapshot()
         tensordict.set(("agents", "opinion", "z_prev"), z_prev)
+        tensordict.set(
+            ("agents", "opinion", "z_dense_prev"), z_dense_prev
+        )
+        tensordict.set(
+            ("agents", "opinion", "edge_active_prev"), edge_active_prev
+        )
         tensordict = self.policy(tensordict)
         self.state_tracker.commit_step(
             neighbor_ids=neighbor_ids,

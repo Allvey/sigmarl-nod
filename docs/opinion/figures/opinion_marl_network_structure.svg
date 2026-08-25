@@ -31,7 +31,7 @@
 
   <rect width="2400" height="1600" fill="#FFFFFF"/>
   <text x="1200" y="58" class="title" text-anchor="middle">Opinion Dynamics + MARL：整体网络结构与里程碑对应</text>
-  <text x="1200" y="94" class="subtitle" text-anchor="middle">M3–M6 已实现　M7–M10 计划结构　SigmaRL Base 主干保持不变</text>
+  <text x="1200" y="94" class="subtitle" text-anchor="middle">M3–M7 已实现　M8–M10 计划结构　SigmaRL Base 主干保持不变</text>
 
   <!-- Physical information layer -->
   <rect x="45" y="125" width="2310" height="270" class="cluster"/>
@@ -153,9 +153,9 @@
   <text x="255" y="1278" class="node-text">action · reward · done</text>
   <text x="255" y="1307" class="node-text">ID映射 · z · reset</text>
 
-  <rect x="490" y="1210" width="315" height="112" class="planned"/>
-  <text x="647" y="1247" class="node-title">Sequence Buffer [M7]</text>
-  <text x="647" y="1278" class="node-text">连续 chunk · z_init</text>
+  <rect x="490" y="1210" width="315" height="112" class="state"/>
+  <text x="647" y="1247" class="node-title">Sequence Buffer [M7 已实现]</text>
+  <text x="647" y="1278" class="node-text">连续 chunk · z_init · edge_active_init</text>
   <text x="647" y="1307" class="node-text">不跨 env / done</text>
 
   <rect x="880" y="1210" width="315" height="112" class="planned"/>
@@ -196,9 +196,9 @@
   <rect x="95" y="1465" width="24" height="24" class="m3"/>
   <text x="132" y="1484" class="legend">M3 已实现</text>
   <rect x="285" y="1465" width="24" height="24" class="m4"/>
-  <text x="322" y="1484" class="legend">M4–M6 已实现</text>
+  <text x="322" y="1484" class="legend">M4–M7 已实现</text>
   <rect x="475" y="1465" width="24" height="24" class="planned"/>
-  <text x="512" y="1484" class="legend">M7–M10 计划</text>
+  <text x="512" y="1484" class="legend">M8–M10 计划</text>
   <rect x="690" y="1465" width="24" height="24" class="base"/>
   <text x="727" y="1484" class="legend">SigmaRL Base 不变</text>
   <line x1="950" y1="1477" x2="1020" y2="1477" stroke="#64748B" stroke-width="3" stroke-dasharray="11 9" marker-end="url(#arrow)"/>

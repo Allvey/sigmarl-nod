@@ -110,8 +110,18 @@ python main_testing_opinion.py --config configs/opinion/m6_stateful_opinion.json
 ```
 
 Base Actor and M5 EvidenceNet remain frozen at M6; only the unchanged Central
-Critic is optimized until M7/M8 add sequence training. See
+Critic is optimized. See
 [`docs/opinion/M6_STATEFUL_OPINION.md`](docs/opinion/M6_STATEFUL_OPINION.md).
+
+M7 preserves contiguous chunks and their global opinion initial state while
+keeping the M6 execution policy unchanged:
+
+```bash
+python main_training_opinion.py --config configs/opinion/m7_sequence_buffer.json
+python main_testing_opinion.py --config configs/opinion/m7_sequence_buffer.json
+```
+
+See [`docs/opinion/M7_SEQUENCE_BUFFER.md`](docs/opinion/M7_SEQUENCE_BUFFER.md).
 
 ## Customize Your Own Maps
 We support maps customized in <a href="https://josm.openstreetmap.de/" target="_blank">JOSM</a>, an open-source editor for ​OpenStreetMap. Follow these steps:

@@ -97,6 +97,11 @@ Evidence learning rate   = 0.1 × Actor learning rate
 `evidence_output_root=null`；M6 配置固定 `enabled=true`、指定 M5 输出根目录并冻结
 EvidenceNet。完整语义见 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)。
 
+从 M7 起 `opinion.sequence_ppo.enabled=true`，并要求独立的
+`source_output_root` 指向 M6 输出根目录；M2–M6 固定为 `enabled=false`、
+`source_output_root=null`。M7 只启用 Sequence Buffer，Evidence 时间梯度仍留给
+M8。完整语义见 [`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md)。
+
 ## 4. 配置启动前检查
 
 `utilities/opinion/config.py` 会在创建环境或输出目录之前拒绝：

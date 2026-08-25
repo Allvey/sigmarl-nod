@@ -222,6 +222,11 @@ def mappo_cavs(
     is_direct_opinion = opinion_mode == "direct_evidence"
     is_stateful_opinion = opinion_mode == "stateful_opinion"
     is_opinion_policy = is_direct_opinion or is_stateful_opinion
+    is_sequence_buffer = bool(
+        is_stateful_opinion
+        and opinion_policy_config
+        and opinion_policy_config.get("sequence_buffer_enabled", False)
+    )
     opinion_bridge = None
     state_tracker = None
     base_actor_source_state = None
@@ -382,6 +387,37 @@ def mappo_cavs(
             return_log_prob=True,
             log_prob_key=("agents", "sample_log_prob"),
         )
+        if is_sequence_buffer and not parameters.is_load_model:
+            initial_policy_checkpoint = Path(
+                str(opinion_policy_config["initial_policy_checkpoint"])
+            )
+            if not initial_policy_checkpoint.is_file():
+                raise FileNotFoundError(
+                    "M6 source policy checkpoint not found: "
+                    f"{initial_policy_checkpoint}"
+                )
+            policy.load_state_dict(
+                torch.load(
+                    initial_policy_checkpoint,
+                    map_location=parameters.device,
+                ),
+                strict=True,
+            )
+            # The M6 full policy is authoritative for M7. Refresh the
+            # separately saved Base state after the strict full-policy load.
+            base_actor_source_state = base_policy.state_dict()
+            if artifact_logging_enabled:
+                torch.save(
+                    base_actor_source_state,
+                    artifact_run_directory / "source_base_actor.pth",
+                )
+            print(
+                colored(
+                    "[INFO] Initialized M7 policy from M6: "
+                    f"{initial_policy_checkpoint}",
+                    "red",
+                )
+            )
         policy_for_collection = policy
         if is_stateful_opinion:
             decay_factor = 1.0 - (
@@ -581,7 +617,9 @@ def mappo_cavs(
         total_frames=parameters.total_frames,
     )
 
-    if parameters.is_prb:
+    if is_sequence_buffer:
+        replay_buffer = None
+    elif parameters.is_prb:
         replay_buffer = TensorDictPrioritizedReplayBuffer(
             alpha=0.7,
             beta=0.6,
@@ -662,13 +700,13 @@ def mappo_cavs(
             if parameter.requires_grad
         ]
         if not critic_trainable_parameters:
-            raise RuntimeError("M6 Critic has no trainable parameters.")
+            raise RuntimeError("M6/M7 Critic has no trainable parameters.")
         if any(
             parameter.requires_grad
             for parameter in loss_module.actor_params.values(True, True)
         ):
             raise RuntimeError(
-                "M6 requires Base Actor and EvidenceNet to remain frozen until "
+                "M6/M7 require Base Actor and EvidenceNet to remain frozen until "
                 "sequence PPO is implemented."
             )
         optim = torch.optim.Adam(
@@ -740,17 +778,39 @@ def mappo_cavs(
                 tensordict_data["td_error"].min() >= 0
             ), "TD error must be greater than 0"
 
-        data_view = tensordict_data.reshape(
-            -1
-        )  # Flatten the batch size to shuffle data
-        replay_buffer.extend(data_view)
-        # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
+        sequence_iteration_metrics = {}
+        sequence_buffer = None
+        if is_sequence_buffer:
+            from utilities.opinion.sequence_buffer import OpinionSequenceBuffer
+
+            sequence_buffer = OpinionSequenceBuffer(
+                tensordict_data,
+                chunk_length=int(opinion_policy_config["chunk_length"]),
+            )
+            sequence_iteration_metrics = sequence_buffer.diagnostics()
+        else:
+            data_view = tensordict_data.reshape(
+                -1
+            )  # Flatten the batch size to shuffle data
+            replay_buffer.extend(data_view)
+            # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
         for _ in range(parameters.num_epochs):
-            # print("[DEBUG] for _ in range(parameters.num_epochs):")
-            for _ in range(parameters.frames_per_batch // parameters.minibatch_size):
-                # sample a batch of data
-                mini_batch_data, info = replay_buffer.sample(return_info=True)
+            if is_sequence_buffer:
+                mini_batches = sequence_buffer.iter_minibatches(
+                    minibatch_size=parameters.minibatch_size,
+                )
+            else:
+                def replay_minibatches():
+                    for _ in range(
+                        parameters.frames_per_batch
+                        // parameters.minibatch_size
+                    ):
+                        mini_batch, _ = replay_buffer.sample(return_info=True)
+                        yield mini_batch
+
+                mini_batches = replay_minibatches()
+            for mini_batch_data in mini_batches:
 
                 loss_vals = loss_module(mini_batch_data)
 
@@ -1002,6 +1062,7 @@ def mappo_cavs(
                         else {}
                     ),
                     **opinion_iteration_metrics,
+                    **sequence_iteration_metrics,
                     "rollout_seconds": float(rollout_seconds),
                     "optimization_seconds": float(optimization_seconds),
                     "iteration_seconds": float(iteration_seconds),
