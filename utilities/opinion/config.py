@@ -238,10 +238,13 @@ class ResidualConfig:
     gain: float
     max_abs: float
     action_index: int
+    apply_to_action: bool = True
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "ResidualConfig":
         raw = _object(raw, "opinion.residual")
+        raw = dict(raw)
+        raw.setdefault("apply_to_action", True)
         _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.residual")
         result = cls(
             opinion_scale=_number(
@@ -257,6 +260,10 @@ class ResidualConfig:
             ),
             action_index=_integer(
                 raw["action_index"], "opinion.residual.action_index", minimum=0
+            ),
+            apply_to_action=_boolean(
+                raw["apply_to_action"],
+                "opinion.residual.apply_to_action",
             ),
         )
         if result.action_index != 0:

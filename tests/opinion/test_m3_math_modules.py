@@ -128,6 +128,22 @@ class ResidualTests(unittest.TestCase):
         torch.testing.assert_close(final_loc[..., 0], base_loc[..., 0] + 0.05)
         torch.testing.assert_close(final_loc[..., 1], base_loc[..., 1])
 
+    def test_disabled_action_gate_preserves_exact_base_location(self):
+        residual_module = OpinionResidual(
+            1.0,
+            0.1,
+            0.25,
+            action_index=0,
+            apply_to_action=False,
+        )
+        base_loc = torch.tensor([[0.2, -0.3]], requires_grad=True)
+        nonzero_residual = torch.tensor([[0.1]], requires_grad=True)
+
+        final_loc = residual_module.apply_to_loc(base_loc, nonzero_residual)
+
+        torch.testing.assert_close(final_loc, base_loc)
+        torch.testing.assert_close(nonzero_residual, torch.tensor([[0.1]]))
+
 
 if __name__ == "__main__":
     unittest.main()

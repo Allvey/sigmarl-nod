@@ -27,6 +27,7 @@ class OpinionResidual(nn.Module):
         max_abs: float,
         action_index: int = 0,
         epsilon: float = 1e-8,
+        apply_to_action: bool = True,
     ) -> None:
         super().__init__()
         if opinion_scale <= 0 or gain <= 0 or max_abs <= 0 or epsilon <= 0:
@@ -37,12 +38,15 @@ class OpinionResidual(nn.Module):
             raise ValueError("gain must be <= max_abs, and max_abs must be <= 1.")
         if type(action_index) is not int or action_index != 0:
             raise ValueError("The first method version only modifies action_index=0.")
+        if type(apply_to_action) is not bool:
+            raise ValueError("apply_to_action must be a boolean.")
 
         self.opinion_scale = float(opinion_scale)
         self.gain = float(gain)
         self.max_abs = float(max_abs)
         self.action_index = action_index
         self.epsilon = float(epsilon)
+        self.apply_to_action = apply_to_action
 
     @classmethod
     def from_config(cls, config: ResidualConfig) -> "OpinionResidual":
@@ -51,6 +55,7 @@ class OpinionResidual(nn.Module):
             gain=config.gain,
             max_abs=config.max_abs,
             action_index=config.action_index,
+            apply_to_action=config.apply_to_action,
         )
 
     def forward(
@@ -91,8 +96,10 @@ class OpinionResidual(nn.Module):
                 f"{tuple(expected_residual_shape)}, got {tuple(residual.shape)}."
             )
         before = base_loc[..., : self.action_index]
+        applied_residual = residual if self.apply_to_action else torch.zeros_like(residual)
         corrected = (
-            base_loc[..., self.action_index : self.action_index + 1] + residual
+            base_loc[..., self.action_index : self.action_index + 1]
+            + applied_residual
         )
         after = base_loc[..., self.action_index + 1 :]
         return torch.cat((before, corrected, after), dim=-1)
