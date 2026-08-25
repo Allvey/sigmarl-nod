@@ -34,6 +34,8 @@ class OpinionSequencePPOLoss(nn.Module):
         magnitude_loss_coefficient: float,
         decay_factor: float,
         zero_threshold: float,
+        base_anchor_net: Optional[nn.Module] = None,
+        base_anchor_coefficient: float = 0.0,
     ) -> None:
         super().__init__()
         if n_agents < 2:
@@ -50,6 +52,10 @@ class OpinionSequencePPOLoss(nn.Module):
             raise ValueError("decay_factor must be in [0, 1].")
         if float(zero_threshold) <= 0.0:
             raise ValueError("zero_threshold must be positive.")
+        if float(base_anchor_coefficient) < 0.0:
+            raise ValueError("base_anchor_coefficient must be non-negative.")
+        if base_anchor_coefficient > 0.0 and base_anchor_net is None:
+            raise ValueError("A positive Base anchor requires base_anchor_net.")
         self.actor = actor
         self.bridge = bridge
         self.observation_key = observation_key
@@ -62,6 +68,12 @@ class OpinionSequencePPOLoss(nn.Module):
         self.magnitude_loss_coefficient = float(magnitude_loss_coefficient)
         self.decay_factor = float(decay_factor)
         self.zero_threshold = float(zero_threshold)
+        self.base_anchor_net = base_anchor_net
+        self.base_anchor_coefficient = float(base_anchor_coefficient)
+        if self.base_anchor_net is not None:
+            self.base_anchor_net.eval()
+            for parameter in self.base_anchor_net.parameters():
+                parameter.requires_grad_(False)
 
     @staticmethod
     def _optional(tensordict, key) -> Optional[torch.Tensor]:
@@ -246,6 +258,7 @@ class OpinionSequencePPOLoss(nn.Module):
         return {
             "loc": torch.stack(final_loc_steps, dim=1),
             "scale": base_scale,
+            "base_loc": base_loc,
             "raw_b": evidence.raw_b,
             "b": evidence.b,
             "z_prev": torch.stack(z_prev_steps, dim=1),
@@ -316,6 +329,17 @@ class OpinionSequencePPOLoss(nn.Module):
             self.neutral_loss_coefficient * neutral
             + self.magnitude_loss_coefficient * magnitude
         )
+        if self.base_anchor_net is None or self.base_anchor_coefficient == 0.0:
+            base_anchor_penalty = recomputed["base_loc"].new_zeros(())
+        else:
+            with torch.no_grad():
+                source_base_loc, _ = self.base_anchor_net(
+                    td.get(self.observation_key)
+                )
+            base_anchor_penalty = (
+                recomputed["base_loc"] - source_base_loc
+            ).square().mean()
+        loss_base_anchor = self.base_anchor_coefficient * base_anchor_penalty
 
         with torch.no_grad():
             collected_z_next = td.get(("agents", "opinion", "z_next"))
@@ -332,6 +356,8 @@ class OpinionSequencePPOLoss(nn.Module):
             "loss_objective": loss_objective,
             "loss_entropy": loss_entropy,
             "loss_regularization": loss_regularization,
+            "loss_base_anchor": loss_base_anchor,
+            "base_anchor_penalty": base_anchor_penalty.detach(),
             "neutral_penalty": neutral.detach(),
             "magnitude_penalty": magnitude.detach(),
             "entropy": entropy.mean().detach(),

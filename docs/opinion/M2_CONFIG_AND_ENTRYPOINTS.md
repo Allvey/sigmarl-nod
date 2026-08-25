@@ -102,6 +102,12 @@ EvidenceNet。完整语义见 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)
 `source_output_root=null`。M7 只启用 Sequence Buffer，Evidence 时间梯度仍留给
 M8。完整语义见 [`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md)。
 
+M8 增加 `sequence_ppo.train_evidence=true` 并开放 Evidence 时间梯度。M9 strict
+schema 进一步要求 `opinion.trainer`：旧阶段固定 `enabled=false`，M9 `joint` stage
+支持从零完整 Joint、Evidence-only、Base/Opinion 初始化 Joint 和 Warmup→Joint。完整语义见
+[`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md) 与
+[`M9_TRAINER_AND_CHECKPOINT.md`](M9_TRAINER_AND_CHECKPOINT.md)。
+
 ## 4. 配置启动前检查
 
 `utilities/opinion/config.py` 会在创建环境或输出目录之前拒绝：

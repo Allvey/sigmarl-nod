@@ -1,35 +1,38 @@
 {
     "schema_version": 1,
     "method": "opinion_marl",
-    "stage": "evidence",
+    "stage": "joint",
     "use_opinion_marl": true,
     "base_config": "../base/pilot.json",
-    "output_root": "outputs/opinion_pilot/m6_stateful_opinion/",
+    "output_root": "outputs/opinion_pilot/m9_joint_from_scratch/",
     "opinion": {
         "conflict_graph": {
             "emit_pair_info": true,
             "candidate_count": 2,
             "pair_feature_dim": 10,
-            "prediction_horizon_seconds": 3.0,
-            "conflict_distance_meters": 2.0,
-            "sensing_distance_meters": 20.0,
-            "cpa_epsilon": 1e-06,
-            "urgency_time_scale_seconds": 3.0,
-            "urgency_distance_scale_meters": 2.0
+            "prediction_horizon_seconds": 3,
+            "conflict_distance_meters": 2,
+            "sensing_distance_meters": 20,
+            "cpa_epsilon": 0.000001,
+            "urgency_time_scale_seconds": 3,
+            "urgency_distance_scale_meters": 2
         },
         "evidence": {
-            "hidden_sizes": [128, 128],
-            "b_max": 1.0,
-            "temperature": 1.0
+            "hidden_sizes": [
+                128,
+                128
+            ],
+            "b_max": 1,
+            "temperature": 1
         },
         "dynamics": {
             "response_rate": 0.5,
-            "decay_rate": 1.0,
+            "decay_rate": 1,
             "self_reinforcement": 0.5,
-            "nonlinear_sensitivity": 1.0
+            "nonlinear_sensitivity": 1
         },
         "residual": {
-            "opinion_scale": 1.0,
+            "opinion_scale": 1,
             "gain": 0.1,
             "max_abs": 0.25,
             "action_index": 0
@@ -37,35 +40,35 @@
         "policy_bridge": {
             "enabled": true,
             "mode": "stateful_opinion",
-            "base_output_root": "outputs/base_pilot/",
-            "freeze_base_actor": true,
+            "base_output_root": null,
+            "freeze_base_actor": false,
             "visualize_agent_id": 0
         },
         "stateful": {
             "enabled": true,
-            "evidence_output_root": "outputs/opinion_pilot/m5_direct_evidence/",
-            "freeze_evidence": true,
-            "zero_threshold": 1e-06
+            "evidence_output_root": null,
+            "freeze_evidence": false,
+            "zero_threshold": 0.000001
         },
         "sequence_ppo": {
-            "enabled": false,
-            "train_evidence": false,
+            "enabled": true,
+            "train_evidence": true,
             "source_output_root": null,
             "chunk_length": 16,
-            "evidence_learning_rate_scale": 0.1,
+            "evidence_learning_rate_scale": 1.0,
             "neutral_loss_coefficient": 0.01,
             "magnitude_loss_coefficient": 0.001
         },
         "trainer": {
-            "enabled": false,
-            "mode": "disabled",
+            "enabled": true,
+            "mode": "joint",
             "initialization": "none",
             "source_output_root": null,
             "evidence_warmup_iterations": 0,
-            "base_actor_learning_rate_scale": 0.02,
+            "base_actor_learning_rate_scale": 1.0,
             "critic_learning_rate_scale": 1.0,
             "base_anchor_coefficient": 0.0,
-            "checkpoint_interval": 50
+            "checkpoint_interval": 1
         }
     }
 }

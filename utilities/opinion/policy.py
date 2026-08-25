@@ -105,8 +105,6 @@ class StatefulOpinionPolicyBridge(nn.Module):
         freeze_evidence: bool = True,
     ) -> None:
         super().__init__()
-        if not freeze_base_actor:
-            raise ValueError("M6 requires a frozen Base Actor.")
         if float(dt) <= 0.0:
             raise ValueError("dt must be positive.")
         self.base_policy_net = base_policy_net
@@ -115,7 +113,7 @@ class StatefulOpinionPolicyBridge(nn.Module):
         self.residual = residual
         self.dt = float(dt)
         for parameter in self.base_policy_net.parameters():
-            parameter.requires_grad_(False)
+            parameter.requires_grad_(not freeze_base_actor)
         for parameter in self.evidence_net.parameters():
             parameter.requires_grad_(not freeze_evidence)
 

@@ -35,35 +35,54 @@ def train_base(
     opinion_policy_config: Optional[Mapping[str, object]] = None,
     artifact_method: str = "base_mappo",
     artifact_stage: str = "base",
+    resume_checkpoint: Optional[Path] = None,
 ) -> Path:
     """Run Base-MAPPO, optionally with the staged M4/M5 Opinion side paths."""
 
     output_root = str(Path(parameters.where_to_save).expanduser().resolve())
-    run_directory = create_run_directory(
-        output_root=output_root,
-        method=run_label,
-        seed=parameters.seed,
-    )
+    if resume_checkpoint is None:
+        run_directory = create_run_directory(
+            output_root=output_root,
+            method=run_label,
+            seed=parameters.seed,
+        )
+    else:
+        resume_checkpoint = Path(resume_checkpoint).expanduser().resolve()
+        run_directory = resume_checkpoint.parent
+        expected_runs_root = Path(output_root).expanduser().resolve() / "runs"
+        if run_directory.parent != expected_runs_root:
+            raise ValueError(
+                "Resume checkpoint must belong directly to a run under the "
+                f"configured output root: {expected_runs_root}"
+            )
 
     parameters.output_root = output_root
     parameters.run_id = run_directory.name
     parameters.artifact_logging_enabled = True
     parameters.where_to_save = str(run_directory) + os.sep
 
-    initialize_run(
-        run_directory=run_directory,
-        source_config=dict(source_config),
-        resolved_config=dict(parameters.to_dict()),
-        method=artifact_method,
-        stage=artifact_stage,
-    )
+    if resume_checkpoint is None:
+        initialize_run(
+            run_directory=run_directory,
+            source_config=dict(source_config),
+            resolved_config=dict(parameters.to_dict()),
+            method=artifact_method,
+            stage=artifact_stage,
+        )
+    else:
+        write_training_status(
+            run_directory,
+            status="running",
+            iteration=None,
+        )
     try:
-        for filename, payload in (supplementary_snapshots or {}).items():
-            if Path(filename).name != filename or not filename.endswith(".json"):
-                raise ValueError(
-                    "Supplementary snapshot names must be plain .json filenames."
-                )
-            atomic_write_json(run_directory / filename, dict(payload))
+        if resume_checkpoint is None:
+            for filename, payload in (supplementary_snapshots or {}).items():
+                if Path(filename).name != filename or not filename.endswith(".json"):
+                    raise ValueError(
+                        "Supplementary snapshot names must be plain .json filenames."
+                    )
+                atomic_write_json(run_directory / filename, dict(payload))
 
         mappo_cavs(
             parameters=parameters,
@@ -71,6 +90,7 @@ def train_base(
             opinion_policy_config=opinion_policy_config,
             artifact_method=artifact_method,
             artifact_stage=artifact_stage,
+            training_resume_checkpoint=resume_checkpoint,
         )
         write_training_status(
             run_directory,

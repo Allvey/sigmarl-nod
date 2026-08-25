@@ -274,7 +274,7 @@ class ResidualConfig:
 class PolicyBridgeConfig:
     enabled: bool
     mode: str
-    base_output_root: str
+    base_output_root: Optional[str]
     freeze_base_actor: bool
     visualize_agent_id: int
 
@@ -285,7 +285,7 @@ class PolicyBridgeConfig:
         result = cls(
             enabled=_boolean(raw["enabled"], "opinion.policy_bridge.enabled"),
             mode=_string(raw["mode"], "opinion.policy_bridge.mode").lower(),
-            base_output_root=_string(
+            base_output_root=_optional_string(
                 raw["base_output_root"],
                 "opinion.policy_bridge.base_output_root",
             ),
@@ -303,10 +303,6 @@ class PolicyBridgeConfig:
             raise OpinionConfigError(
                 "policy_bridge.mode must be 'direct_evidence' or "
                 "'stateful_opinion'."
-            )
-        if result.enabled and not result.freeze_base_actor:
-            raise OpinionConfigError(
-                "M5 requires policy_bridge.freeze_base_actor=true."
             )
         return result
 
@@ -337,12 +333,7 @@ class StatefulOpinionConfig:
                 strictly_positive=True,
             ),
         )
-        if result.enabled:
-            if result.evidence_output_root is None:
-                raise OpinionConfigError(
-                    "Enabled stateful opinion requires evidence_output_root."
-                )
-        elif result.evidence_output_root is not None:
+        if not result.enabled and result.evidence_output_root is not None:
             raise OpinionConfigError(
                 "Disabled stateful opinion requires evidence_output_root=null."
             )
@@ -395,10 +386,6 @@ class SequencePPOConfig:
             raise OpinionConfigError(
                 "evidence_learning_rate_scale must be <= 1 through M5."
             )
-        if result.enabled and result.source_output_root is None:
-            raise OpinionConfigError(
-                "Enabled sequence_ppo requires source_output_root."
-            )
         if not result.enabled and result.source_output_root is not None:
             raise OpinionConfigError(
                 "Disabled sequence_ppo requires source_output_root=null."
@@ -406,6 +393,134 @@ class SequencePPOConfig:
         if result.train_evidence and not result.enabled:
             raise OpinionConfigError(
                 "sequence_ppo.train_evidence=true requires sequence_ppo.enabled=true."
+            )
+        return result
+
+
+@dataclass(frozen=True)
+class OpinionTrainerConfig:
+    enabled: bool
+    mode: str
+    initialization: str
+    source_output_root: Optional[str]
+    evidence_warmup_iterations: int
+    base_actor_learning_rate_scale: float
+    critic_learning_rate_scale: float
+    base_anchor_coefficient: float
+    checkpoint_interval: int
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "OpinionTrainerConfig":
+        raw = _object(raw, "opinion.trainer")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "opinion.trainer")
+        result = cls(
+            enabled=_boolean(raw["enabled"], "opinion.trainer.enabled"),
+            mode=_string(raw["mode"], "opinion.trainer.mode").lower(),
+            initialization=_string(
+                raw["initialization"], "opinion.trainer.initialization"
+            ).lower(),
+            source_output_root=_optional_string(
+                raw["source_output_root"],
+                "opinion.trainer.source_output_root",
+            ),
+            evidence_warmup_iterations=_integer(
+                raw["evidence_warmup_iterations"],
+                "opinion.trainer.evidence_warmup_iterations",
+                minimum=0,
+            ),
+            base_actor_learning_rate_scale=_number(
+                raw["base_actor_learning_rate_scale"],
+                "opinion.trainer.base_actor_learning_rate_scale",
+                strictly_positive=True,
+            ),
+            critic_learning_rate_scale=_number(
+                raw["critic_learning_rate_scale"],
+                "opinion.trainer.critic_learning_rate_scale",
+                strictly_positive=True,
+            ),
+            base_anchor_coefficient=_number(
+                raw["base_anchor_coefficient"],
+                "opinion.trainer.base_anchor_coefficient",
+            ),
+            checkpoint_interval=_integer(
+                raw["checkpoint_interval"],
+                "opinion.trainer.checkpoint_interval",
+                minimum=1,
+            ),
+        )
+        if result.mode not in {
+            "disabled",
+            "evidence_only",
+            "joint",
+            "warmup_then_joint",
+        }:
+            raise OpinionConfigError(
+                "trainer.mode must be disabled, evidence_only, joint, or "
+                "warmup_then_joint."
+            )
+        if result.initialization not in {"none", "base", "opinion"}:
+            raise OpinionConfigError(
+                "trainer.initialization must be none, base, or opinion."
+            )
+        for name, value in (
+            ("base_actor_learning_rate_scale", result.base_actor_learning_rate_scale),
+            ("critic_learning_rate_scale", result.critic_learning_rate_scale),
+        ):
+            if value > 1.0:
+                raise OpinionConfigError(f"{name} must be <= 1.")
+        if result.base_anchor_coefficient < 0.0:
+            raise OpinionConfigError("base_anchor_coefficient must be >= 0.")
+        if not result.enabled:
+            if result.mode != "disabled" or result.initialization != "none":
+                raise OpinionConfigError(
+                    "Disabled trainer requires mode='disabled' and "
+                    "initialization='none'."
+                )
+            if result.source_output_root is not None:
+                raise OpinionConfigError(
+                    "Disabled trainer requires source_output_root=null."
+                )
+            if result.evidence_warmup_iterations != 0:
+                raise OpinionConfigError(
+                    "Disabled trainer requires evidence_warmup_iterations=0."
+                )
+            return result
+        if result.mode == "disabled":
+            raise OpinionConfigError(
+                "Enabled trainer requires an active mode."
+            )
+        if result.initialization == "none":
+            if result.mode != "joint":
+                raise OpinionConfigError(
+                    "From-scratch initialization is only supported by "
+                    "trainer.mode='joint'."
+                )
+            if result.source_output_root is not None:
+                raise OpinionConfigError(
+                    "From-scratch initialization requires source_output_root=null."
+                )
+            if result.base_anchor_coefficient != 0.0:
+                raise OpinionConfigError(
+                    "From-scratch initialization requires "
+                    "base_anchor_coefficient=0."
+                )
+        if result.initialization == "opinion" and result.source_output_root is None:
+            raise OpinionConfigError(
+                "Opinion initialization requires trainer.source_output_root."
+            )
+        if result.initialization == "base" and result.source_output_root is not None:
+            raise OpinionConfigError(
+                "Base initialization uses policy_bridge.base_output_root and "
+                "requires trainer.source_output_root=null."
+            )
+        if result.mode == "warmup_then_joint":
+            if result.evidence_warmup_iterations < 1:
+                raise OpinionConfigError(
+                    "warmup_then_joint requires evidence_warmup_iterations >= 1."
+                )
+        elif result.evidence_warmup_iterations != 0:
+            raise OpinionConfigError(
+                "Only warmup_then_joint may set evidence_warmup_iterations."
             )
         return result
 
@@ -419,6 +534,7 @@ class OpinionConfig:
     policy_bridge: PolicyBridgeConfig
     stateful: StatefulOpinionConfig
     sequence_ppo: SequencePPOConfig
+    trainer: OpinionTrainerConfig
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "OpinionConfig":
@@ -432,6 +548,7 @@ class OpinionConfig:
             policy_bridge=PolicyBridgeConfig.from_dict(raw["policy_bridge"]),
             stateful=StatefulOpinionConfig.from_dict(raw["stateful"]),
             sequence_ppo=SequencePPOConfig.from_dict(raw["sequence_ppo"]),
+            trainer=OpinionTrainerConfig.from_dict(raw["trainer"]),
         )
 
 
@@ -505,13 +622,103 @@ class OpinionExperimentConfig:
                 raise OpinionConfigError(
                     "M8 requires stateful.enabled=true and freeze_evidence=false."
                 )
+            if opinion.trainer.enabled:
+                raise OpinionConfigError("M8 requires trainer.enabled=false.")
+        if stage == "joint":
+            trainer = opinion.trainer
+            if not trainer.enabled:
+                raise OpinionConfigError("M9 stage='joint' requires trainer.enabled=true.")
+            if (
+                not opinion.sequence_ppo.enabled
+                or not opinion.sequence_ppo.train_evidence
+                or not opinion.stateful.enabled
+                or opinion.stateful.freeze_evidence
+            ):
+                raise OpinionConfigError(
+                    "M9 requires stateful differentiable sequence PPO with "
+                    "train_evidence=true."
+                )
+            should_freeze_base = trainer.mode == "evidence_only"
+            if opinion.policy_bridge.freeze_base_actor != should_freeze_base:
+                raise OpinionConfigError(
+                    "M9 evidence_only must freeze Base Actor; joint modes must "
+                    "set freeze_base_actor=false."
+                )
+            if trainer.initialization == "base":
+                if opinion.policy_bridge.base_output_root is None:
+                    raise OpinionConfigError(
+                        "M9 Base initialization requires policy_bridge."
+                        "base_output_root."
+                    )
+                if opinion.sequence_ppo.source_output_root is not None:
+                    raise OpinionConfigError(
+                        "M9 Base initialization requires sequence source=null."
+                    )
+                if opinion.stateful.evidence_output_root is not None:
+                    raise OpinionConfigError(
+                        "M9 Base initialization requires evidence_output_root=null."
+                    )
+            elif trainer.initialization == "opinion":
+                if opinion.policy_bridge.base_output_root is None:
+                    raise OpinionConfigError(
+                        "M9 Opinion initialization currently requires "
+                        "policy_bridge.base_output_root."
+                    )
+                if opinion.sequence_ppo.source_output_root is not None:
+                    raise OpinionConfigError(
+                        "M9 Opinion initialization uses trainer.source_output_root; "
+                        "sequence_ppo.source_output_root must be null."
+                    )
+            else:
+                if opinion.policy_bridge.base_output_root is not None:
+                    raise OpinionConfigError(
+                        "M9 from-scratch initialization requires "
+                        "policy_bridge.base_output_root=null."
+                    )
+                if opinion.stateful.evidence_output_root is not None:
+                    raise OpinionConfigError(
+                        "M9 from-scratch initialization requires "
+                        "evidence_output_root=null."
+                    )
+                if opinion.sequence_ppo.source_output_root is not None:
+                    raise OpinionConfigError(
+                        "M9 from-scratch initialization requires "
+                        "sequence_ppo.source_output_root=null."
+                    )
+        if (
+            stage != "joint"
+            and opinion.policy_bridge.enabled
+            and opinion.policy_bridge.base_output_root is None
+        ):
+            raise OpinionConfigError(
+                "M4-M8 Opinion stages require policy_bridge.base_output_root."
+            )
         if (
             opinion.stateful.enabled
-            and stage != "sequence_ppo"
+            and stage not in {"sequence_ppo", "joint"}
             and not opinion.stateful.freeze_evidence
         ):
             raise OpinionConfigError(
                 "Stateful M6/M7 stages require freeze_evidence=true."
+            )
+        if stage != "joint" and opinion.trainer.enabled:
+            raise OpinionConfigError("Only M9 stage='joint' may enable trainer.")
+        if stage != "joint" and opinion.policy_bridge.enabled and not opinion.policy_bridge.freeze_base_actor:
+            raise OpinionConfigError("M4-M8 Opinion stages require a frozen Base Actor.")
+        if (
+            stage != "joint"
+            and opinion.stateful.enabled
+            and opinion.stateful.evidence_output_root is None
+        ):
+            raise OpinionConfigError(
+                "M6-M8 stateful stages require evidence_output_root."
+            )
+        if (
+            stage in {"sequence", "sequence_ppo"}
+            and opinion.sequence_ppo.source_output_root is None
+        ):
+            raise OpinionConfigError(
+                "M7/M8 require sequence_ppo.source_output_root."
             )
         return cls(
             schema_version=schema_version,
@@ -666,9 +873,15 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
         raise OpinionConfigError(f"Invalid Base Parameters: {error}") from error
 
     parameters.where_to_save = config.output_root
-    if config.opinion.policy_bridge.enabled and (
-        Path(config.opinion.policy_bridge.base_output_root).expanduser().resolve()
-        == Path(config.output_root).expanduser().resolve()
+    if (
+        config.opinion.policy_bridge.enabled
+        and config.opinion.policy_bridge.base_output_root is not None
+        and (
+            Path(config.opinion.policy_bridge.base_output_root)
+            .expanduser()
+            .resolve()
+            == Path(config.output_root).expanduser().resolve()
+        )
     ):
         raise OpinionConfigError(
             "policy_bridge.base_output_root and output_root must be isolated."
@@ -688,6 +901,13 @@ def load_opinion_experiment(config_path: Path) -> LoadedOpinionExperiment:
     ):
         raise OpinionConfigError(
             "sequence_ppo.source_output_root and output_root must be isolated."
+        )
+    if config.opinion.trainer.source_output_root is not None and (
+        Path(config.opinion.trainer.source_output_root).expanduser().resolve()
+        == Path(config.output_root).expanduser().resolve()
+    ):
+        raise OpinionConfigError(
+            "trainer.source_output_root and output_root must be isolated."
         )
     _validate_base_contract(parameters, config.opinion)
     return LoadedOpinionExperiment(
@@ -792,6 +1012,31 @@ def require_m8_supported_mode(experiment: LoadedOpinionExperiment) -> None:
     raise NotImplementedError(
         "M8 supports the existing M4-M7 modes or stage='sequence_ppo' with "
         "stateful truncated-BPTT evidence training."
+    )
+
+
+def require_m9_supported_mode(experiment: LoadedOpinionExperiment) -> None:
+    """Allow existing modes plus the configurable M9 trainer."""
+
+    try:
+        require_m8_supported_mode(experiment)
+        return
+    except NotImplementedError:
+        pass
+    opinion = experiment.config.opinion
+    if (
+        experiment.config.stage == "joint"
+        and opinion.trainer.enabled
+        and opinion.policy_bridge.enabled
+        and opinion.policy_bridge.mode == "stateful_opinion"
+        and opinion.stateful.enabled
+        and opinion.sequence_ppo.enabled
+        and opinion.sequence_ppo.train_evidence
+    ):
+        return
+    raise NotImplementedError(
+        "M9 supports existing M4-M8 modes or stage='joint' with the unified "
+        "evidence/joint trainer."
     )
 
 

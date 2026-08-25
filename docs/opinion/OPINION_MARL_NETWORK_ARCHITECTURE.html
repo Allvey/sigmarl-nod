@@ -31,7 +31,7 @@
 <blockquote>
 <p>代码底座：SigmaRL 1.2.0<br>
 理论真源：<a href="opinion_dynamics_marl_technical_route.md"><code>opinion_dynamics_marl_technical_route.md</code></a><br>
-实施状态：M8 已完成，M9–M10 按图中标记逐步实现<br>
+实施状态：M9 已完成，M10 按图中标记实现<br>
 更新日期：2026-08-25</p>
 </blockquote>
 <h2 id="1-整体网络结构">1. 整体网络结构 </h2>
@@ -105,7 +105,7 @@
         BUFFER["连续 Sequence Buffer&lt;br/&gt;[M7 已实现]&lt;br/&gt;保存 chunk、z_init 与 edge_active_init"]
         PPO["Sequence PPO&lt;br/&gt;[M8 已实现]&lt;br/&gt;时间维展开、chunk维并行"]
         CRITIC["中心化 Critic&lt;br/&gt;原始联合 observation&lt;br/&gt;不读取 z"]
-        STAGES["三阶段 Trainer&lt;br/&gt;[M9]&lt;br/&gt;Base → Evidence → Joint"]
+        STAGES["统一 Trainer&lt;br/&gt;[M9 已实现]&lt;br/&gt;Scratch Joint / Evidence / Warmup→Joint"]
     end
 
     OBS --&gt; CRITIC
@@ -115,7 +115,7 @@
     ROLLOUT --&gt; BUFFER --&gt; PPO
     CRITIC --&gt;|"value / advantage"| PPO
     STAGES --&gt; PPO
-    PPO -. "Base 在 M8 冻结；M9 Joint 才开放" .-&gt; BASE
+    PPO -. "预训练路线 M8 冻结；Scratch Joint 从第1轮开放" .-&gt; BASE
     PPO --&gt;|"Actor loss 梯度"| EVID
     PPO --&gt;|"Critic loss"| CRITIC
     PPO -. "无参数更新" .-&gt; DYN
@@ -174,9 +174,9 @@
 <td>改变训练方式</td>
 </tr>
 <tr>
-<td>M9</td>
-<td>Base→Evidence→Joint Trainer</td>
-<td>冻结/解冻参数组，完成三阶段训练和 checkpoint</td>
+<td>M9，已完成</td>
+<td>统一独立/联合 Trainer</td>
+<td>从零 Joint、Evidence-only、历史权重 Joint、Warmup→Joint、checkpoint 恢复</td>
 <td>改变参数优化范围</td>
 </tr>
 <tr>

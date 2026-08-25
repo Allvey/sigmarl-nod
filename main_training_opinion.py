@@ -1,4 +1,4 @@
-"""Opinion-MARL training entry point through M8 sequence PPO."""
+"""Opinion-MARL training entry point through the configurable M9 trainer."""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ from utilities.experiment_artifacts import (
 )
 from utilities.opinion.config import (
     load_opinion_experiment,
-    require_m8_supported_mode,
+    require_m9_supported_mode,
 )
 
 
@@ -57,17 +57,58 @@ def _resolve_m6_base_actor_source(
     )
 
 
-def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
+def main(
+    config_file: Path = DEFAULT_CONFIG_FILE,
+    resume_checkpoint: Path = None,
+) -> Path:
     experiment = load_opinion_experiment(config_file)
-    require_m8_supported_mode(experiment)
+    require_m9_supported_mode(experiment)
     conflict_config = experiment.config.opinion.conflict_graph
     emits_pair_info = conflict_config.emit_pair_info
     bridge_config = experiment.config.opinion.policy_bridge
     stateful_config = experiment.config.opinion.stateful
     sequence_config = experiment.config.opinion.sequence_ppo
+    trainer_config = experiment.config.opinion.trainer
     opinion_policy_config = None
     resolved_opinion_config = experiment.resolved_opinion_config()
-    if bridge_config.enabled:
+    opinion_values = experiment.source_config["opinion"]
+    initialize_from_scratch = bool(
+        trainer_config.enabled and trainer_config.initialization == "none"
+    )
+    if initialize_from_scratch:
+        opinion_policy_config = {
+            "mode": bridge_config.mode,
+            "freeze_base_actor": bridge_config.freeze_base_actor,
+            "evidence": opinion_values["evidence"],
+            "dynamics": opinion_values["dynamics"],
+            "residual": opinion_values["residual"],
+            "freeze_evidence": stateful_config.freeze_evidence,
+            "zero_threshold": stateful_config.zero_threshold,
+            "evidence_learning_rate_scale": opinion_values["sequence_ppo"][
+                "evidence_learning_rate_scale"
+            ],
+            "sequence_buffer_enabled": True,
+            "sequence_evidence_training": True,
+            "chunk_length": sequence_config.chunk_length,
+            "neutral_loss_coefficient": (
+                sequence_config.neutral_loss_coefficient
+            ),
+            "magnitude_loss_coefficient": (
+                sequence_config.magnitude_loss_coefficient
+            ),
+            "initialize_evidence_random": True,
+            "initialize_from_scratch": True,
+            "trainer": opinion_values["trainer"],
+            "resume_checkpoint": (
+                None
+                if resume_checkpoint is None
+                else str(Path(resume_checkpoint).expanduser().resolve())
+            ),
+        }
+        resolved_opinion_config["initialization_contract"] = (
+            "random_actor_evidence_critic"
+        )
+    if bridge_config.enabled and not initialize_from_scratch:
         try:
             base_run_directory = resolve_latest_run(
                 bridge_config.base_output_root
@@ -124,7 +165,6 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
 
         # Use the validated JSON-shaped values here: EvidenceConfig.from_dict
         # intentionally requires hidden_sizes to remain a JSON list.
-        opinion_values = experiment.source_config["opinion"]
         opinion_policy_config = {
             "mode": bridge_config.mode,
             "freeze_base_actor": bridge_config.freeze_base_actor,
@@ -137,7 +177,19 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
                 "evidence_learning_rate_scale"
             ],
         }
-        if stateful_config.enabled:
+        if (
+            stateful_config.enabled
+            and trainer_config.enabled
+            and stateful_config.evidence_output_root is None
+        ):
+            opinion_policy_config.update(
+                {
+                    "dynamics": opinion_values["dynamics"],
+                    "freeze_evidence": stateful_config.freeze_evidence,
+                    "zero_threshold": stateful_config.zero_threshold,
+                }
+            )
+        elif stateful_config.enabled:
             evidence_run_directory = resolve_latest_evidence_run(
                 stateful_config.evidence_output_root
             )
@@ -213,7 +265,7 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             resolved_opinion_config["resolved_evidence_critic_checkpoint"] = str(
                 evidence_critic_checkpoint
             )
-            if sequence_config.enabled:
+            if sequence_config.enabled and not trainer_config.enabled:
                 try:
                     sequence_source_run = resolve_latest_run(
                         sequence_config.source_output_root
@@ -313,6 +365,108 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
                         ),
                     }
                 )
+        if trainer_config.enabled:
+            opinion_policy_config.update(
+                {
+                    "dynamics": opinion_values["dynamics"],
+                    "freeze_evidence": stateful_config.freeze_evidence,
+                    "zero_threshold": stateful_config.zero_threshold,
+                    "sequence_buffer_enabled": True,
+                    "sequence_evidence_training": True,
+                    "chunk_length": sequence_config.chunk_length,
+                    "neutral_loss_coefficient": (
+                        sequence_config.neutral_loss_coefficient
+                    ),
+                    "magnitude_loss_coefficient": (
+                        sequence_config.magnitude_loss_coefficient
+                    ),
+                    "initialize_evidence_random": (
+                        trainer_config.initialization == "base"
+                    ),
+                    "trainer": opinion_values["trainer"],
+                    "resume_checkpoint": (
+                        None
+                        if resume_checkpoint is None
+                        else str(Path(resume_checkpoint).expanduser().resolve())
+                    ),
+                }
+            )
+            if trainer_config.initialization == "opinion":
+                try:
+                    trainer_source_run = resolve_latest_run(
+                        trainer_config.source_output_root
+                    )
+                    trainer_source_status = "completed"
+                except FileNotFoundError:
+                    trainer_source_run = resolve_latest_testable_run(
+                        trainer_config.source_output_root
+                    )
+                    trainer_source_status = "incomplete"
+                    print(
+                        "[WARNING] M9 is initialized from an incomplete Opinion "
+                        "run. This is suitable for pipeline development only."
+                    )
+                trainer_policy, trainer_critic = resolve_policy_critic_pair(
+                    trainer_source_run
+                )
+                trainer_snapshot = (
+                    trainer_source_run / "opinion_config_resolved.json"
+                )
+                if not trainer_snapshot.is_file():
+                    raise FileNotFoundError(
+                        "M9 Opinion initialization requires: "
+                        f"{trainer_snapshot}"
+                    )
+                with trainer_snapshot.open("r", encoding="utf-8") as file:
+                    trainer_source_config = json.load(file)
+                source_opinion = trainer_source_config.get("opinion", {})
+                if (
+                    trainer_source_config.get("stage")
+                    not in {"sequence_ppo", "joint"}
+                    or source_opinion.get("policy_bridge", {}).get("mode")
+                    != "stateful_opinion"
+                    or source_opinion.get("sequence_ppo", {}).get("train_evidence")
+                    is not True
+                ):
+                    raise ValueError(
+                        "M9 Opinion initialization must select an M8/M9 "
+                        "stateful Sequence-PPO run."
+                    )
+                for section_name in ("evidence", "dynamics", "residual"):
+                    if source_opinion.get(section_name) != opinion_values[section_name]:
+                        raise ValueError(
+                            "M9 configuration does not match its Opinion source "
+                            f"at opinion.{section_name}."
+                        )
+                base_critic_checkpoint = trainer_critic
+                opinion_policy_config.update(
+                    {
+                        "initial_policy_checkpoint": str(trainer_policy),
+                        "base_critic_checkpoint": str(trainer_critic),
+                    }
+                )
+                resolved_opinion_config.update(
+                    {
+                        "resolved_trainer_source_run_directory": str(
+                            trainer_source_run
+                        ),
+                        "resolved_trainer_source_status": trainer_source_status,
+                        "resolved_trainer_policy_checkpoint": str(trainer_policy),
+                        "resolved_trainer_critic_checkpoint": str(trainer_critic),
+                    }
+                )
+            else:
+                # Base initialization keeps the already validated Base
+                # Actor/Critic and starts EvidenceNet from its near-neutral
+                # random initialization.
+                opinion_policy_config.pop("evidence_checkpoint", None)
+                opinion_policy_config.pop("initial_policy_checkpoint", None)
+                opinion_policy_config["base_actor_checkpoint"] = str(
+                    base_actor_checkpoint
+                )
+                opinion_policy_config["base_critic_checkpoint"] = str(
+                    base_critic_checkpoint
+                )
         resolved_opinion_config["resolved_base_run_directory"] = str(
             base_run_directory
         )
@@ -327,7 +481,31 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
             base_critic_checkpoint
         )
 
-    if sequence_config.enabled and sequence_config.train_evidence:
+    if trainer_config.enabled:
+        scratch_suffix = "-from-scratch" if initialize_from_scratch else ""
+        run_label = (
+            f"m9-{trainer_config.mode.replace('_', '-')}{scratch_suffix}"
+        )
+        artifact_stage = (
+            f"trainer_{trainer_config.mode}_from_scratch"
+            if initialize_from_scratch
+            else f"trainer_{trainer_config.mode}"
+        )
+        expected_behavior = (
+            "m9_joint_from_scratch"
+            if initialize_from_scratch
+            else f"m9_{trainer_config.mode}"
+        )
+        comparison_note = (
+            "M9 jointly trains randomly initialized Base Actor, EvidenceNet, "
+            "and Central Critic for one SigmaRL-aligned budget without loading "
+            "earlier-stage weights."
+            if initialize_from_scratch
+            else "M9 uses the unified configurable trainer. Base Actor is either "
+            "frozen, jointly optimized, or activated after Evidence warmup; "
+            "EvidenceNet and Critic retain separate parameter groups."
+        )
+    elif sequence_config.enabled and sequence_config.train_evidence:
         run_label = "m8-sequence-ppo"
         artifact_stage = "evidence_sequence_ppo"
         expected_behavior = "differentiable_opinion_sequence_ppo"
@@ -392,12 +570,13 @@ def main(config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
         opinion_policy_config=opinion_policy_config,
         artifact_method="opinion_marl",
         artifact_stage=artifact_stage,
+        resume_checkpoint=resume_checkpoint,
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train the staged Opinion-MARL method through M8."
+        description="Train Opinion-MARL through the configurable M9 trainer."
     )
     parser.add_argument(
         "--config",
@@ -405,5 +584,11 @@ if __name__ == "__main__":
         default=DEFAULT_CONFIG_FILE,
         help="Opinion experiment configuration (default: config_opinion.json).",
     )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Resume an M9 run from latest_checkpoint.pt or a periodic checkpoint.",
+    )
     arguments = parser.parse_args()
-    main(arguments.config)
+    main(arguments.config, arguments.resume)

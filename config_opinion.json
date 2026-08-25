@@ -55,6 +55,17 @@
             "evidence_learning_rate_scale": 0.1,
             "neutral_loss_coefficient": 0.01,
             "magnitude_loss_coefficient": 0.001
+        },
+        "trainer": {
+            "enabled": false,
+            "mode": "disabled",
+            "initialization": "none",
+            "source_output_root": null,
+            "evidence_warmup_iterations": 0,
+            "base_actor_learning_rate_scale": 0.02,
+            "critic_learning_rate_scale": 1.0,
+            "base_anchor_coefficient": 0.0,
+            "checkpoint_interval": 50
         }
     }
 }

@@ -565,7 +565,27 @@ B_{\phi_b}
 
 ---
 
-## 11. 推荐训练流程
+## 11. 可配置训练流程
+
+分阶段训练用于稳定初始化和实验归因，不是意见动力学理论的必要条件。实现必须同时
+支持从零完整联合训练、Evidence 独立训练、从 Base 直接联合训练，以及 Evidence
+warmup 后联合训练。正式主路线采用从零完整联合训练：只分配一次与原始 SigmaRL
+相同的总训练预算，不把 Base 预训练轮次叠加到新方法上。
+
+### 从零完整联合训练（正式主路线）
+
+Base Actor、EvidenceNet 和中央 Critic 全部随机初始化，从第 1 轮开始同时更新：
+
+\[
+\theta,\phi_b,\omega.
+\]
+
+该模式不读取 Base、M5、M8 或 M9 的任何历史 checkpoint，固定 OpinionDynamics 与
+Residual，并保持原始 SigmaRL 的优化预算和超参数：250 iterations、每批 4096 帧、
+60 个 PPO epochs、minibatch 512、初始学习率 \(2\times10^{-4}\)、最小学习率
+\(10^{-5}\)。Actor、EvidenceNet 和 Critic 的初始学习率比例均为 1。这样 Base 与新
+方法的比较都是“随机初始化到 250 轮”，避免把多阶段累计轮次误当作方法收益或造成
+过度微调。
 
 ### 阶段一：基础 MAPPO 预训练
 
@@ -603,6 +623,21 @@ b=0,\qquad z=0,
 \]
 
 当前阶段仍不开放意见动力学参数学习。
+
+### 从 Base 直接联合训练（对照路线）
+
+也允许从已训练的 Base Actor/Critic 出发，将近中性随机初始化的 EvidenceNet 立即接入
+Sequence PPO，并从第一轮联合更新 \(\theta,\phi_b,\omega\)。该模式仍必须满足：
+
+- EvidenceNet 不读取 \(z\)；
+- OpinionDynamics 和 Residual 固定；
+- Critic loss 不进入 Base Actor 或 EvidenceNet；
+- Base Actor、EvidenceNet、Critic 使用独立 optimizer 参数组；
+- EvidenceNet 学习率低于 Actor 学习率；
+- 与 Evidence-only 和 warmup→joint 使用相同采样、更新与评估预算比较。
+
+因此，从零完整联合训练是默认主策略，其余分阶段或历史权重初始化模式是稳定性和
+归因对照，而不是论文方法成立的前置条件。最终性能结论仍由同预算、多 seed 实验决定。
 
 ---
 

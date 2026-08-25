@@ -2,7 +2,7 @@
 
 > 代码底座：SigmaRL 1.2.0  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
-> 实施状态：M8 已完成，M9–M10 按图中标记逐步实现  
+> 实施状态：M9 已完成，M10 按图中标记实现  
 > 更新日期：2026-08-25
 
 ## 1. 整体网络结构
@@ -78,7 +78,7 @@ flowchart TB
         BUFFER["连续 Sequence Buffer<br/>[M7 已实现]<br/>保存 chunk、z_init 与 edge_active_init"]
         PPO["Sequence PPO<br/>[M8 已实现]<br/>时间维展开、chunk维并行"]
         CRITIC["中心化 Critic<br/>原始联合 observation<br/>不读取 z"]
-        STAGES["三阶段 Trainer<br/>[M9]<br/>Base → Evidence → Joint"]
+        STAGES["统一 Trainer<br/>[M9 已实现]<br/>Scratch Joint / Evidence / Warmup→Joint"]
     end
 
     OBS --> CRITIC
@@ -88,7 +88,7 @@ flowchart TB
     ROLLOUT --> BUFFER --> PPO
     CRITIC -->|"value / advantage"| PPO
     STAGES --> PPO
-    PPO -. "Base 在 M8 冻结；M9 Joint 才开放" .-> BASE
+    PPO -. "预训练路线 M8 冻结；Scratch Joint 从第1轮开放" .-> BASE
     PPO -->|"Actor loss 梯度"| EVID
     PPO -->|"Critic loss"| CRITIC
     PPO -. "无参数更新" .-> DYN
@@ -111,7 +111,7 @@ flowchart TB
 | M6，已完成 | `z_dense`、Stateful Collector | 按车辆身份维护跨时间意见，每步只更新一次；冻结 Evidence | 是，形成真实时间记忆 |
 | M7，已完成 | Sequence Buffer | 保存连续 chunk、`z_init/edge_active_init`、ID、mask 和旧 log-prob | 不直接改变动作 |
 | M8，已完成 | Sequence PPO | 时间维展开意见动力学，使梯度训练 EvidenceNet；Base 仍冻结 | 改变训练方式 |
-| M9 | Base→Evidence→Joint Trainer | 冻结/解冻参数组，完成三阶段训练和 checkpoint | 改变参数优化范围 |
+| M9，已完成 | 统一独立/联合 Trainer | 从零 Joint、Evidence-only、历史权重 Joint、Warmup→Joint、checkpoint 恢复 | 改变参数优化范围 |
 | M10 | 评估、诊断、PDF、可视化 | 输出 `raw_b/b/z/residual`，评估时不更新参数 | 否 |
 | M11 | 正式实验与消融 | 多 seed 比较 Base、TSC、Direct、EMA、GRU 和完整方法 | 实验层 |
 

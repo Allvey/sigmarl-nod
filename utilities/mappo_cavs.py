@@ -6,6 +6,7 @@
 # Adapted from https://pytorch.org/rl/stable/tutorials/multiagent_ppo.html
 import time
 import random
+import copy
 from pathlib import Path
 from typing import Mapping, Optional
 
@@ -91,12 +92,27 @@ def mappo_cavs(
     artifact_method: str = "base_mappo",
     artifact_stage: str = "base",
     policy_checkpoint_path: Optional[Path] = None,
+    training_resume_checkpoint: Optional[Path] = None,
 ):
     # Preserve the upstream default (seed 0) while making it explicit in the
     # resolved configuration for reproducible Base runs.
     random.seed(parameters.seed)
     np.random.seed(parameters.seed)
     torch.manual_seed(parameters.seed)
+
+    resume_payload = None
+    resume_start_iteration = 0
+    if training_resume_checkpoint is not None:
+        from utilities.opinion.checkpoint import load_m9_checkpoint
+
+        resume_payload = load_m9_checkpoint(
+            training_resume_checkpoint, parameters.device
+        )
+        resume_start_iteration = int(resume_payload["iteration"])
+        if resume_start_iteration >= parameters.n_iters:
+            raise ValueError(
+                "Resume checkpoint iteration must be smaller than configured n_iters."
+            )
 
     scenario = ScenarioRoadTraffic()
 
@@ -231,6 +247,25 @@ def mappo_cavs(
         is_sequence_buffer
         and opinion_policy_config.get("sequence_evidence_training", False)
     )
+    trainer_runtime_config = (
+        dict(opinion_policy_config.get("trainer", {}))
+        if opinion_policy_config
+        else {}
+    )
+    is_m9_trainer = bool(trainer_runtime_config.get("enabled", False))
+    initialize_from_scratch = bool(
+        is_m9_trainer
+        and opinion_policy_config.get("initialize_from_scratch", False)
+    )
+    if training_resume_checkpoint is not None and not is_m9_trainer:
+        raise ValueError("--resume is only supported by the M9 trainer.")
+    if resume_payload is not None:
+        saved_runtime = resume_payload.get("opinion_runtime_config", {})
+        if saved_runtime.get("trainer") != trainer_runtime_config:
+            raise ValueError(
+                "Resume checkpoint Trainer configuration does not match the "
+                "current configuration."
+            )
     opinion_bridge = None
     state_tracker = None
     base_actor_source_state = None
@@ -238,31 +273,49 @@ def mappo_cavs(
         if not emits_opinion_pair_info:
             raise ValueError("The Opinion policy bridge requires M4 pair info.")
         if not parameters.is_load_model:
-            base_actor_checkpoint = Path(
-                str(opinion_policy_config["base_actor_checkpoint"])
-            )
-            if not base_actor_checkpoint.is_file():
-                raise FileNotFoundError(
-                    f"Base Actor checkpoint not found: {base_actor_checkpoint}"
+            if initialize_from_scratch:
+                base_actor_source_state = copy.deepcopy(base_policy.state_dict())
+                if artifact_logging_enabled:
+                    torch.save(
+                        base_actor_source_state,
+                        artifact_run_directory / "source_base_actor.pth",
+                    )
+                print(
+                    colored(
+                        "[INFO] Randomly initialized Base Actor for M9 "
+                        "joint-from-scratch training.",
+                        "red",
+                    )
                 )
-            base_actor_source_state = torch.load(
-                base_actor_checkpoint,
-                map_location=parameters.device,
-            )
-            base_policy.load_state_dict(base_actor_source_state, strict=True)
-            if artifact_logging_enabled:
-                # Preserve the exact frozen source immediately so an interrupted
-                # M5/M6 run never depends on a later-deleted reward checkpoint.
-                torch.save(
-                    base_actor_source_state,
-                    artifact_run_directory / "source_base_actor.pth",
+            else:
+                base_actor_checkpoint = Path(
+                    str(opinion_policy_config["base_actor_checkpoint"])
                 )
-            print(
-                colored(
-                    f"[INFO] Loaded frozen Base Actor: {base_actor_checkpoint}",
-                    "red",
+                if not base_actor_checkpoint.is_file():
+                    raise FileNotFoundError(
+                        f"Base Actor checkpoint not found: {base_actor_checkpoint}"
+                    )
+                base_actor_source_state = torch.load(
+                    base_actor_checkpoint,
+                    map_location=parameters.device,
                 )
-            )
+                base_policy.load_state_dict(base_actor_source_state, strict=True)
+                base_actor_source_state = copy.deepcopy(base_actor_source_state)
+                if artifact_logging_enabled:
+                    # Preserve the exact frozen source immediately so an interrupted
+                    # M5/M6 run never depends on a later-deleted reward checkpoint.
+                    torch.save(
+                        base_actor_source_state,
+                        artifact_run_directory / "source_base_actor.pth",
+                    )
+                print(
+                    colored(
+                        f"[INFO] Loaded "
+                        f"{'initial' if is_m9_trainer else 'frozen'} Base Actor: "
+                        f"{base_actor_checkpoint}",
+                        "red",
+                    )
+                )
 
         from utilities.opinion.config import (
             DynamicsConfig,
@@ -289,7 +342,12 @@ def mappo_cavs(
             pair_feature_dim=int(opinion_pair_info_config["pair_feature_dim"]),
             config=evidence_config,
         ).to(parameters.device)
-        if is_stateful_opinion and not parameters.is_load_model:
+        if (
+            is_stateful_opinion
+            and not parameters.is_load_model
+            and not opinion_policy_config.get("initialize_evidence_random", False)
+            and opinion_policy_config.get("evidence_checkpoint") is not None
+        ):
             evidence_checkpoint = Path(
                 str(opinion_policy_config["evidence_checkpoint"])
             )
@@ -391,7 +449,11 @@ def mappo_cavs(
             return_log_prob=True,
             log_prob_key=("agents", "sample_log_prob"),
         )
-        if is_sequence_buffer and not parameters.is_load_model:
+        if (
+            is_sequence_buffer
+            and not parameters.is_load_model
+            and opinion_policy_config.get("initial_policy_checkpoint") is not None
+        ):
             initial_policy_checkpoint = Path(
                 str(opinion_policy_config["initial_policy_checkpoint"])
             )
@@ -409,7 +471,7 @@ def mappo_cavs(
             )
             # The M6 full policy is authoritative for M7. Refresh the
             # separately saved Base state after the strict full-policy load.
-            base_actor_source_state = base_policy.state_dict()
+            base_actor_source_state = copy.deepcopy(base_policy.state_dict())
             if artifact_logging_enabled:
                 torch.save(
                     base_actor_source_state,
@@ -466,7 +528,11 @@ def mappo_cavs(
         out_keys=[("agents", "state_value")],
     )
 
-    if is_opinion_policy and not parameters.is_load_model:
+    if (
+        is_opinion_policy
+        and not parameters.is_load_model
+        and not initialize_from_scratch
+    ):
         base_critic_checkpoint = Path(
             str(opinion_policy_config["base_critic_checkpoint"])
         )
@@ -481,6 +547,33 @@ def mappo_cavs(
         print(
             colored(
                 f"[INFO] Initialized Opinion Critic from: {base_critic_checkpoint}",
+                "red",
+            )
+        )
+    elif is_opinion_policy and initialize_from_scratch:
+        print(
+            colored(
+                "[INFO] Randomly initialized Central Critic for M9 "
+                "joint-from-scratch training.",
+                "red",
+            )
+        )
+
+    if resume_payload is not None:
+        if resume_payload["training_mode"] != trainer_runtime_config.get("mode"):
+            raise ValueError(
+                "Resume checkpoint training mode does not match current config."
+            )
+        policy.load_state_dict(resume_payload["policy_state"], strict=True)
+        critic.load_state_dict(resume_payload["critic_state"], strict=True)
+        if resume_payload.get("base_source_state") is not None:
+            base_actor_source_state = copy.deepcopy(
+                resume_payload["base_source_state"]
+            )
+        print(
+            colored(
+                f"[INFO] Restored M9 model state at iteration "
+                f"{resume_start_iteration}: {training_resume_checkpoint}",
                 "red",
             )
         )
@@ -618,7 +711,10 @@ def mappo_cavs(
         device=parameters.device,
         storing_device=parameters.device,
         frames_per_batch=parameters.frames_per_batch,
-        total_frames=parameters.total_frames,
+        total_frames=(
+            parameters.frames_per_batch
+            * (parameters.n_iters - resume_start_iteration)
+        ),
     )
 
     if is_sequence_buffer:
@@ -641,6 +737,19 @@ def mappo_cavs(
             sampler=SamplerWithoutReplacement(),
             batch_size=parameters.minibatch_size,  # We will sample minibatches of this size
         )
+
+    base_anchor_net = None
+    if is_m9_trainer and float(
+        trainer_runtime_config.get("base_anchor_coefficient", 0.0)
+    ) > 0.0:
+        base_anchor_net = copy.deepcopy(policy_net).to(parameters.device)
+        if resume_payload is not None and resume_payload.get("base_anchor_state"):
+            base_anchor_net.load_state_dict(
+                resume_payload["base_anchor_state"], strict=True
+            )
+        base_anchor_net.eval()
+        for parameter in base_anchor_net.parameters():
+            parameter.requires_grad_(False)
 
     loss_module = ClipPPOLoss(
         actor=policy,
@@ -691,9 +800,69 @@ def mappo_cavs(
                 * float(dynamics_config.decay_rate)
             ),
             zero_threshold=float(opinion_policy_config["zero_threshold"]),
+            base_anchor_net=base_anchor_net,
+            base_anchor_coefficient=float(
+                trainer_runtime_config.get("base_anchor_coefficient", 0.0)
+            ),
         )
 
-    if is_direct_opinion:
+    training_schedule = None
+    current_training_phase = None
+    if is_m9_trainer:
+        from utilities.opinion.trainer import OpinionTrainingSchedule
+
+        schedule_config = dict(trainer_runtime_config)
+        schedule_config["evidence_learning_rate_scale"] = float(
+            opinion_policy_config["evidence_learning_rate_scale"]
+        )
+        training_schedule = OpinionTrainingSchedule(schedule_config)
+        base_actor_parameters = list(opinion_bridge.base_policy_net.parameters())
+        evidence_parameters = list(opinion_bridge.evidence_net.parameters())
+        critic_trainable_parameters = [
+            parameter
+            for parameter in loss_module.critic_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        if not base_actor_parameters or not evidence_parameters:
+            raise RuntimeError("M9 Actor parameter groups must be non-empty.")
+        if not critic_trainable_parameters:
+            raise RuntimeError("M9 Critic parameter group must be non-empty.")
+        optim = torch.optim.Adam(
+            [
+                {
+                    "params": base_actor_parameters,
+                    "lr": parameters.lr
+                    * training_schedule.base_actor_lr_scale,
+                    "lr_scale": training_schedule.base_actor_lr_scale,
+                    "group_name": "base_actor",
+                },
+                {
+                    "params": evidence_parameters,
+                    "lr": parameters.lr * training_schedule.evidence_lr_scale,
+                    "lr_scale": training_schedule.evidence_lr_scale,
+                    "group_name": "evidence",
+                },
+                {
+                    "params": critic_trainable_parameters,
+                    "lr": parameters.lr * training_schedule.critic_lr_scale,
+                    "lr_scale": training_schedule.critic_lr_scale,
+                    "group_name": "critic",
+                },
+            ]
+        )
+        if resume_payload is not None:
+            optim.load_state_dict(resume_payload["optimizer_state"])
+        current_training_phase = training_schedule.phase_for_iteration(
+            resume_start_iteration + 1
+        )
+        training_schedule.apply(
+            current_training_phase, opinion_bridge, optim
+        )
+        if resume_payload is not None:
+            from utilities.opinion.checkpoint import restore_rng_state
+
+            restore_rng_state(resume_payload)
+    elif is_direct_opinion:
         actor_trainable_parameters = [
             parameter
             for parameter in loss_module.actor_params.values(True, True)
@@ -800,15 +969,24 @@ def mappo_cavs(
         parameter
         for group in optim.param_groups
         for parameter in group["params"]
-        if parameter.requires_grad
     ]
 
-    pbar = tqdm(total=parameters.n_iters, desc="epi_rew_mean = 0")
+    pbar = tqdm(
+        total=parameters.n_iters,
+        initial=resume_start_iteration,
+        desc="epi_rew_mean = 0",
+    )
 
     episode_reward_mean_list = []
 
     t_start = time.time()
     iteration_cycle_start = t_start
+    if resume_payload is not None:
+        artifact_iterations = list(resume_payload["artifact_iterations"])
+        episode_reward_mean_list = [
+            float(item["episode_reward_mean"]) for item in artifact_iterations
+        ]
+
     for tensordict_data in collector:
         rollout_finished_at = time.time()
         rollout_seconds = rollout_finished_at - iteration_cycle_start
@@ -817,7 +995,9 @@ def mappo_cavs(
         loss_critic_sum = 0.0
         loss_entropy_sum = 0.0
         loss_regularization_sum = 0.0
+        loss_base_anchor_sum = 0.0
         evidence_gradient_norm_sum = 0.0
+        base_actor_gradient_norm_sum = 0.0
         sequence_approx_kl_sum = 0.0
         sequence_clip_fraction_sum = 0.0
         sequence_log_prob_error_sum = 0.0
@@ -921,6 +1101,9 @@ def mappo_cavs(
                     loss_regularization_sum += (
                         loss_vals["loss_regularization"].detach().item()
                     )
+                    loss_base_anchor_sum += (
+                        loss_vals["loss_base_anchor"].detach().item()
+                    )
                     sequence_approx_kl_sum += loss_vals["approx_kl"].item()
                     sequence_clip_fraction_sum += loss_vals["clip_fraction"].item()
                     sequence_log_prob_error_sum += loss_vals[
@@ -942,6 +1125,7 @@ def mappo_cavs(
                     + loss_vals["loss_critic"]
                     + loss_vals["loss_entropy"]
                     + loss_vals.get("loss_regularization", 0.0)
+                    + loss_vals.get("loss_base_anchor", 0.0)
                 )
 
                 assert not loss_value.isnan().any()
@@ -961,6 +1145,19 @@ def mappo_cavs(
                     evidence_gradient_norm_sum += float(
                         squared_gradient_norm.sqrt().item()
                     )
+                    if is_m9_trainer:
+                        squared_base_gradient_norm = torch.zeros(
+                            (), device=parameters.device
+                        )
+                        for parameter in opinion_bridge.base_policy_net.parameters():
+                            if parameter.grad is not None:
+                                squared_base_gradient_norm = (
+                                    squared_base_gradient_norm
+                                    + parameter.grad.detach().norm(2).square()
+                                )
+                        base_actor_gradient_norm_sum += float(
+                            squared_base_gradient_norm.sqrt().item()
+                        )
 
                 torch.nn.utils.clip_grad_norm_(
                     optimization_parameters, parameters.max_grad_norm
@@ -1168,6 +1365,9 @@ def mappo_cavs(
                             "loss_evidence_regularization": (
                                 loss_regularization_sum / loss_update_count
                             ),
+                            "loss_base_anchor": (
+                                loss_base_anchor_sum / loss_update_count
+                            ),
                             "evidence_gradient_norm": (
                                 evidence_gradient_norm_sum / loss_update_count
                             ),
@@ -1210,7 +1410,10 @@ def mappo_cavs(
                                 optim.param_groups[1]["lr"]
                             ),
                         }
-                        if is_direct_opinion or is_sequence_evidence_training
+                        if (
+                            (is_direct_opinion or is_sequence_evidence_training)
+                            and not is_m9_trainer
+                        )
                         else {}
                     ),
                     **(
@@ -1229,7 +1432,42 @@ def mappo_cavs(
                                 not is_sequence_evidence_training
                             ),
                         }
-                        if is_stateful_opinion
+                        if is_stateful_opinion and not is_m9_trainer
+                        else {}
+                    ),
+                    **(
+                        {
+                            "training_mode": training_schedule.mode,
+                            "training_phase": current_training_phase.name,
+                            "base_actor_trainable": (
+                                current_training_phase.train_base_actor
+                            ),
+                            "base_actor_learning_rate": float(
+                                next(
+                                    group["lr"]
+                                    for group in optim.param_groups
+                                    if group["group_name"] == "base_actor"
+                                )
+                            ),
+                            "evidence_learning_rate": float(
+                                next(
+                                    group["lr"]
+                                    for group in optim.param_groups
+                                    if group["group_name"] == "evidence"
+                                )
+                            ),
+                            "critic_learning_rate": float(
+                                next(
+                                    group["lr"]
+                                    for group in optim.param_groups
+                                    if group["group_name"] == "critic"
+                                )
+                            ),
+                            "base_actor_gradient_norm": (
+                                base_actor_gradient_norm_sum / loss_update_count
+                            ),
+                        }
+                        if is_m9_trainer
                         else {}
                     ),
                     **opinion_iteration_metrics,
@@ -1249,6 +1487,47 @@ def mappo_cavs(
                 artifact_run_directory,
                 status="running",
                 iteration=pbar.n,
+            )
+            if is_m9_trainer:
+                from utilities.opinion.checkpoint import save_m9_checkpoint
+
+                checkpoint_arguments = {
+                    "iteration": int(pbar.n),
+                    "training_mode": training_schedule.mode,
+                    "training_phase": current_training_phase.name,
+                    "policy": policy,
+                    "critic": critic,
+                    "optimizer": optim,
+                    "artifact_iterations": artifact_iterations,
+                    "opinion_runtime_config": opinion_policy_config,
+                    "state_tracker": state_tracker,
+                    "base_source_state": base_actor_source_state,
+                    "base_anchor_state": (
+                        None
+                        if base_anchor_net is None
+                        else base_anchor_net.state_dict()
+                    ),
+                }
+                save_m9_checkpoint(
+                    artifact_run_directory / "latest_checkpoint.pt",
+                    **checkpoint_arguments,
+                )
+                checkpoint_interval = int(
+                    trainer_runtime_config["checkpoint_interval"]
+                )
+                if pbar.n % checkpoint_interval == 0:
+                    save_m9_checkpoint(
+                        artifact_run_directory
+                        / f"checkpoint_iteration_{pbar.n:06d}.pt",
+                        **checkpoint_arguments,
+                    )
+
+        if is_m9_trainer and pbar.n < parameters.n_iters:
+            current_training_phase = training_schedule.phase_for_iteration(
+                int(pbar.n) + 1
+            )
+            training_schedule.apply(
+                current_training_phase, opinion_bridge, optim
             )
 
         iteration_cycle_start = time.time()
@@ -1280,35 +1559,57 @@ def mappo_cavs(
             if base_actor_source_state is None or opinion_bridge is None:
                 raise RuntimeError("Opinion checkpoint source state is unavailable.")
             torch.save(
-                base_actor_source_state,
+                base_policy.state_dict(),
                 artifact_run_directory / "final_base_actor.pth",
             )
             torch.save(
                 policy.state_dict(),
                 artifact_run_directory / "final_opinion_policy.pth",
             )
-            torch.save(
-                {
-                    "schema_version": ARTIFACT_SCHEMA_VERSION,
-                    "method": "opinion_marl",
-                    "stage": artifact_stage,
-                    "iteration": int(pbar.n),
-                    "base_actor_state": base_actor_source_state,
-                    "evidence_state": opinion_bridge.evidence_net.state_dict(),
-                    "opinion_policy_state": policy.state_dict(),
-                    "critic_state": critic.state_dict(),
-                    "optimizer_state": optim.state_dict(),
-                    "resolved_base_config": dict(parameters.to_dict()),
-                    "opinion_runtime_config": dict(opinion_policy_config),
-                    "terminal_opinion_state": (
-                        state_tracker.snapshot()
-                        if state_tracker is not None
-                        else None
+            if is_m9_trainer:
+                from utilities.opinion.checkpoint import save_m9_checkpoint
+
+                save_m9_checkpoint(
+                    artifact_run_directory / "final_checkpoint.pt",
+                    iteration=int(pbar.n),
+                    training_mode=training_schedule.mode,
+                    training_phase=current_training_phase.name,
+                    policy=policy,
+                    critic=critic,
+                    optimizer=optim,
+                    artifact_iterations=artifact_iterations,
+                    opinion_runtime_config=opinion_policy_config,
+                    state_tracker=state_tracker,
+                    base_source_state=base_actor_source_state,
+                    base_anchor_state=(
+                        None
+                        if base_anchor_net is None
+                        else base_anchor_net.state_dict()
                     ),
-                    "torch_rng_state": torch.get_rng_state(),
-                },
-                artifact_run_directory / "final_checkpoint.pt",
-            )
+                )
+            else:
+                torch.save(
+                    {
+                        "schema_version": ARTIFACT_SCHEMA_VERSION,
+                        "method": "opinion_marl",
+                        "stage": artifact_stage,
+                        "iteration": int(pbar.n),
+                        "base_actor_state": base_actor_source_state,
+                        "evidence_state": opinion_bridge.evidence_net.state_dict(),
+                        "opinion_policy_state": policy.state_dict(),
+                        "critic_state": critic.state_dict(),
+                        "optimizer_state": optim.state_dict(),
+                        "resolved_base_config": dict(parameters.to_dict()),
+                        "opinion_runtime_config": dict(opinion_policy_config),
+                        "terminal_opinion_state": (
+                            state_tracker.snapshot()
+                            if state_tracker is not None
+                            else None
+                        ),
+                        "torch_rng_state": torch.get_rng_state(),
+                    },
+                    artifact_run_directory / "final_checkpoint.pt",
+                )
         else:
             # Keep the upstream filename for main_testing.py and expose a
             # stable bridge for later Opinion training stages.

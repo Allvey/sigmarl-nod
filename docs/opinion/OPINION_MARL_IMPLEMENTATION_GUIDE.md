@@ -1,6 +1,6 @@
 # Opinion Dynamics + MARL：SigmaRL 1.2.0 重建指南
 
-> 文档状态：R0、R1、M2、M3、M4、M5、M6、M7、M8 实现已完成，训练与性能由用户手动验证  
+> 文档状态：R0、R1、M2、M3、M4、M5、M6、M7、M8、M9 实现已完成，训练与性能由用户手动验证  
 > 唯一代码底座：SigmaRL tag `1.2.0`  
 > 基线 commit：`5fe715bdfba4ff3e33d901d69dfa220f1222c060`  
 > 理论真源：[`opinion_dynamics_marl_technical_route.md`](opinion_dynamics_marl_technical_route.md)  
@@ -20,11 +20,11 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 4. 阅读 [`M3_MATH_MODULES.md`](M3_MATH_MODULES.md)；
 5. 阅读 [`M4_CONFLICT_GRAPH.md`](M4_CONFLICT_GRAPH.md)；
 6. 阅读 [`M5_POLICY_BRIDGE.md`](M5_POLICY_BRIDGE.md)；
-7. 阅读 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)、[`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md) 和 [`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md)；
+7. 阅读 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)、[`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md)、[`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md) 和 [`M9_TRAINER_AND_CHECKPOINT.md`](M9_TRAINER_AND_CHECKPOINT.md)；
 8. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
-8. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
-9. 查看本文件第 10 节，只执行下一个未完成阶段；
-10. 每次实现后更新阶段状态、验证命令和真实结果。
+9. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
+10. 查看本文件第 10 节，只执行下一个未完成阶段；
+11. 每次实现后更新阶段状态、验证命令和真实结果。
 
 可复制给新 Session：
 
@@ -42,15 +42,18 @@ Opinion Dynamics + MARL。
 7. docs/opinion/M6_STATEFUL_OPINION.md
 8. docs/opinion/M7_SEQUENCE_BUFFER.md
 9. docs/opinion/M8_SEQUENCE_PPO.md
-9. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
-10. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
+10. docs/opinion/M9_TRAINER_AND_CHECKPOINT.md
+11. docs/sigmarl_1_2_0/CODEBASE_AUDIT.md
+12. docs/sigmarl_1_2_0/ 下的环境、观测和网络说明
 
 不要恢复 docs/archive_tsc 中的代码设计。TSC 只作为外部实验基线；新方法禁止依赖
 TopologyLearner、priority、leader、Stackelberg、action predictor 或 opponent
 modeling。Base 必须走 SigmaRL 1.2.0 原始向量化 MAPPO；M5 Direct Evidence 与 M6
-M6 Stateful rollout 使用旧单步损失，M7 构造连续 chunk，M8 已启用只训练 EvidenceNet
-的时序 Actor 梯度。先检查里程碑状态，只实现下一个阶段；保证训练/测试入口完整，实际
-训练和性能判断由用户手动完成。
+Stateful rollout 使用旧单步损失，M7 构造连续 chunk，M8 启用 Evidence 时序梯度，
+M9 支持 Evidence 独立训练、历史权重微调和从零完整联合训练。正式主流程使用
+`m9_joint_from_scratch.json`，只消耗一次与 Base 相同的 250-iteration 预算；M3–M8 是
+模块实现里程碑，不是必须依次训练的前置任务。先检查里程碑状态，只实现下一个阶段；
+保证训练/测试入口完整，实际训练和性能判断由用户手动完成。
 ```
 
 ### 0.1 当前解释器约定
@@ -422,7 +425,8 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 - stage 初始化：从上阶段权重开始新的 optimizer；
 - exact resume：恢复 optimizer、iteration、随机状态和调度器。
 
-若尚未实现 exact resume，CLI 和文档必须明确说明。
+M9 已恢复模型、optimizer、阶段、指标和随机状态；VMAS 从新 rollout 边界继续，不宣称
+恢复中断物理帧的逐比特仿真世界。
 
 ## 10. 重建里程碑
 
@@ -439,7 +443,7 @@ comparison_to_base.json    # 与 R1 基线的同预算差值
 | M6：Stateful Collector | 已完成 | global ID、每步一次、reset；用户手动训练 |
 | M7：Sequence Buffer | 已完成 | 不跨 env/done，保存 z_init/edge_active_init；用户手动训练 |
 | M8：批量 chunk Sequence PPO | 已完成 | 时间展开、Evidence 梯度、独立 Critic；用户手动训练 |
-| M9：三阶段 Trainer/Checkpoint | 未开始 | Base→Evidence→Joint smoke |
+| M9：统一独立/联合 Trainer 与 Checkpoint | 已完成 | 从零主训练 + 四种初始化/调度对照、恢复；用户手动训练 |
 | M10：评估、诊断、PDF、可视化 | 未开始 | 无参数更新、产物完整 |
 | M11：消融与正式实验 | 未开始 | 多 seed、公平预算、统计报告 |
 
@@ -513,7 +517,7 @@ Level C：formal comparison
 | M6 | Stateful rollout + 冻结 Opinion pilot | 不要求立即提升 | global-ID/reset 正确，连续运行无状态串扰 |
 | M7 | Sequence Buffer + Base/no-op loss pilot | 应接近对应输入模型 | chunk 不跨 done/env，吞吐和内存可接受 |
 | M8 | Evidence Sequence PPO pilot | 期望出现正向趋势 | Evidence 有有效梯度，碰撞/回报至少一项改善且另一项不明显恶化 |
-| M9 | Base→Evidence→Joint pilot/正式训练 | 期望优于 Base | 三阶段稳定，至少 3 seeds 出现一致方向信号 |
+| M9 | Scratch Joint / Evidence-only / 历史初始化 Joint / Warmup→Joint pilot | 期望优于 Base | 与 Base 同为从零 250 轮，各模式稳定，至少 3 seeds 出现一致方向信号 |
 | M10 | 重跑训练回归 + checkpoint 评估 | 不应改变训练性能 | 评估/可视化不更新参数，指标可复现 |
 | M11 | 多 seed 正式训练与消融 | 需要统计提升 | 按预注册指标和置信区间报告结论 |
 
@@ -611,8 +615,8 @@ Learned evidence + fixed nonlinear dynamics（Full）
   尚无 completed run，也可自动加载最新在训 run 的 `reward<value>_policy.pth`，并支持
   `--run-dir`/`--checkpoint` 精确选择；
 - M2 已新增 strict typed Opinion schema、完整/pilot 配置和独立训练/测试入口；
-- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径；当前 M5
-  `direct_evidence` 与 M6 `stateful_opinion` 是已开放模式，joint 会明确失败；
+- M2 的 `use_opinion_marl=false` 入口直接复用 R1 Base 路径；M5
+  `direct_evidence`、M6–M8 `stateful_opinion` 与 M9 `joint` 均已开放；
 - M3 已实现反对称有界 EvidenceNet、无可训练参数的固定 OpinionDynamics、归一化
   有界速度 Residual 以及标准库参考测试；M5 已接入 Evidence/Residual，M6 已将
   Dynamics 接入真实跨步状态；
@@ -640,6 +644,13 @@ Learned evidence + fixed nonlinear dynamics（Full）
 - M8 保存 EvidenceNet/完整 Policy/Critic/配置/曲线，并记录 evidence gradient、KL、
   clip fraction、log-prob/state replay error 与正则项；使用方式见
   [`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md)；
+- M9 新增统一 Trainer，正式主流程为 `joint_from_scratch`：Actor、EvidenceNet、Critic
+  全部随机初始化，从第 1 轮联合训练，严格复用 SigmaRL 的 250 iterations、4096
+  frames/batch、60 PPO epochs 和 `2e-4 → 1e-5` 学习率；不解析任何 Base/M5–M8
+  checkpoint；`evidence_only`、`joint_from_base`、`joint_from_m8` 和
+  `warmup_then_joint` 保留为对照；
+- M9 每轮保存 `latest_checkpoint.pt`，按间隔保存 iteration checkpoint，支持在同一
+  run 恢复剩余训练；VMAS 从新 rollout 边界继续，具体边界见
+  [`M9_TRAINER_AND_CHECKPOINT.md`](M9_TRAINER_AND_CHECKPOINT.md)；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M9：整理 Base→Evidence→Joint 的正式阶段编排、完整 resume 与
-  checkpoint 合同。
+- 下一实现步骤是 M10：正式评估、诊断、PDF 和可视化闭环。
