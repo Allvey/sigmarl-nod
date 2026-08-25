@@ -96,7 +96,7 @@ class M9TrainerTests(unittest.TestCase):
         self.assertIsNone(bridge.base_output_root)
         self.assertIsNone(sequence.source_output_root)
         self.assertFalse(bridge.freeze_base_actor)
-        self.assertEqual(sequence.evidence_learning_rate_scale, 1.0)
+        self.assertEqual(sequence.evidence_learning_rate_scale, 0.1)
         self.assertEqual(experiment.parameters.n_iters, 250)
         self.assertEqual(experiment.parameters.frames_per_batch, 4096)
         self.assertEqual(experiment.parameters.num_epochs, 60)

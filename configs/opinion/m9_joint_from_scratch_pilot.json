@@ -56,7 +56,7 @@
             "train_evidence": true,
             "source_output_root": null,
             "chunk_length": 16,
-            "evidence_learning_rate_scale": 1.0,
+            "evidence_learning_rate_scale": 0.1,
             "neutral_loss_coefficient": 0.01,
             "magnitude_loss_coefficient": 0.001,
             "use_base_ppo_update": true
