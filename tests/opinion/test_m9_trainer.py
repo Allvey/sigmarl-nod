@@ -21,7 +21,10 @@ from utilities.opinion.config import (
     load_opinion_experiment,
     require_m9_supported_mode,
 )
-from utilities.opinion.trainer import OpinionTrainingSchedule
+from utilities.opinion.trainer import (
+    OpinionTrainingSchedule,
+    clip_m9_gradients,
+)
 from main_testing_opinion import main as test_opinion
 from main_training_opinion import main as train_opinion
 
@@ -201,6 +204,52 @@ class M9TrainerTests(unittest.TestCase):
         self.assertEqual([g["group_name"] for g in optimizer.param_groups], [
             "base_actor", "evidence", "critic"
         ])
+
+    def test_gradient_clipping_separates_evidence_from_base_and_critic(self):
+        bridge = Bridge()
+        critic = nn.Linear(3, 1)
+        optimizer = make_optimizer(bridge, critic)
+        groups = {
+            group["group_name"]: group for group in optimizer.param_groups
+        }
+
+        base_parameter = groups["base_actor"]["params"][0]
+        evidence_parameter = groups["evidence"]["params"][0]
+        critic_parameter = groups["critic"]["params"][0]
+        base_parameter.grad = torch.full_like(base_parameter, 3.0)
+        critic_parameter.grad = torch.full_like(critic_parameter, 4.0)
+        evidence_parameter.grad = torch.full_like(evidence_parameter, 100.0)
+
+        base_critic_norm_before = torch.linalg.vector_norm(
+            torch.cat(
+                [
+                    base_parameter.grad.flatten(),
+                    critic_parameter.grad.flatten(),
+                ]
+            )
+        )
+        expected_scale = 1.0 / float(base_critic_norm_before)
+
+        norms = clip_m9_gradients(optimizer, max_grad_norm=1.0)
+
+        self.assertGreater(norms["evidence"], norms["base_critic"])
+        self.assertTrue(
+            torch.allclose(
+                base_parameter.grad,
+                torch.full_like(base_parameter, 3.0 * expected_scale),
+                atol=1e-6,
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                critic_parameter.grad,
+                torch.full_like(critic_parameter, 4.0 * expected_scale),
+                atol=1e-6,
+            )
+        )
+        self.assertLessEqual(
+            float(evidence_parameter.grad.norm()), 1.0 + 1e-6
+        )
 
     def test_checkpoint_roundtrip_restores_models_optimizer_metrics_and_rng(self):
         torch.manual_seed(3)

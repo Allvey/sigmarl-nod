@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+import torch
+
 
 @dataclass(frozen=True)
 class TrainingPhase:
@@ -71,3 +73,32 @@ class OpinionTrainingSchedule:
             "evidence_learning_rate_scale": self.evidence_lr_scale,
             "critic_learning_rate_scale": self.critic_lr_scale,
         }
+
+
+def clip_m9_gradients(optimizer, max_grad_norm: float) -> dict[str, float]:
+    """Clip Base+Critic jointly while isolating EvidenceNet gradients."""
+    groups = {
+        group.get("group_name"): group for group in optimizer.param_groups
+    }
+    required = {"base_actor", "evidence", "critic"}
+    if set(groups) != required:
+        raise RuntimeError(
+            "M9 optimizer must contain exactly base_actor/evidence/critic groups."
+        )
+    if max_grad_norm <= 0:
+        raise ValueError("max_grad_norm must be positive.")
+
+    base_critic_parameters = list(groups["base_actor"]["params"]) + list(
+        groups["critic"]["params"]
+    )
+    evidence_parameters = list(groups["evidence"]["params"])
+    base_critic_norm = torch.nn.utils.clip_grad_norm_(
+        base_critic_parameters, max_grad_norm
+    )
+    evidence_norm = torch.nn.utils.clip_grad_norm_(
+        evidence_parameters, max_grad_norm
+    )
+    return {
+        "base_critic": float(base_critic_norm),
+        "evidence": float(evidence_norm),
+    }

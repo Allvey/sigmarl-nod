@@ -814,7 +814,10 @@ def mappo_cavs(
     training_schedule = None
     current_training_phase = None
     if is_m9_trainer:
-        from utilities.opinion.trainer import OpinionTrainingSchedule
+        from utilities.opinion.trainer import (
+            OpinionTrainingSchedule,
+            clip_m9_gradients,
+        )
 
         schedule_config = dict(trainer_runtime_config)
         schedule_config["evidence_learning_rate_scale"] = float(
@@ -1164,9 +1167,12 @@ def mappo_cavs(
                         squared_base_gradient_norm.sqrt().item()
                     )
 
-                torch.nn.utils.clip_grad_norm_(
-                    optimization_parameters, parameters.max_grad_norm
-                )  # Optional
+                if is_m9_trainer:
+                    clip_m9_gradients(optim, parameters.max_grad_norm)
+                else:
+                    torch.nn.utils.clip_grad_norm_(
+                        optimization_parameters, parameters.max_grad_norm
+                    )  # Optional
 
                 optim.step()
                 optim.zero_grad()
