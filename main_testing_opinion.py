@@ -18,6 +18,7 @@ def main(
     config_file: Path = DEFAULT_CONFIG_FILE,
     run_directory: Optional[Path] = None,
     checkpoint_path: Optional[Path] = None,
+    save_simulation_video: bool = False,
 ) -> None:
     experiment = load_opinion_experiment(config_file)
     require_m9_supported_mode(experiment)
@@ -64,6 +65,7 @@ def main(
             if conflict_config.emit_pair_info
             else None
         ),
+        save_simulation_video=save_simulation_video,
     )
 
 
@@ -92,5 +94,15 @@ if __name__ == "__main__":
             "Its parent directory is used as --run-dir when --run-dir is omitted."
         ),
     )
+    parser.add_argument(
+        "--save-video",
+        action="store_true",
+        help="Save the rendered rollout, including Opinion overlays, as video.mp4.",
+    )
     arguments = parser.parse_args()
-    main(arguments.config, arguments.run_dir, arguments.checkpoint)
+    main(
+        arguments.config,
+        arguments.run_dir,
+        arguments.checkpoint,
+        arguments.save_video,
+    )

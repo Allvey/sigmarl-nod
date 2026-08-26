@@ -179,6 +179,24 @@ class M9TrainerTests(unittest.TestCase):
         self.assertEqual(args[2], checkpoint)
         self.assertEqual(kwargs["opinion_policy_config"]["mode"], "stateful_opinion")
 
+    def test_opinion_testing_forwards_video_request(self):
+        root = Path(__file__).resolve().parents[2]
+        config = root / "configs" / "opinion" / "m9_joint_from_scratch.json"
+        run_directory = root / "outputs" / "opinion" / "scratch-run"
+        checkpoint = run_directory / "reward1.00_policy.pth"
+
+        with patch("main_testing_opinion.test_base") as mocked_test:
+            test_opinion(
+                config,
+                run_directory,
+                checkpoint,
+                save_simulation_video=True,
+            )
+
+        self.assertTrue(
+            mocked_test.call_args.kwargs["save_simulation_video"]
+        )
+
     def test_schedule_freezes_then_activates_base_without_resetting_groups(self):
         bridge = Bridge()
         critic = nn.Linear(3, 1)

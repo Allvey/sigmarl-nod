@@ -46,6 +46,7 @@ def test_base(
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
     opinion_policy_config: Optional[Mapping[str, object]] = None,
     opinion_visualization_config: Optional[Mapping[str, object]] = None,
+    save_simulation_video: bool = False,
 ) -> None:
     if checkpoint_path is not None and run_directory is None:
         run_directory = checkpoint_path.expanduser().resolve().parent
@@ -75,7 +76,7 @@ def test_base(
     # Evaluate on the saved training scenario by default. Cross-scenario
     # evaluation will use an explicit M10 evaluation configuration.
     parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
-    parameters.is_save_simulation_video = False
+    parameters.is_save_simulation_video = bool(save_simulation_video)
     parameters.is_visualize_short_term_path = False
     parameters.is_visualize_lane_boundary = False
     parameters.is_visualize_extra_info = True
@@ -111,7 +112,9 @@ def test_base(
     )
     if parameters.is_save_simulation_video:
         out_td, frame_list = rollout_result
-        save_video(str(run_directory / "video"), frame_list, fps=1 / parameters.dt)
+        video_path = run_directory / "video"
+        save_video(str(video_path), frame_list, fps=1 / parameters.dt)
+        print(f"[INFO] Saved simulation video: {video_path}.mp4")
     else:
         out_td = rollout_result
 

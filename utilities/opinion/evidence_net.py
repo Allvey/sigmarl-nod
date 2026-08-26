@@ -148,18 +148,7 @@ class OpinionEvidenceNet(nn.Module):
             * confidence.clamp(0.0, 1.0)
             * pair_mask.to(dtype=pair_features.dtype)
         )
-        # b = raw_b * gate
-        # return EvidenceOutput(
-        #     antisymmetric_logit=antisymmetric_logit,
-        #     raw_b=raw_b,
-        #     b=b,
-        # )
-        learned_b = raw_b * gate
-
-        # Forward: b == 0
-        # Backward: db / d(learned_b) == 1
-        b = learned_b - learned_b.detach()
-
+        b = raw_b * gate
         return EvidenceOutput(
             antisymmetric_logit=antisymmetric_logit,
             raw_b=raw_b,

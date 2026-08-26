@@ -52,6 +52,13 @@ def update_opinion_visualization(
     normalized_weights = _optional_tensor(
         tensordict, ("agents", "opinion", "normalized_weights")
     )
+    base_loc = _optional_tensor(
+        tensordict, ("agents", "opinion", "base_loc")
+    )
+    final_loc = _optional_tensor(tensordict, ("agents", "loc"))
+    executed_action = _optional_tensor(
+        tensordict, ("agents", "action")
+    )
     residual = _optional_tensor(tensordict, ("agents", "opinion", "residual"))
 
     def scalar(tensor: torch.Tensor, *indices) -> float:
@@ -62,8 +69,26 @@ def update_opinion_visualization(
         if residual is not None
         else "N/A (M5)"
     )
+    base_speed_text = (
+        f"{scalar(base_loc, environment_id, ego_id, 0):+.4f}"
+        if base_loc is not None
+        else "N/A"
+    )
+    final_speed_text = (
+        f"{scalar(final_loc, environment_id, ego_id, 0):+.4f}"
+        if final_loc is not None
+        else "N/A"
+    )
+    executed_speed_text = (
+        f"{scalar(executed_action, environment_id, ego_id, 0):+.4f}"
+        if executed_action is not None
+        else "N/A"
+    )
     lines = [
-        f"Opinion | ego={ego_id} | delta_mu_speed={residual_text}",
+        f"Opinion | ego={ego_id}",
+        f"speed loc | base={base_speed_text} residual={residual_text} "
+        f"final={final_speed_text}",
+        f"executed speed={executed_speed_text} m/s",
     ]
     candidate_count = neighbor_ids.shape[-1]
     for candidate_index in range(candidate_count):
