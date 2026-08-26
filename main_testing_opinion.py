@@ -13,6 +13,16 @@ from utilities.opinion.config import (
 
 DEFAULT_CONFIG_FILE = Path("config_opinion.json")
 
+# Select the scenario used by main_testing_opinion.py.
+TEST_SCENARIO_TYPE = (
+    # "intersection_2"
+    # "roundabout_1"
+    # "CPM_entire"
+    # "CPM_mixed"
+    "on_ramp_1"
+    # roundabout_1, intersection_1/2/3, CPM_mixed
+)
+
 
 def main(
     config_file: Path = DEFAULT_CONFIG_FILE,
@@ -66,6 +76,7 @@ def main(
             else None
         ),
         save_simulation_video=save_simulation_video,
+        scenario_type=TEST_SCENARIO_TYPE,
     )
 
 

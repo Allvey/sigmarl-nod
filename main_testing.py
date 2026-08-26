@@ -22,6 +22,16 @@ from utilities.mappo_cavs import mappo_cavs
 
 DEFAULT_CONFIG_FILE = Path("config.json")
 
+# Select the scenario used by main_testing.py.
+TEST_SCENARIO_TYPE = (
+    # "intersection_2"
+    # "roundabout_1"
+    # "CPM_entire"
+    # "CPM_mixed"
+    "on_ramp_1"
+    # roundabout_1, intersection_1/2/3, CPM_mixed
+)
+
 
 def _load_run_parameters(run_directory: Path) -> Parameters:
     resolved_config_path = run_directory / "config_resolved.json"
@@ -47,6 +57,7 @@ def test_base(
     opinion_policy_config: Optional[Mapping[str, object]] = None,
     opinion_visualization_config: Optional[Mapping[str, object]] = None,
     save_simulation_video: bool = False,
+    scenario_type: Optional[str] = None,
 ) -> None:
     if checkpoint_path is not None and run_directory is None:
         run_directory = checkpoint_path.expanduser().resolve().parent
@@ -60,6 +71,10 @@ def test_base(
     print(f"[INFO] Testing run: {run_directory}")
     print(f"[INFO] Testing policy checkpoint: {checkpoint_path}")
     parameters = _load_run_parameters(run_directory)
+    if scenario_type is not None:
+        if scenario_type not in SCENARIOS:
+            raise ValueError(f"Unknown testing scenario_type: {scenario_type}")
+        parameters.scenario_type = scenario_type
 
     parameters.where_to_save = str(run_directory) + os.sep
     parameters.artifact_logging_enabled = False
@@ -125,7 +140,12 @@ def main(
     checkpoint_path: Optional[Path] = None,
 ) -> None:
     source_parameters = Parameters.from_json(str(config_file))
-    test_base(source_parameters.where_to_save, run_directory, checkpoint_path)
+    test_base(
+        source_parameters.where_to_save,
+        run_directory,
+        checkpoint_path,
+        scenario_type=TEST_SCENARIO_TYPE,
+    )
 
 
 if __name__ == "__main__":
