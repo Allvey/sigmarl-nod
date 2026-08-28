@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "method": "avocado_marl",
+  "stage": "a4",
+  "a3_config": "configs/avocado/a3_road_environment.json",
+  "output_root": "outputs/avocado_marl/a4_action_coupling",
+  "base_policy": {
+    "output_root": "outputs/base",
+    "run_directory": null,
+    "checkpoint": null,
+    "deterministic": true
+  },
+  "coupling": {
+    "velocity_continuity_weight": 0.0
+  },
+  "diagnostics": {
+    "speed_intervention_tolerance_mps": 0.05,
+    "steering_intervention_tolerance_degrees": 2.0
+  }
+}

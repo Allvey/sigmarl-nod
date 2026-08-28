@@ -93,6 +93,7 @@ def mappo_cavs(
     artifact_stage: str = "base",
     policy_checkpoint_path: Optional[Path] = None,
     training_resume_checkpoint: Optional[Path] = None,
+    scenario_override: Optional[ScenarioRoadTraffic] = None,
 ):
     # Preserve the upstream default (seed 0) while making it explicit in the
     # resolved configuration for reproducible Base runs.
@@ -114,7 +115,12 @@ def mappo_cavs(
                 "Resume checkpoint iteration must be smaller than configured n_iters."
             )
 
-    scenario = ScenarioRoadTraffic()
+    # A4 reuses the exact Base-MAPPO construction while attaching additional
+    # pre-reset diagnostics to the road scenario.  The default remains
+    # byte-for-byte compatible with all training and legacy testing callers.
+    scenario = (
+        ScenarioRoadTraffic() if scenario_override is None else scenario_override
+    )
 
     scenario.parameters = parameters
     if opinion_pair_info_config is not None:

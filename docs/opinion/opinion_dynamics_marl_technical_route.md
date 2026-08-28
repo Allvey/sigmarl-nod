@@ -1,19 +1,23 @@
 # AVOCADO 与 MARL：学习邻车合作估计的有界修正
 
 > 文档角色：后续 AVOCADO-MARL 方法的最高级理论真源
-> 当前基线：A0-A2 严格全向 AVOCADO；A3.4 AVOCADO-KB 道路确定性基线
+> 当前基线：A0-A2 严格全向 AVOCADO；A3.4 AVOCADO-KB 道路确定性基线；
+> A4 Base-MAPPO 与固定 AVOCADO 动作级耦合
 > 目标方法：保留 AVOCADO 的注意力、合作估计和非线性意见动力学，仅由 MARL 学习
 > 启发式合作估计 \(y^H\) 的有界修正 \(\Delta y^{RL}\)
 > 对齐日期：2026-08-28
 
 ## 0. 当前实现与后续目标的边界
 
-A0-A2 和 A3.4 已完成且继续作为不可混淆的无学习基线：
+A0-A2、A3.4和A4已完成。前三者继续作为不可混淆的无学习基线，A4作为动作级耦合
+基线：
 
 - A0-A2 使用圆盘单积分器和二维速度动作，验证 AVOCADO 官方几何与意见递推；
 - A3.4 将其接入 SigmaRL `road_traffic`、RK4 自行车动力学、道路速度锥、互补责任、
   速度连续性目标和可审计 TTC 屏障；
 - A3.4 不使用 MAPPO、EvidenceNet 或任何学习参数。
+- A4由冻结的Base-MAPPO输出名义自行车动作，固定A3安全链输出执行动作；仍然没有
+  `YCorrectionNet`，且 \(\Delta y^{RL}=0\)。
 
 现有 M2-M9 Opinion-MARL 代码实现了另一条历史原型：网络输出加性证据 `b`，再进入
 重新设计的 OpinionDynamics。该代码和对应文档保留用于复现及消融，但它不再是后续
@@ -350,6 +354,10 @@ q
 ## 8. 分阶段、每步可验收的实施路线
 
 ### A4：MARL 名义动作接入固定 A3 安全链
+
+实现状态：已于2026-08-28完成。入口为 `main_testing_avocado_marl.py`，配置为
+`configs/avocado_marl/a4_base_avocado.json`，动作桥接和审计指标位于
+`utilities/avocado_marl/`。
 
 目标：不增加学习修正，先证明 Base-MAPPO 名义动作能够通过 A3 的世界速度转换、OCA、
 道路约束、自行车适配和 TTC 屏障闭环运行。
