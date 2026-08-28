@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "method": "avocado_kb",
+  "stage": "a3",
+  "output_root": "outputs/avocado/a3_road",
+  "simulation": {
+    "device": "cpu",
+    "episodes": 4,
+    "max_steps": 600,
+    "seed": 2026,
+    "video_stride": 5
+  },
+  "vehicle": {
+    "cruise_speed": 0.6,
+    "avoidance_radius_scale": 1.1,
+    "minimum_speed_ratio": 0.2,
+    "path_tracking_gain": 7.0,
+    "path_tracking_softening_speed": 0.2,
+    "maximum_path_correction_degrees": 20.0,
+    "maximum_path_deviation_degrees": 12.0
+  },
+  "safety": {
+    "complementary_responsibility": true,
+    "ttc_braking_shield_enabled": true,
+    "minimum_ttc_seconds": 0.6
+  },
+  "avocado": {
+    "dt": 0.05,
+    "perception_radius": 2.5,
+    "velocity_obstacle_horizon": 2.5,
+    "epsilon": 3.22,
+    "kappa": 14.15,
+    "opinion_decay": 2.0,
+    "opinion_self_weight": 0.3,
+    "opinion_estimate_weight": 0.7,
+    "attention_decay": 0.57,
+    "opinion_bias": 0.0,
+    "noise_sigma": 0.0001
+  },
+  "planners": [
+    "path_following",
+    "orca_kb",
+    "avocado_kb"
+  ],
+  "cases": [
+    {
+      "name": "cpm_mixed_4",
+      "scenario_type": "CPM_mixed",
+      "n_agents": 4
+    },
+    {
+      "name": "intersection_1_6",
+      "scenario_type": "intersection_1",
+      "n_agents": 6
+    },
+    {
+      "name": "intersection_2_6",
+      "scenario_type": "intersection_2",
+      "n_agents": 6
+    }
+  ],
+  "validation": {
+    "maximum_agent_collision_events_per_1000_steps": 20.0,
+    "maximum_lane_collision_events_per_1000_steps": 30.0,
+    "maximum_mean_tracking_error_mps": 0.35,
+    "maximum_p95_reference_distance_meters": 0.12,
+    "maximum_steering_saturation_rate": 0.75,
+    "minimum_route_completion_events_per_1000_steps": 0.5,
+    "minimum_maximum_attention": 0.5,
+    "minimum_agent_collision_improvement": 0.0,
+    "maximum_shield_intervention_rate": 0.05,
+    "maximum_post_shield_unsafe_pair_events_per_1000_steps": 0.0
+  }
+}

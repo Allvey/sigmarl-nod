@@ -7,6 +7,18 @@
 > 仅作为外部实验基线  
 > 对齐日期：2026-08-23
 
+> 实施说明：原始 AVOCADO 的 A0-A2 无学习基线已在独立命名空间完成，详见
+> [`AVOCADO_A0_A2_STRICT_BASELINE.md`](AVOCADO_A0_A2_STRICT_BASELINE.md)。该基线
+> 使用圆盘单积分器和二维速度动作，用于在接入自行车模型与 MARL 前验证 AVOCADO；
+> 它不改变本文 M2-M9 Opinion-MARL 方法的现有代码和配置。
+
+> A3/A3.2 实施说明：AVOCADO-KB 已作为无学习确定性策略接入原 `road_traffic` 场景和
+> `KinematicBicycle` 动力学，详见
+> [`AVOCADO_A3_ROAD_ENVIRONMENT.md`](AVOCADO_A3_ROAD_ENVIRONMENT.md)。A3.1 已将
+> 简单参考点追踪替换为带横向误差反馈的路径跟随器；A3.2 又把路径速度锥与 VO 半平面
+> 联合求解，并加入互补责任及可审计 TTC 制动屏障。它仍是后续 MARL 耦合的道路环境
+> 对照组，尚不属于本文 M2-M9 的可训练策略；TTC 屏障的贡献必须单独报告。
+
 本文件描述独立的 Opinion Dynamics + MARL 方法，不是 TSC 的扩展。文中的“道路
 拓扑”仅指 SigmaRL 1.2.0 环境已有的地图、参考路径和可观测几何关系，不等价于旧
 TSC 的 `TopologyLearner`、priority graph 或 leader/follower 结构。

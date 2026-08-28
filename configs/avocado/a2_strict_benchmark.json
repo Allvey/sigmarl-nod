@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "method": "avocado_strict",
+  "stage": "a2",
+  "output_root": "outputs/avocado/a2_strict",
+  "simulation": {
+    "device": "cpu",
+    "episodes": 8,
+    "max_steps": 1000,
+    "goal_tolerance": 0.1,
+    "layout_seed": 2026,
+    "controller_seed": 2026,
+    "position_jitter": 0.0
+  },
+  "entities": {
+    "robot_radius": 0.2,
+    "agent_radius": 0.2,
+    "avoidance_radius_scale": 1.1,
+    "robot_max_speed": 1.0,
+    "agent_max_speed": 0.75
+  },
+  "avocado": {
+    "dt": 0.05,
+    "perception_radius": 2.5,
+    "velocity_obstacle_horizon": 2.5,
+    "epsilon": 3.22,
+    "kappa": 14.15,
+    "opinion_decay": 2.0,
+    "opinion_self_weight": 0.3,
+    "opinion_estimate_weight": 0.7,
+    "attention_decay": 0.57,
+    "opinion_bias": 0.0,
+    "noise_sigma": 0.0001
+  },
+  "planners": [
+    "preferred",
+    "orca",
+    "avocado"
+  ],
+  "cases": [
+    {
+      "name": "head_on_noncooperative",
+      "layout": "head_on_noncooperative",
+      "n_agents": 2,
+      "controlled_agents": 1
+    },
+    {
+      "name": "head_on_cooperative",
+      "layout": "head_on_cooperative",
+      "n_agents": 2,
+      "controlled_agents": 2
+    },
+    {
+      "name": "circle_cooperative_6",
+      "layout": "circle_cooperative",
+      "n_agents": 6,
+      "controlled_agents": 6
+    }
+  ],
+  "validation": {
+    "required_case": "head_on_noncooperative",
+    "minimum_avocado_success_rate": 0.875,
+    "maximum_avocado_collision_rate": 0.125,
+    "minimum_preferred_collision_rate": 0.875,
+    "minimum_collision_rate_improvement": 0.75
+  }
+}
