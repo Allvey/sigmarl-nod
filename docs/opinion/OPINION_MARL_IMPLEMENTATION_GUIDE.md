@@ -7,6 +7,13 @@
 > 结构图：[`OPINION_MARL_NETWORK_ARCHITECTURE.md`](OPINION_MARL_NETWORK_ARCHITECTURE.md)  
 > 对齐日期：2026-08-25
 
+> 路线迁移说明（2026-08-28）：本文件的 M2-M9 描述已经完成的历史
+> EvidenceNet-\(b\) 原型及其代码合同，用于复现和消融。后续正式 AVOCADO-MARL
+> 不再继续扩展该语义，而是按
+> [新技术路线](opinion_dynamics_marl_technical_route.md)
+> 学习启发式合作估计 \(y^H\) 的有界修正 \(\Delta y^{RL}\)。开始 A4 及以后工作时，
+> 以新技术路线为准；不得把旧 M2-M9 的 OpinionEvidenceNet 直接改名后冒充新方法。
+
 ## 0. 新 Session 先读这里
 
 本项目已将根目录源码恢复为 SigmaRL 1.2.0，将在此基础上重新实现独立的
@@ -23,7 +30,7 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 7. 阅读 [`M6_STATEFUL_OPINION.md`](M6_STATEFUL_OPINION.md)、[`M7_SEQUENCE_BUFFER.md`](M7_SEQUENCE_BUFFER.md)、[`M8_SEQUENCE_PPO.md`](M8_SEQUENCE_PPO.md) 和 [`M9_TRAINER_AND_CHECKPOINT.md`](M9_TRAINER_AND_CHECKPOINT.md)；
 8. 阅读 `docs/sigmarl_1_2_0/` 下的核对记录、R1 使用说明和三份事实文档；
 9. 确认当前代码以 tag 1.2.0 为底座，且只包含本表已经完成的阶段修改；
-10. 查看本文件第 10 节，只执行下一个未完成阶段；
+10. 旧 M2-M9 仅按需复现；后续实现从新技术路线的 A4 开始；
 11. 每次实现后更新阶段状态、验证命令和真实结果。
 
 可复制给新 Session：
@@ -31,6 +38,9 @@ Opinion Dynamics + MARL。旧 TSC 代码不作为载体，也不恢复旧 Opinio
 ```text
 请在以 SigmaRL 1.2.0 为底座、已完成 R0/R1 的代码上继续实现独立
 Opinion Dynamics + MARL。
+
+注意：M2-M9 是历史 EvidenceNet-b 原型。新的正式路线学习启发式合作估计 y 的
+有界修正，必须从新技术路线 A4 开始，不继续实现旧路线的 M10/M11。
 
 先完整阅读：
 1. docs/opinion/opinion_dynamics_marl_technical_route.md
@@ -653,4 +663,5 @@ Learned evidence + fixed nonlinear dynamics（Full）
   run 恢复剩余训练；VMAS 从新 rollout 边界继续，具体边界见
   [`M9_TRAINER_AND_CHECKPOINT.md`](M9_TRAINER_AND_CHECKPOINT.md)；
 - 按用户要求，实际训练、测试和性能判断由用户手动完成；
-- 下一实现步骤是 M10：正式评估、诊断、PDF 和可视化闭环。
+- 对历史 EvidenceNet-b 分支而言，原下一步是 M10 评估闭环；对后续正式方法而言，
+  下一实现步骤已经改为新技术路线的 A4：MARL 名义动作接入固定 A3 安全链。

@@ -5,6 +5,12 @@
 > 实施状态：M9 已完成，M10 按图中标记实现  
 > 更新日期：2026-08-25
 
+> 路线迁移说明：本图描述已经实现的历史 EvidenceNet-\(b\) 原型，不再代表后续正式
+> AVOCADO-MARL。新方法保留 AVOCADO 的 \(A,y^H,z\)，学习有界
+> \(\Delta y^{RL}\)；以
+> [新技术路线](opinion_dynamics_marl_technical_route.md)为准。本图仅用于旧代码复现
+> 和消融。
+
 ## 1. 整体网络结构
 
 ```mermaid

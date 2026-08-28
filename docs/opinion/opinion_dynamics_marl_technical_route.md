@@ -1,781 +1,511 @@
-# 意见动力学 + MARL：核心思想与技术路线
+# AVOCADO 与 MARL：学习邻车合作估计的有界修正
 
-> 文档角色：当前方法的最高级理论真源  
-> 代码底座：SigmaRL 1.2.0（tag commit
-> `5fe715bdfba4ff3e33d901d69dfa220f1222c060`）  
-> 方法关系：SigmaRL 提供环境与 Base-MAPPO；AVOCADO 提供意见动力学启发；TSC
-> 仅作为外部实验基线  
-> 对齐日期：2026-08-23
+> 文档角色：后续 AVOCADO-MARL 方法的最高级理论真源
+> 当前基线：A0-A2 严格全向 AVOCADO；A3.4 AVOCADO-KB 道路确定性基线
+> 目标方法：保留 AVOCADO 的注意力、合作估计和非线性意见动力学，仅由 MARL 学习
+> 启发式合作估计 \(y^H\) 的有界修正 \(\Delta y^{RL}\)
+> 对齐日期：2026-08-28
 
-> 实施说明：原始 AVOCADO 的 A0-A2 无学习基线已在独立命名空间完成，详见
-> [`AVOCADO_A0_A2_STRICT_BASELINE.md`](AVOCADO_A0_A2_STRICT_BASELINE.md)。该基线
-> 使用圆盘单积分器和二维速度动作，用于在接入自行车模型与 MARL 前验证 AVOCADO；
-> 它不改变本文 M2-M9 Opinion-MARL 方法的现有代码和配置。
+## 0. 当前实现与后续目标的边界
 
-> A3/A3.4 实施说明：AVOCADO-KB 已作为无学习确定性策略接入原 `road_traffic` 场景和
-> `KinematicBicycle` 动力学，详见
-> [`AVOCADO_A3_ROAD_ENVIRONMENT.md`](AVOCADO_A3_ROAD_ENVIRONMENT.md)。A3.1 已将
-> 简单参考点追踪替换为带横向误差反馈的路径跟随器；A3.2 又把路径速度锥与 VO 半平面
-> 联合求解，并加入互补责任及可审计 TTC 制动屏障；A3.3 将默认巡航速度从 `0.6`
-> 调整为 `0.75 m/s`；A3.4 进一步在联合可行域内加入对实测速度的连续性软目标，当前
-> 配置采用 `\lambda=1.0`、`1.0 m/s` 首选巡航速度，并以转角变化 P95 和反向率设置
-> 回归门槛。OCA、道路速度锥和速度上限仍是硬约束，且保留所有感知邻车的前瞻 OCA 线。
-> 它仍是后续 MARL 耦合的道路环境
-> 对照组，尚不属于本文 M2-M9 的可训练策略；TTC 屏障的贡献必须单独报告。
+A0-A2 和 A3.4 已完成且继续作为不可混淆的无学习基线：
 
-本文件描述独立的 Opinion Dynamics + MARL 方法，不是 TSC 的扩展。文中的“道路
-拓扑”仅指 SigmaRL 1.2.0 环境已有的地图、参考路径和可观测几何关系，不等价于旧
-TSC 的 `TopologyLearner`、priority graph 或 leader/follower 结构。
+- A0-A2 使用圆盘单积分器和二维速度动作，验证 AVOCADO 官方几何与意见递推；
+- A3.4 将其接入 SigmaRL `road_traffic`、RK4 自行车动力学、道路速度锥、互补责任、
+  速度连续性目标和可审计 TTC 屏障；
+- A3.4 不使用 MAPPO、EvidenceNet 或任何学习参数。
 
-与当前 SigmaRL 1.2.0 实现对齐的第一版还固定：每车只处理原始局部观测中的两个
-最近邻，使用当前相对位置/速度的短时常速外推判断潜在冲突。不使用未来真值
-轨迹、真实未来动作或旧 TSC 的 action predictor。
+现有 M2-M9 Opinion-MARL 代码实现了另一条历史原型：网络输出加性证据 `b`，再进入
+重新设计的 OpinionDynamics。该代码和对应文档保留用于复现及消融，但它不再是后续
+AVOCADO-MARL 的目标理论路线。新路线不得把原 AVOCADO 的固定偏置 \(b\) 重新命名为
+学习证据。
 
-## 1. 方法目标
-
-本方案面向无显式通信条件下的多智能体车辆冲突协调，将多车交互建模为一个**由长期任务回报驱动的非线性意见形成过程**。
-
-核心链路为：
+新路线的零修正条件必须精确退化为 A3：
 
 \[
-\boxed{
-\text{局部物理交互}
-\rightarrow
-\text{瞬时意见证据 }b
-\rightarrow
-\text{动态意见状态 }z
-\rightarrow
-\text{动作分布}
-}
+\Delta y^{RL}=0
+\quad\Longrightarrow\quad
+y^{F}=y^{H}
+\quad\Longrightarrow\quad
+\text{原 AVOCADO 意见递推不变}.
 \]
 
-同时，任务结果通过 MAPPO 反向训练意见证据网络：
+## 1. 方法目标与模块分工
+
+完整方法将三个层次明确分开：
+
+```text
+局部物理状态
+   ├── Base-MAPPO Actor ─────────────────────────→ 名义驾驶动作
+   │
+   └── AVOCADO 实时估计
+          TTC → 注意力 A
+          邻车速度变化 + 上一拍 VO 修正 → y^H
+                                      │
+                                      ├── YCorrectionNet → Δy^RL
+                                      │
+                                      ↓
+                             y^F = bounded(y^H + Δy^RL)
+                                      ↓
+                         原 AVOCADO 非线性动力学 → z
+                                      ↓
+                  有界纵向策略残差 + OCA 避让责任
+                                      ↓
+                  道路/OCA 联合求解 + 自行车适配 + TTC 屏障
+                                      ↓
+                                   env.step()
+```
+
+各模块职责如下：
+
+| 模块 | 职责 | 是否学习 |
+|---|---|---:|
+| AVOCADO 注意力 \(A\) | 根据 TTC 表示冲突紧迫程度 | 否 |
+| 启发式估计 \(y^H\) | 从实际速度变化估计邻车合作行为 | 否 |
+| `YCorrectionNet` | 修正自行车运动学、道路控制等造成的估计偏差 | 是 |
+| AVOCADO 意见状态 \(z\) | 积累、遗忘并非线性强化合作判断 | 否 |
+| Base Actor | 学习正常路径驾驶和任务级动作 | 是 |
+| Opinion Residual | 让 \(z\) 显式、有限地影响策略分布 | 否 |
+| OCA/道路求解器 | 将名义意图投影到几何可行速度 | 否 |
+| Central Critic | 集中训练阶段估计价值 | 是 |
+
+## 2. AVOCADO 固定实时量
+
+### 2.1 注意力
+
+对有向车辆对 \((i,j)\)，使用当前圆盘安全半径、相对位置和实测速度计算首次碰撞时间
+\(\tau_{ij}^t\)。注意力严格采用 AVOCADO 官方实现的离散滤波：
 
 \[
-\boxed{
-\text{长期任务回报}
-\rightarrow
-\text{策略优势}
-\rightarrow
-B_{\phi_b}
-\rightarrow
-b
-}
-\]
-
-由此形成双向耦合：
-
-- 意见动力学在线决定证据如何积累、保持、切换和消退；
-- MARL 离线学习什么物理情境应产生什么方向和强度的证据；
-- 任务回报评价这种意见形成过程是否改善联合驾驶行为。
-
-需要特别区分：
-
-\[
-\boxed{
-b\text{ 在每个时刻被即时计算，但证据网络参数不会在执行时即时更新。}
-}
-\]
-
-执行阶段参数 \(\phi_b\) 固定；只有在训练阶段，才通过 PPO 批量、低学习率地更新 \(\phi_b\)。
-
----
-
-## 2. 变量语义与模块分工
-
-对于车辆 \(i\) 与冲突车辆 \(j\)，车辆 \(i\) 维护一个有向意见状态：
-
-\[
-z_{ij}^t\in\mathbb R.
-\]
-
-其语义为：
-
-\[
-z_{ij}^t>0:
-\quad i\text{ 倾向于相对 }j\text{ 继续通行},
-\]
-
-\[
-z_{ij}^t<0:
-\quad i\text{ 倾向于相对 }j\text{ 让行},
-\]
-
-\[
-z_{ij}^t\approx0:
-\quad \text{当前尚未形成明确意见}.
-\]
-
-系统中的三个核心部分具有不同职责：
-
-| 模块 | 作用 |
-|---|---|
-| 意见证据 \(b_{ij}^t\) | 表示当前时刻局部物理交互提供的瞬时证据，不承担记忆 |
-| 意见状态 \(z_{ij}^t\) | 对历史证据进行积累、衰减和自强化，形成连续协调意见 |
-| MAPPO | 根据长期联合回报学习局部物理情境到 \(b_{ij}^t\) 的映射 |
-
-因此：
-
-\[
-\boxed{
-b=\text{瞬时证据},
-\qquad
-z=\text{具有时间连续性的协调承诺}.
-}
-\]
-
----
-
-## 3. 总体运行流程
-
-系统采用集中训练、分散执行（CTDE）。训练阶段使用中央 Critic；执行阶段每辆车只使用局部观测、局部历史和本地意见状态，不需要交换意见。
-
-每个时刻按照以下因果顺序运行：
-
-\[
-\boxed{
-o_i^t
-\rightarrow
-\chi_{ij}^t
-\rightarrow
-b_{ij}^t
-\rightarrow
-z_{ij}^t
-\rightarrow
-q_{ij}^t
-\rightarrow
-\mu_i^t
-\rightarrow
-a_i^t
-}
-\]
-
-具体步骤如下：
-
-1. 车辆 \(i\) 获取当前局部观测 \(o_i^t\)；
-2. 对当前两个可观测最近邻做短时运动学外推，识别冲突车辆 \(j\)；
-3. 构造车辆对局部交互特征 \(\chi_{ij}^t\)；
-4. 证据网络生成有界的瞬时证据 \(b_{ij}^t\)；
-5. 固定意见动力学将 \(z_{ij}^{t-1}\) 更新为 \(z_{ij}^t\)；
-6. 将意见转换为有限的动作残差；
-7. Actor 输出动作分布并采样动作；
-8. 联合驾驶结果形成任务回报；
-9. MAPPO 使用任务优势更新 Actor 和证据网络。
-
----
-
-## 4. 冲突关系与局部交互特征
-
-在时刻 \(t\) 构造动态冲突图：
-
-\[
-\mathcal G_t=(\mathcal V_t,\mathcal E_t).
-\]
-
-若车辆 \(i\) 和 \(j\) 按当前相对位置与速度做短时常速外推后，在预测时间窗内的
-最近间距小于冲突阈值，则建立边：
-
-\[
-(i,j)\in\mathcal E_t.
-\]
-
-车辆 \(i\) 只为当前相关的冲突车辆维护意见状态：
-
-\[
-\mathbf z_i^t=\{z_{ij}^t:j\in\mathcal N_i^t\}.
-\]
-
-新冲突边出现时令 \(z_{ij}=0\)；冲突解除后，意见衰减至零并删除对应状态。
-
-局部特征 \(\chi_{ij}^t\) 可包括：
-
-- ego 坐标系中的相对位置和相对速度；
-- 双方速度和相对航向；
-- 最近接近时间（time to closest approach）；
-- 外推时间窗口内的最小间距；
-- 当前感知距离与有效 mask；
-- 只由上述当前物理量计算的冲突紧迫度与置信度。
-
-道路规则或地图几何可以在后续版本作为显式、静态的物理特征，但不得被表述为
-学习的 priority、leader 或 TSC topology。
-
-邻车行为预测器不属于第一版。若以后作为独立扩展，可计算：
-
-\[
-\widehat y_{ij}^{t|t-1}
+A_{ij}^{t}
 =
-P_\psi(h_i^{t-1},y_{ij}^{t-1},a_i^{t-1,\mathrm{exec}}),
+(1-\delta)A_{ij}^{t-1}
++\delta\tanh\left(\frac{\kappa}{\tau_{ij}^{t}}\right).
 \]
 
+\(A\) 不由 MARL 输出，也不设可训练参数。没有未来碰撞时刺激为零；碰撞迫近时注意力
+趋近 1。
+
+### 2.2 启发式邻车合作估计
+
+当前邻车实测速度变化为：
+
 \[
-\varepsilon_{ij}^t
+\Delta\mathbf v_j^t
 =
-y_{ij}^t-\widehat y_{ij}^{t|t-1}.
+\mathbf v_j^t-\mathbf v_j^{t-1}.
 \]
 
-预测残差只能是证据网络的一类物理输入，不是意见动力学的核心组成部分；该扩展
-不得复用 TSC action predictor。
-
-证据网络禁止读取：
+令 \(\mathbf u_{ij}^{t-1}\) 为上一拍针对车辆 \(j\) 的 VO 最小修正，则：
 
 \[
-z_{ij}^t,\qquad q_{ij}^t,
-\]
-
-以避免形成 \(z\rightarrow b\rightarrow z\) 的非物理内部正反馈。
-
----
-
-## 5. 可学习的意见证据 \(b\)
-
-MARL 当前只学习外部证据网络：
-
-\[
-b_{ij}^t=B_{\phi_b}(\chi_{ij}^t).
-\]
-
-为了赋予正负号清晰的相对语义，推荐采用共享相对评分结构：
-
-\[
-\ell_{ij}^t
+r_{ij}^{t}
 =
-G_{\phi_b}(\xi_i^t,\xi_j^t,e_{ij}^t)
--
-G_{\phi_b}(\xi_j^t,\xi_i^t,e_{ij}^t).
+\begin{cases}
+\dfrac{
+|\Delta\mathbf v_j^{t\mathsf T}\mathbf u_{ij}^{t-1}|
+}{
+\|\mathbf u_{ij}^{t-1}\|^2
+},
+& \|\mathbf u_{ij}^{t-1}\|^2>\epsilon_u,\\
+0,&\text{otherwise},
+\end{cases}
 \]
 
-最终证据为：
+\[
+y_{ij}^{H,t}
+=
+\tanh\left[
+\epsilon_y\left(r_{ij}^{t}-\frac12\right)
+\right].
+\]
+
+该估计仍按 AVOCADO 的因果顺序使用“当前速度变化 + 上一拍 VO 修正”，不使用未来
+动作或轨迹。\(y^H\) 在自行车环境中会混入转向、非完整运动学、动作适配和安全屏障的
+影响，这正是学习修正存在的原因。
+
+## 3. MARL 学习的有界修正
+
+### 3.1 输入特征
+
+`YCorrectionNet` 只读取本地可获得的物理量和 AVOCADO 当前派生量：
+
+\[
+\chi_{ij}^t=
+[\Delta p,\Delta v,v_i,v_j,
+\sin\Delta\psi,\cos\Delta\psi,
+\tau,d_{CPA},A,y^H,\|u^{t-1}\|,m].
+\]
+
+第一版仍只处理原始局部观测中的两个最近邻。禁止输入：
+
+- 意见状态 \(z\) 或由其导出的合作责任；
+- 未来真实轨迹、未来动作或碰撞结果；
+- 全局车辆 ID、中央 Critic 隐状态；
+- 其他车辆不可观测的策略参数。
+
+禁止读取 \(z\) 是为了避免 \(z\rightarrow\Delta y\rightarrow z\) 的内部正反馈。
+
+### 3.2 修正公式
+
+共享网络输出方向性的原始修正：
+
+\[
+\widetilde{\Delta y}_{ij}^{t}
+=
+\tanh\left(
+H_{\phi_y}(\chi_{ij}^t)/T_y
+\right).
+\]
+
+最终修正为：
+
+\[
+\Delta y_{ij}^{RL,t}
+=
+\lambda_y
+m_{ij}^t
+c_{ij}^{sense,t}
+\widetilde{\Delta y}_{ij}^{t},
+\]
 
 \[
 \boxed{
-b_{ij}^t
+y_{ij}^{F,t}
 =
-b_{\max}
-\rho_{ij}^t
-c_{ij}^t
-\tanh\left(\frac{\ell_{ij}^t}{T_b}\right)
+\operatorname{clip}
+\left(
+y_{ij}^{H,t}+\Delta y_{ij}^{RL,t},
+-1,1
+\right)
 }
 \]
 
 其中：
 
-- \(\rho_{ij}^t\in[0,1]\)：物理冲突紧迫度；
-- \(c_{ij}^t\in[0,1]\)：感知或预测置信度；
-- \(b_{\max}\)：证据幅值上限；
-- \(T_b\)：输出温度。
+- \(m_{ij}\) 是有效车辆对 mask；
+- \(c^{sense}\in[0,1]\) 是由感知距离等物理量计算的置信度；
+- \(\lambda_y\) 是固定的最大修正幅值，第一版建议从 `0.1` 开始，硬上限不超过 `0.5`；
+- 网络最后一层近零初始化，使初始策略与 A3 近似相同；严格零初始化模式用于数值等价测试。
 
-该结构保证：
+这里不要求 \(\Delta y_{ij}=-\Delta y_{ji}\)。原始 \(y_{ij}\) 表示“车辆 \(i\) 观察到
+车辆 \(j\) 的合作程度”，两车可能同时合作或同时不合作，强制反对称会破坏该语义。
 
-\[
-|b_{ij}^t|\leq b_{\max}\rho_{ij}^tc_{ij}^t.
-\]
+## 4. 保持不变的 AVOCADO 非线性动力学
 
-因此：
-
-- 无有效冲突时 \(b\approx0\)；
-- 信息不可靠时证据自动减弱；
-- 网络不能通过无限放大 \(b\) 绕过意见动力学；
-- \(b\) 只承担瞬时证据作用，不承担时间记忆。
-
----
-
-## 6. 固定的非线性意见动力学
-
-意见根据当前证据更新：
+融合估计进入原 AVOCADO 方程：
 
 \[
 \boxed{
-z_{ij}^{t}
+z_{ij}^{t+1}
 =
-z_{ij}^{t-1}
-+
-\Delta t\,\eta_z
+z_{ij}^{t}
++\Delta t
 \left[
--\kappa_z z_{ij}^{t-1}
-+
-\rho_{ij}^t\nu_z
-\tanh(\alpha_z z_{ij}^{t-1})
-+
-b_{ij}^t
+-d z_{ij}^{t}
++d A_{ij}^{t}
+\tanh\left(
+a z_{ij}^{t}+c y_{ij}^{F,t}
+\right)
++b_0
 \right]
 }
 \]
 
-其中：
-
-- \(\kappa_z\)：意见遗忘强度；
-- \(\nu_z\)：冲突期间的意见自强化强度；
-- \(\alpha_z\)：非线性敏感度；
-- \(\eta_z\)：意见响应速度。
-
-三项动力学含义分别为：
+第一版固定 A3 参数：
 
 \[
--\kappa_z z:
-\quad \text{遗忘和回归中性},
+d=2,\quad a=0.3,\quad c=0.7,\quad
+\kappa=14.15,\quad\epsilon_y=3.22,\quad
+\delta=0.57,\quad b_0=0.
 \]
 
+MARL 不学习 \(d,a,c,\kappa,\epsilon_y,\delta,b_0\)。这样可以保留 AVOCADO 的
+解释性、零修正退化性质和稳定性分析，避免策略、估计器与动力学同时漂移。
+
+当车辆对失效但车辆未重置时，自强化与学习修正关闭，旧意见按既定生命周期处理；
+车辆、环境或 global-ID 映射重置时，必须同时清除入边和出边的 \(A,y,u,z\) 状态。
+
+## 5. 意见如何影响 MARL 与 OCA
+
+### 5.1 可微的策略残差
+
+将意见有界化：
+
 \[
-\rho\nu_z\tanh(\alpha_z z):
-\quad \text{冲突期间保持和强化已形成的意见},
+q_{ij}^t=\tanh(z_{ij}^t/z_0).
 \]
 
-\[
-b:
-\quad \text{当前物理交互提供的新证据}.
-\]
-
-当前阶段固定：
+按物理冲突权重归一化聚合，只修改 Actor 的纵向动作均值：
 
 \[
-\eta_z,\kappa_z,\nu_z,\alpha_z.
-\]
-
-MARL 不直接改变动力学参数，只学习 \(b\)。这样可以保留意见动力学的解释性，并降低策略和动力学同时变化造成的训练非平稳性。
-
-当冲突解除时：
-
-\[
-\rho_{ij}^t=0,\qquad b_{ij}^t=0,
-\]
-
-意见按照：
-
-\[
-\dot z_{ij}=-\eta_z\kappa_z z_{ij}
-\]
-
-衰减回零。
-
----
-
-## 7. 稳定性说明
-
-虽然 \(b_{ij}^t\) 每个时刻都可能变化，但它只是有界的外部输入，而不是在线改变动力学参数。
-
-由于：
-
-\[
-|b_{ij}^t|\leq b_{\max},
+\Delta\mu_{i,op}^t
+=
+c_{op}
+\sum_j\bar w_{ij}^t q_{ij}^t,
 \qquad
-|\tanh(\alpha_z z)|\leq1,
-\]
-
-意见状态具有最终有界性：
-
-\[
-\limsup_{t\rightarrow\infty}|z_{ij}(t)|
-\leq
-\frac{\nu_z+b_{\max}}{\kappa_z}.
-\]
-
-因此，瞬时证据变化不会使意见无限发散。
-
-采用意见动力学的目的不是对 \(b\) 再做一次静态微调，而是将可能含噪的瞬时证据转换为连续、具有记忆的协调状态：
-
-\[
-\boxed{
-b=\text{瞬时证据},
-\qquad
-z=\text{经过积累、衰减和自强化后的稳定意见}.
-}
-\]
-
-如果直接让 \(b\) 控制动作，单帧噪声可能导致抢行和让行行为频繁切换；意见动力学为策略提供了时间连续性和承诺保持能力。
-
----
-
-## 8. 意见与 Actor 的耦合
-
-首先将意见压缩到有限区间：
-
-\[
-q_{ij}^t
+\bar w_{ij}^t
 =
-\tanh\left(\frac{z_{ij}^t}{z_0}\right)
-\in[-1,1].
+\frac{A_{ij}^tm_{ij}^t}
+{\epsilon+\sum_k A_{ik}^tm_{ik}^t}.
 \]
 
-Actor 分为基础动作分支和意见残差分支。
-
-基础分支只读取物理观测：
-
 \[
-\mu_{i,\mathrm{base}}^t
-=
-f_\theta(o_i^t).
-\]
-
-意见残差为：
-
-\[
-\Delta\mu_{i,\mathrm{op}}^t
-=
-c_{\mathrm{op}}
-\sum_{j\in\mathcal N_i^t}
-\bar\rho_{ij}^t
-q_{ij}^t
-\mathbf d_{ij}^t,
-\]
-
-其中：
-
-\[
-\bar\rho_{ij}^t
-=
-\frac{\rho_{ij}^t}
-{\epsilon+\sum_{k\in\mathcal N_i^t}\rho_{ik}^t}.
-\]
-
-最终策略均值为：
-
-\[
-\boxed{
 \mu_i^t
 =
-\mu_{i,\mathrm{base}}^t
-+
-\Delta\mu_{i,\mathrm{op}}^t
-}
+\mu_{i,base}^t
++[\Delta\mu_{i,op}^t,0].
 \]
 
-\(\mathbf d_{ij}^t\) 是固定或强约束的通行相关动作方向：
+第一版不让意见直接修改转向分量。该残差提供
+\(\phi_y\rightarrow\log\pi\) 的可微路径，否则仅把 \(z\) 用在非可微 OCA 投影中将
+无法有效训练 `YCorrectionNet`。
 
-- 对纵向加速度控制，可令 \(\mathbf d_{ij}=1\)；
-- 对多维动作，只调节沿参考路径的前进分量；
-- 不让意见直接控制与通行权无关的转向分量。
+### 5.2 OCA 责任
 
-为了避免 Actor 绕过意见模块，应保持：
+意见仍按 AVOCADO 映射为对邻车合作程度的估计：
 
 \[
-c_{\mathrm{op}}>0,
+s_{ij}=\operatorname{clip}\left((z_{ij}+1)/2,0,1\right).
+\]
+
+道路版本使用互补责任：
+
+\[
+R_{ij}
+=
+\frac{1-s_{ij}}
+{(1-s_{ij})+(1-s_{ji})},
 \qquad
-\|\mathbf d_{ij}^t\|=1,
+R_{ji}=1-R_{ij}.
 \]
 
-并禁止基础动作分支直接读取 \(z\)。
+当分母数值上接近零时，两车责任都取 \(0.5\)。因此互补和严格为 1，而不是通过在
+分母中加入 \(\epsilon\) 得到近似互补。
 
----
+MARL 名义动作先转换为世界坐标首选速度，再进入 OCA 半平面、道路速度锥、最大速度圆
+和 A3.4 连续性目标的联合求解。求解后再做自行车动作适配和 TTC 屏障。屏障干预必须
+单独记录，不能计为学习意见的贡献。
 
-## 9. MAPPO 对意见证据的训练
+## 6. 强化学习与梯度边界
 
-所有车辆共享分散 Actor：
-
-\[
-\pi_{\theta,\phi_b}.
-\]
-
-训练阶段使用中央 Critic。为保持 SigmaRL 1.2.0 的网络结构和 checkpoint 边界，
-第一版只读取原始联合观测：
-
-\[
-V_\omega(x_t).
-\]
-
-将 \(\operatorname{sg}[\mathbf z_t]\) 追加到 Critic 只是后续可选消融，不进入第一版
-主路径。无论 Critic 是否读取 detached \(z\)，价值损失都不得更新证据网络。
-
-证据网络接受的任务梯度路径为：
+训练阶段采用 CTDE。Base Actor 和 `YCorrectionNet` 属于策略侧，Central Critic 只在
+训练时估计价值：
 
 \[
 \boxed{
-\phi_b
+\phi_y
 \rightarrow
-b_{ij}^t
+\Delta y^{RL}
 \rightarrow
-z_{ij}^t
+y^F
 \rightarrow
-q_{ij}^t
+z
 \rightarrow
-\mu_i^t
+q
 \rightarrow
-\log\pi_i
+\Delta\mu_{op}
+\rightarrow
+\log\pi
 \rightarrow
 \widehat A_t
 }
 \]
 
-Actor 目标为：
+策略损失可写为：
 
 \[
-\mathcal L_{\mathrm{actor}}
+\mathcal L_{actor}
 =
--\mathcal L_{\mathrm{PPO}}
--\lambda_H\mathcal H(\pi)
-+\lambda_{\mathrm{neutral}}\mathcal L_{\mathrm{neutral}}
-+\lambda_{\mathrm{mag}}\mathcal L_{\mathrm{mag}},
+-\mathcal L_{PPO}
+-\lambda_H\mathcal H
++\lambda_{corr}\mathbb E[(\Delta y^{RL})^2]
++\lambda_{sat}\mathbb E[\max(|y^F|-y_{soft},0)^2].
 \]
 
-其中：
+修正正则只用于鼓励“能由启发式解释时不修正”，不使用人工合作标签。价值损失不得
+反向更新 Base Actor 或 `YCorrectionNet`。执行阶段不调用 Central Critic，也不会在线
+更新网络参数。
+
+## 7. 为什么必须使用序列 PPO
+
+因为：
 
 \[
-\mathcal L_{\mathrm{neutral}}
-=
-\mathbb E\left[(1-\rho_{ij}^t)(b_{ij}^t)^2\right],
+\Delta y^t\rightarrow z^t\rightarrow z^{t+1}\rightarrow\cdots,
 \]
+
+训练样本不能完全打乱成独立单步。Rollout Buffer 必须保存：
+
+- 连续时间片段起点的 \(A,z,u\) 状态；
+- 上一拍实测速度；
+- 邻车 global-ID、有效边 mask 和 reset mask；
+- 启发式 \(y^H\)、融合 \(y^F\) 与 \(\Delta y^{RL}\)；
+- 名义动作、执行动作、旧策略 log-prob；
+- episode 和单车重置边界。
+
+更新时从片段初始状态重放 AVOCADO 递推，片段起点状态停止梯度，片段内部采用截断
+时间反向传播。环境、自行车动力学与 OCA 求解器无需可微。
+
+## 8. 分阶段、每步可验收的实施路线
+
+### A4：MARL 名义动作接入固定 A3 安全链
+
+目标：不增加学习修正，先证明 Base-MAPPO 名义动作能够通过 A3 的世界速度转换、OCA、
+道路约束、自行车适配和 TTC 屏障闭环运行。
+
+固定：
 
 \[
-\mathcal L_{\mathrm{mag}}
-=
-\mathbb E\left[(b_{ij}^t)^2\right].
+\Delta y^{RL}=0,\qquad y^F=y^H.
 \]
 
-中央 Critic 使用独立价值损失：
+验收：
 
-\[
-\mathcal L_V
-=
-\mathbb E\left[
-\left(V_\omega-\widehat G_t\right)^2
-\right].
-\]
+- 实时可视化中 MARL 名义动作和执行动作均可观察；
+- 改变 MARL 名义动作会可预测地改变无冲突轨迹，证明安全层没有完全接管策略；
+- 与 Base-MAPPO、A3.4、Base-MAPPO+固定 ORCA 同种子比较；
+- 动作有限、无状态串扰、reset 后 A3 状态清零。
 
-本方案不使用：
+### A5：零修正网络等价性
 
-- 人工意见标签；
-- \(b\) 与具体动作之间的监督损失；
-- 反事实分支 Critic；
-- \(\Delta Q\) 教师蒸馏。
+加入 `YCorrectionNet`、融合器和序列状态接口，但冻结网络并令输出严格为零。
 
----
+验收：
 
-## 10. 序列化 PPO 训练
+- A5 与 A4 在同 seed 下逐步满足
+  \(y^F=y^H\)、\(z_{A5}=z_{A4}\)、执行动作一致；
+- 网络参数不更新，训练入口和测试入口均能完整运行；
+- 保存完整的 \(A,y^H,\Delta y,y^F,z\) 诊断序列。
 
-由于意见是循环状态：
+### A6：只训练有界 \(\Delta y\)
 
-\[
-b^t\rightarrow z^t\rightarrow z^{t+1}\rightarrow\cdots,
-\]
+冻结 Base Actor、AVOCADO 参数、残差方向与安全层，仅训练 `YCorrectionNet`；Critic 可
+独立更新以提供优势估计。
 
-训练样本必须保留连续时间片段，不能完全打乱为独立单步样本。
+验收：
 
-Rollout Buffer 除普通 MAPPO 数据外，还需保存：
+- 修正始终满足配置上界，非有效车辆对严格为零；
+- 修正网络不读取 \(z\)，梯度只能来自 PPO Actor loss；
+- 同预算、多 seed 比较 A5 与 A6，报告安全、效率和平滑性；
+- 不能只报告最终奖励，必须报告修正幅值、饱和率、符号切换率以及冲突窗口指标。
 
-- 每个训练片段起点的 \(z_{ij}\)；
-- 冲突边及车辆对应关系；
-- 有效边掩码；
-- episode 终止掩码；
-- 旧策略动作概率。
+### A7：Actor、\(\Delta y\) 与 Critic 联合训练
 
-原始 SigmaRL Actor 是无状态前馈 MLP，因此第一版没有其他 Actor 循环状态需要保存。
+从零训练是正式主路线：Base Actor、`YCorrectionNet`、Critic 随机初始化，在与原始
+Base-MAPPO 相同的总采样预算内联合优化。A6 warm start 和已训练 Base 初始化只作为
+稳定性消融，不累加到正式主结果的预算中。
 
-更新时：
+验收：
 
-1. 从保存的初始意见状态开始；
-2. 在连续片段内部重新计算 \(b^t\)、\(z^t\) 和策略分布；
-3. 片段起点的意见状态停止梯度；
-4. 片段内部采用截断时间反向传播；
-5. 冲突边消失或 episode 结束时正确重置状态。
+- Actor、修正网络、Critic 使用独立 optimizer 参数组和梯度裁剪；
+- AVOCADO 动力学参数保持无梯度；
+- checkpoint 完整恢复模型、optimizer、调度器、RNG 和训练计数；
+- 多 seed 置信区间优于或不劣于必要基线。
 
-环境状态转移不需要可微，梯度只需要通过：
+### A8：最终消融与归因
 
-\[
-B_{\phi_b}
-\rightarrow
-\text{OpinionDynamics}
-\rightarrow
-\text{Actor}
-\]
+至少比较：
 
-传播。
+1. Base-MAPPO；
+2. 固定 ORCA-KB；
+3. A3.4 启发式 AVOCADO-KB；
+4. Base-MAPPO + 固定 OCA/道路安全层；
+5. A5：MARL + 启发式 \(y^H\)，零学习修正；
+6. A6/A7：MARL + \(y^H+\Delta y^{RL}\)；
+7. 去掉 \(y^H\)、仅使用网络估计的消融；
+8. 历史 EvidenceNet-\(b\) 原型，仅作为方法差异消融。
 
----
+只有第 6 项在相同观测、训练预算、随机种子和安全层设置下稳定改善，才能把收益归因于
+“学习启发式 \(y\) 的有界修正”。
 
-## 11. 可配置训练流程
+## 9. 验证指标
 
-分阶段训练用于稳定初始化和实验归因，不是意见动力学理论的必要条件。实现必须同时
-支持从零完整联合训练、Evidence 独立训练、从 Base 直接联合训练，以及 Evidence
-warmup 后联合训练。正式主路线采用从零完整联合训练：只分配一次与原始 SigmaRL
-相同的总训练预算，不把 Base 预训练轮次叠加到新方法上。
+除奖励、车辆碰撞、车道事件、路线完成率、实测速度、路径误差和 TTC 屏障率外，新增：
 
-### 从零完整联合训练（正式主路线）
+- \(y^H\)、\(\Delta y^{RL}\)、\(y^F\)、\(z\) 的均值、P95、最大值和直方图；
+- 修正幅值饱和率、修正符号切换率；
+- 启发式与融合估计的差异 \(|y^F-y^H|\)；
+- 冲突窗口内的转角变化 P95、转向反向率和停止动作率；
+- 名义动作与 OCA/屏障后执行动作的差异；
+- OCA 不可行率和互补责任误差 \(|R_{ij}+R_{ji}-1|\)；
+- 不同 TTC 分箱下的修正、意见和控制行为。
 
-Base Actor、EvidenceNet 和中央 Critic 全部随机初始化，从第 1 轮开始同时更新：
+全时域 P95 可能掩盖稀疏冲突阶段的抖动，因此冲突窗口指标是硬性报告项。
 
-\[
-\theta,\phi_b,\omega.
-\]
+## 10. 建议配置结构
 
-该模式不读取 Base、M5、M8 或 M9 的任何历史 checkpoint，固定 OpinionDynamics 与
-Residual，并保持原始 SigmaRL 的优化预算和超参数：250 iterations、每批 4096 帧、
-60 个 PPO epochs、minibatch 512、初始学习率 \(2\times10^{-4}\)、最小学习率
-\(10^{-5}\)。Actor、EvidenceNet 和 Critic 的初始学习率比例均为 1。这样 Base 与新
-方法的比较都是“随机初始化到 250 轮”，避免把多阶段累计轮次误当作方法收益或造成
-过度微调。
+新配置不复用旧 `opinion.evidence` 字段，避免把两种方法误加载：
 
-### 阶段一：基础 MAPPO 预训练
-
-令：
-
-\[
-b=0,\qquad z=0,
-\]
-
-先训练基础 Actor 和中央 Critic，使策略具备基本驾驶、避碰和通行能力。
-
-### 阶段二：学习意见证据
-
-启用意见模块：
-
-- 固定全部意见动力学参数；
-- 固定意见—动作残差方向；
-- 第一版固定基础 Actor；缓慢更新 Actor 只能作为独立消融；
-- 将证据网络最后一层初始化为接近零；
-- 从较小但非零的 \(c_{\mathrm{op}}\) 开始；
-- 主要通过 PPO 优势训练 \(B_{\phi_b}\)。
-
-### 阶段三：联合微调
-
-当 \(b\) 和 \(z\) 的分布稳定后，联合更新：
-
-\[
-\theta,\phi_b,\omega,
-\]
-
-并采用较小的证据网络学习率：
-
-\[
-\alpha_B\approx0.1\alpha_{\mathrm{actor}}.
-\]
-
-当前阶段仍不开放意见动力学参数学习。
-
-### 从 Base 直接联合训练（对照路线）
-
-也允许从已训练的 Base Actor/Critic 出发，将近中性随机初始化的 EvidenceNet 立即接入
-Sequence PPO，并从第一轮联合更新 \(\theta,\phi_b,\omega\)。该模式仍必须满足：
-
-- EvidenceNet 不读取 \(z\)；
-- OpinionDynamics 和 Residual 固定；
-- Critic loss 不进入 Base Actor 或 EvidenceNet；
-- Base Actor、EvidenceNet、Critic 使用独立 optimizer 参数组；
-- EvidenceNet 学习率低于 Actor 学习率；
-- 与 Evidence-only 和 warmup→joint 使用相同采样、更新与评估预算比较。
-
-因此，从零完整联合训练是默认主策略，其余分阶段或历史权重初始化模式是稳定性和
-归因对照，而不是论文方法成立的前置条件。最终性能结论仍由同预算、多 seed 实验决定。
-
----
-
-## 12. 建议代码模块
-
-```text
-ConflictGraph
-    纯函数式地识别当前冲突车辆并输出 edge mask
-
-InteractionEncoder
-    构造车辆对局部特征 chi_ij
-
-OpinionEvidenceNet
-    输出相对评分 ell_ij 和有界证据 b_ij
-
-OpinionDynamics
-    无状态地将 z_prev 与当前证据积分为 z_next
-
-BaseActor
-    根据局部物理观测输出基础动作分布
-
-OpinionResidual
-    将 z_ij 转换为动作均值残差
-
-OpinionAugmentedActor
-    组合 BaseActor 与 OpinionResidual
-
-CentralizedCritic
-    训练阶段估计全局价值
-
-RecurrentRolloutBuffer
-    保存连续序列、初始意见状态和 edge mask
-
-MAPPOTrainer
-    实现 PPO、截断时间反向传播和梯度隔离
+```json
+{
+  "avocado_marl": {
+    "y_correction": {
+      "enabled": true,
+      "hidden_sizes": [128, 128],
+      "temperature": 1.0,
+      "maximum_absolute_correction": 0.1,
+      "hard_limit": 0.5,
+      "zero_initialize_output": true,
+      "magnitude_regularization": 0.001,
+      "saturation_regularization": 0.001
+    },
+    "sequence_ppo": {
+      "enabled": true,
+      "chunk_length": 32,
+      "train_y_correction": true
+    }
+  }
+}
 ```
 
-其中：
+加载器必须拒绝同时启用旧 `opinion.evidence` 和新 `avocado_marl.y_correction`，防止在
+同一实验中混合两套不同语义的动力学。
 
-- `OpinionDynamics` 的参数默认不可训练；
-- `z_dense` 由 Stateful Collector 按 global agent ID 持有，不存在环境、
-  `ConflictGraph` 或 `OpinionDynamics` 模块内；
-- `OpinionEvidenceNet` 属于 Actor 参数组；
-- 第一版 Critic 不读取意见状态；后续若读取则必须停止梯度；
-- 执行阶段不调用 `CentralizedCritic`。
+## 11. 必须保持的原则
 
----
+1. \(A\) 仍由 TTC 实时计算，MARL 不得学习或覆盖注意力；
+2. \(y^H\) 始终保留，网络只输出有界修正 \(\Delta y^{RL}\)；
+3. \(b_0\) 保持 AVOCADO 固定偏置语义，第一版设为 0；
+4. 零修正必须逐步退化为启发式 AVOCADO；
+5. 修正网络不得读取 \(z\)、未来真值或中央 Critic 状态；
+6. 不强制 \(\Delta y_{ij}\) 与 \(\Delta y_{ji}\) 反对称；
+7. AVOCADO 动力学参数固定且不可训练；
+8. 意见通过显式有界纵向残差影响策略，保证 PPO 梯度可达修正网络；
+9. OCA、道路速度锥、速度界和 TTC 屏障继续作为可审计安全链；
+10. 训练必须保留连续序列、车辆身份映射和正确 reset；
+11. Critic loss 不得更新 Actor 或修正网络；
+12. 执行阶段只使用局部物理量和本地历史，不使用中央 Critic；
+13. 历史 EvidenceNet-\(b\) 结果不得冒充新 \(y\)-correction 方法结果；
+14. 所有性能结论必须来自相同预算、多 seed 和明确消融。
 
-## 13. 后续修改必须保持的原则
-
-1. \(b\) 是瞬时物理证据，\(z\) 是跨时间意见状态；
-2. \(B_{\phi_b}\) 不读取 \(z\)；
-3. \(b\) 必须经过冲突紧迫度、置信度和最大幅值门控；
-4. 当前只学习 \(b\)，不学习意见动力学参数；
-5. 意见必须通过显式、有限的动作残差影响策略；
-6. 基础动作分支不能直接绕过或复制意见分支；
-7. Critic 损失不能反向更新 \(B_{\phi_b}\)；
-8. 训练必须保留连续序列并展开 \(z\)；
-9. 执行阶段不使用全局状态或中央 Critic；
-10. 不加入人工意见—动作标签或反事实教师；
-11. 不将意见动力学替换为普通黑盒循环网络；
-12. 所有冲突边必须具有明确的创建、掩码、衰减和重置逻辑。
-
----
-
-## 14. 最终模型总结
-
-完整模型可以概括为：
+## 12. 最终模型总结
 
 \[
 \boxed{
 \begin{aligned}
-b_{ij}^t
-&=
-b_{\max}\rho_{ij}^tc_{ij}^t
-\tanh\left(
-\frac{
-G_{\phi_b}(\xi_i^t,\xi_j^t)
--G_{\phi_b}(\xi_j^t,\xi_i^t)
-}{T_b}
-\right),\\[2mm]
-z_{ij}^{t}
-&=
-z_{ij}^{t-1}
-+\Delta t\,\eta_z
-\left[
--\kappa_z z_{ij}^{t-1}
-+\rho_{ij}^t\nu_z\tanh(\alpha_z z_{ij}^{t-1})
-+b_{ij}^t
-\right],\\[2mm]
-q_{ij}^t
-&=
-\tanh(z_{ij}^t/z_0),\\[2mm]
+A_{ij}^{t}
+&=(1-\delta)A_{ij}^{t-1}
++\delta\tanh(\kappa/\tau_{ij}^{t}),\\
+y_{ij}^{H,t}
+&=\tanh\left[\epsilon_y(r_{ij}^{t}-1/2)\right],\\
+\Delta y_{ij}^{RL,t}
+&=\lambda_y m_{ij}^tc_{ij}^{sense,t}
+\tanh(H_{\phi_y}(\chi_{ij}^t)/T_y),\\
+y_{ij}^{F,t}
+&=\operatorname{clip}(y_{ij}^{H,t}+\Delta y_{ij}^{RL,t},-1,1),\\
+z_{ij}^{t+1}
+&=z_{ij}^{t}+\Delta t
+\left[-dz_{ij}^{t}
++dA_{ij}^{t}\tanh(a z_{ij}^{t}+c y_{ij}^{F,t})+b_0\right],\\
 \mu_i^t
-&=
-\mu_{i,\mathrm{base}}^t
-+c_{\mathrm{op}}
-\sum_j\bar\rho_{ij}^tq_{ij}^t\mathbf d_{ij}^t,\\[2mm]
-(\theta,\phi_b)
-&\leftarrow
-\arg\max J_{\mathrm{MAPPO}}
--\lambda_{\mathrm{neutral}}\mathcal L_{\mathrm{neutral}}
--\lambda_{\mathrm{mag}}\mathcal L_{\mathrm{mag}}.
+&=\mu_{i,base}^t+[\Delta\mu_{i,op}^t,0],\\
+(\theta,\phi_y,\omega)
+&\leftarrow\operatorname{MAPPO}
+\quad\text{while AVOCADO dynamics remain fixed.}
 \end{aligned}
 }
 \]
 
-系统的最终分工是：
-
-\[
-\boxed{
-\begin{aligned}
-\text{MARL 学习：}&\quad
-\chi_{ij}^t\rightarrow b_{ij}^t,\\
-\text{意见动力学完成：}&\quad
-(b_{ij}^{0:t},z_{ij}^{t-1})\rightarrow z_{ij}^t,\\
-\text{Actor 完成：}&\quad
-(o_i^t,z_{ij}^t)\rightarrow a_i^t,\\
-\text{任务回报评价：}&\quad
-\text{这种意见形成过程是否改善联合驾驶行为}.
-\end{aligned}
-}
-\]
-
-核心不是让 \(b\) 直接替代策略，而是让 MARL 学习局部交互中的瞬时证据，再由意见动力学把这些证据转化为连续、稳定、具有记忆且可解释的协调意见。
+该方案的核心不是让 MARL 替代 AVOCADO 的在线估计，而是让 MARL 在长期任务回报下，
+对自行车道路环境中不再完全可靠的启发式合作估计做有限、可回退、可审计的修正。
