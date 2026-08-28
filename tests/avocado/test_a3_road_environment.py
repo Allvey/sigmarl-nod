@@ -61,6 +61,19 @@ class RoadEnvironmentIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics.nonfinite_action_count, 0)
         self.assertTrue(torch.isfinite(torch.tensor(metrics.mean_tracking_error_mps)))
         self.assertGreater(metrics.maximum_attention, 0.0)
+        self.assertGreater(metrics.mean_commanded_speed_mps, 0.0)
+        self.assertGreaterEqual(metrics.mean_measured_speed_mps, 0.0)
+        self.assertGreaterEqual(metrics.stopped_action_rate, 0.0)
+        self.assertLessEqual(metrics.stopped_action_rate, 1.0)
+        self.assertGreaterEqual(
+            metrics.mean_absolute_steering_change_degrees, 0.0
+        )
+        self.assertGreaterEqual(
+            metrics.p95_absolute_steering_change_degrees,
+            metrics.mean_absolute_steering_change_degrees,
+        )
+        self.assertGreaterEqual(metrics.steering_reversal_rate, 0.0)
+        self.assertLessEqual(metrics.steering_reversal_rate, 1.0)
         self.assertGreaterEqual(
             metrics.maximum_reference_distance_meters,
             metrics.p95_reference_distance_meters,
@@ -139,7 +152,10 @@ class RoadEnvironmentIntegrationTests(unittest.TestCase):
             maximum_agent_collision_events_per_1000_steps=1000.0,
             maximum_lane_collision_events_per_1000_steps=1000.0,
             maximum_mean_tracking_error_mps=1.0,
+            minimum_mean_measured_speed_mps=0.0,
             maximum_steering_saturation_rate=1.0,
+            maximum_p95_steering_change_degrees=180.0,
+            maximum_steering_reversal_rate=1.0,
             minimum_route_completion_events_per_1000_steps=0.0,
             minimum_maximum_attention=0.0,
             minimum_agent_collision_improvement=0.0,

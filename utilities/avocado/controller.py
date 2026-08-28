@@ -387,6 +387,9 @@ class AVOCADOController:
                     responsibility = self.last_responsibility[
                         batch, robot, agent
                     ]
+                    # Match AVOCADO/RVO2: every perceived neighbor contributes
+                    # an anticipatory OCA line. ``last_vo_active`` only reports
+                    # whether the current relative velocity is already in VO.
                     if float(responsibility) > 0.0:
                         half_planes.append(
                             build_oca_half_plane(

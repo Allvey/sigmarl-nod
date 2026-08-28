@@ -128,6 +128,7 @@ class RoadSafetyConfig:
     complementary_responsibility: bool
     ttc_braking_shield_enabled: bool
     minimum_ttc_seconds: float
+    velocity_continuity_weight: float
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "RoadSafetyConfig":
@@ -146,6 +147,10 @@ class RoadSafetyConfig:
                 raw["minimum_ttc_seconds"],
                 "safety.minimum_ttc_seconds",
                 strict=True,
+            ),
+            velocity_continuity_weight=_number(
+                raw["velocity_continuity_weight"],
+                "safety.velocity_continuity_weight",
             ),
         )
 
@@ -186,8 +191,11 @@ class RoadValidationConfig:
     maximum_agent_collision_events_per_1000_steps: float
     maximum_lane_collision_events_per_1000_steps: float
     maximum_mean_tracking_error_mps: float
+    minimum_mean_measured_speed_mps: float
     maximum_p95_reference_distance_meters: float
     maximum_steering_saturation_rate: float
+    maximum_p95_steering_change_degrees: float
+    maximum_steering_reversal_rate: float
     minimum_route_completion_events_per_1000_steps: float
     minimum_maximum_attention: float
     minimum_agent_collision_improvement: float
@@ -207,6 +215,10 @@ class RoadValidationConfig:
         if result.maximum_steering_saturation_rate > 1.0:
             raise AVOCADOConfigError(
                 "validation.maximum_steering_saturation_rate must not exceed 1."
+            )
+        if result.maximum_steering_reversal_rate > 1.0:
+            raise AVOCADOConfigError(
+                "validation.maximum_steering_reversal_rate must not exceed 1."
             )
         if result.minimum_maximum_attention > 1.0:
             raise AVOCADOConfigError(

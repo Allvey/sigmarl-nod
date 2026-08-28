@@ -11,7 +11,7 @@
     "video_stride": 5
   },
   "vehicle": {
-    "cruise_speed": 0.6,
+    "cruise_speed": 1.00,
     "avoidance_radius_scale": 1.1,
     "minimum_speed_ratio": 0.2,
     "path_tracking_gain": 7.0,
@@ -22,7 +22,8 @@
   "safety": {
     "complementary_responsibility": true,
     "ttc_braking_shield_enabled": true,
-    "minimum_ttc_seconds": 0.6
+    "minimum_ttc_seconds": 0.6,
+    "velocity_continuity_weight": 1.0
   },
   "avocado": {
     "dt": 0.05,
@@ -63,8 +64,11 @@
     "maximum_agent_collision_events_per_1000_steps": 20.0,
     "maximum_lane_collision_events_per_1000_steps": 30.0,
     "maximum_mean_tracking_error_mps": 0.35,
+    "minimum_mean_measured_speed_mps": 0.3,
     "maximum_p95_reference_distance_meters": 0.12,
     "maximum_steering_saturation_rate": 0.75,
+    "maximum_p95_steering_change_degrees": 20.0,
+    "maximum_steering_reversal_rate": 0.1,
     "minimum_route_completion_events_per_1000_steps": 0.5,
     "minimum_maximum_attention": 0.5,
     "minimum_agent_collision_improvement": 0.0,

@@ -19,6 +19,7 @@ import vmas
 from scenarios.road_traffic import ScenarioRoadTraffic
 from utilities.avocado.bicycle import (
     BicycleAdapterParameters,
+    continuity_regularized_velocity_target,
     path_velocity_cone_constraints,
     stanley_path_preferred_velocity,
     vector_velocity_to_bicycle_action,
@@ -52,7 +53,13 @@ class RoadBenchmarkMetrics:
     minimum_lane_clearance_meters: float
     minimum_vehicle_clearance_meters: float
     mean_tracking_error_mps: float
+    mean_commanded_speed_mps: float
+    mean_measured_speed_mps: float
+    stopped_action_rate: float
     steering_saturation_rate: float
+    mean_absolute_steering_change_degrees: float
+    p95_absolute_steering_change_degrees: float
+    steering_reversal_rate: float
     mean_controller_time_microseconds: float
     infeasible_projection_rate: float
     maximum_attention: float
@@ -361,7 +368,14 @@ def run_road_case(
     minimum_clearance = torch.full((episodes,), torch.inf, device=device)
     tracking_error_sum = 0.0
     tracking_error_samples = 0
+    commanded_speed_sum = 0.0
+    measured_speed_sum = 0.0
+    stopped_action_count = 0
     steering_saturated_count = 0
+    steering_change_sum_degrees = 0.0
+    steering_change_count = 0
+    steering_change_values: List[Tensor] = []
+    steering_reversal_count = 0
     action_count = 0
     controller_seconds = 0.0
     controller_calls = 0
@@ -373,6 +387,10 @@ def run_road_case(
     nonfinite_action_count = 0
     shield_intervention_count = 0
     post_shield_unsafe_pair_count = 0
+    previous_actions: Optional[Tensor] = None
+    previous_reset_mask = torch.ones(
+        episodes, case.n_agents, dtype=torch.bool, device=device
+    )
 
     if capture_video:
         video_positions.append(positions[0].detach().cpu().clone())
@@ -424,10 +442,16 @@ def run_road_case(
             )
         elif planner == "avocado_kb":
             assert controller is not None
+            continuity_weight = config.safety.velocity_continuity_weight
+            optimization_velocity = continuity_regularized_velocity_target(
+                preferred_velocity,
+                velocities,
+                continuity_weight,
+            )
             desired_velocity = controller.step(
                 positions,
                 velocities,
-                preferred_velocity,
+                optimization_velocity,
                 additional_half_plane_normals=path_half_plane_normals,
                 additional_half_plane_offsets=path_half_plane_offsets,
             )
@@ -472,12 +496,35 @@ def run_road_case(
             )
         controller_seconds += time.perf_counter() - start
         controller_calls += episodes * case.n_agents
+        commanded_speeds = actions[..., 0].abs()
+        commanded_speed_sum += float(commanded_speeds.sum())
+        measured_speed_sum += float(
+            torch.linalg.vector_norm(velocities, dim=-1).sum()
+        )
+        stopped_action_count += int((commanded_speeds <= 1e-3).sum())
         steering_saturated_count += int(bicycle_result.steering_saturated.sum())
         action_count += actions.shape[0] * actions.shape[1]
         nonfinite = ~torch.isfinite(actions).all(dim=-1)
         nonfinite_action_count += int(nonfinite.sum())
         if bool(nonfinite.any()):
             actions = torch.nan_to_num(actions)
+        if previous_actions is not None:
+            valid_change = ~previous_reset_mask
+            steering_change = torch.rad2deg(
+                (actions[..., 1] - previous_actions[..., 1]).abs()
+            )
+            valid_values = steering_change[valid_change]
+            steering_change_sum_degrees += float(valid_values.sum())
+            steering_change_count += int(valid_values.numel())
+            steering_change_values.append(valid_values.detach().cpu())
+            steering_reversal = (
+                (actions[..., 1] * previous_actions[..., 1] < 0)
+                & (actions[..., 1].abs() > math.radians(1.0))
+                & (previous_actions[..., 1].abs() > math.radians(1.0))
+                & valid_change
+            )
+            steering_reversal_count += int(steering_reversal.sum())
+        previous_actions = actions.detach().clone()
 
         _, rewards, _, _ = environment.step(
             [actions[:, index] for index in range(case.n_agents)]
@@ -497,6 +544,7 @@ def run_road_case(
         reset_mask = (
             collision_agents | lane_collisions | wrong_entries | route_completions
         )
+        previous_reset_mask = reset_mask
 
         collision_ever |= collision_agents.any(dim=-1)
         agent_collision_events += int(collision_agents.sum())
@@ -547,6 +595,11 @@ def run_road_case(
     agent_steps = episodes * case.n_agents * max_steps
     scale = 1000.0 / agent_steps
     all_reference_distances = torch.cat(reference_distance_values)
+    all_steering_changes = (
+        torch.cat(steering_change_values)
+        if steering_change_values
+        else torch.zeros(1)
+    )
     metrics = RoadBenchmarkMetrics(
         case=case.name,
         planner=planner,
@@ -575,8 +628,24 @@ def run_road_case(
         mean_tracking_error_mps=(
             tracking_error_sum / max(tracking_error_samples, 1)
         ),
+        mean_commanded_speed_mps=(
+            commanded_speed_sum / max(action_count, 1)
+        ),
+        mean_measured_speed_mps=(
+            measured_speed_sum / max(action_count, 1)
+        ),
+        stopped_action_rate=(stopped_action_count / max(action_count, 1)),
         steering_saturation_rate=(
             steering_saturated_count / max(action_count, 1)
+        ),
+        mean_absolute_steering_change_degrees=(
+            steering_change_sum_degrees / max(steering_change_count, 1)
+        ),
+        p95_absolute_steering_change_degrees=float(
+            torch.quantile(all_steering_changes, 0.95)
+        ),
+        steering_reversal_rate=(
+            steering_reversal_count / max(steering_change_count, 1)
         ),
         mean_controller_time_microseconds=(
             controller_seconds * 1e6 / max(controller_calls, 1)
@@ -659,6 +728,13 @@ def validate_road_metrics(
                 validation.maximum_mean_tracking_error_mps,
             ),
             (
+                avocado.mean_measured_speed_mps
+                >= validation.minimum_mean_measured_speed_mps,
+                "mean measured speed",
+                avocado.mean_measured_speed_mps,
+                validation.minimum_mean_measured_speed_mps,
+            ),
+            (
                 avocado.p95_reference_distance_meters
                 <= validation.maximum_p95_reference_distance_meters,
                 "p95 reference distance",
@@ -671,6 +747,20 @@ def validate_road_metrics(
                 "steering saturation rate",
                 avocado.steering_saturation_rate,
                 validation.maximum_steering_saturation_rate,
+            ),
+            (
+                avocado.p95_absolute_steering_change_degrees
+                <= validation.maximum_p95_steering_change_degrees,
+                "p95 steering change",
+                avocado.p95_absolute_steering_change_degrees,
+                validation.maximum_p95_steering_change_degrees,
+            ),
+            (
+                avocado.steering_reversal_rate
+                <= validation.maximum_steering_reversal_rate,
+                "steering reversal rate",
+                avocado.steering_reversal_rate,
+                validation.maximum_steering_reversal_rate,
             ),
             (
                 avocado.route_completion_events_per_1000_steps

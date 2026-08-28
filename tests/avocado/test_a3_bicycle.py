@@ -8,6 +8,7 @@ import torch
 from utilities.avocado.bicycle import (
     BicycleAdapterParameters,
     constrain_velocity_to_path,
+    continuity_regularized_velocity_target,
     path_velocity_cone_constraints,
     reference_path_preferred_velocity,
     stanley_path_preferred_velocity,
@@ -167,6 +168,20 @@ class BicycleAdapterTests(unittest.TestCase):
         self.assertTrue(bool((normals[0, 0] @ inside >= offsets[0, 0]).all()))
         self.assertFalse(bool((normals[0, 0] @ outside >= offsets[0, 0]).all()))
         self.assertFalse(bool((normals[0, 0] @ backward >= offsets[0, 0]).all()))
+
+    def test_continuity_target_is_weighted_unconstrained_minimizer(self):
+        preferred = torch.tensor([[[0.8, 0.0]]])
+        measured = torch.tensor([[[0.2, 0.0]]])
+        target = continuity_regularized_velocity_target(
+            preferred, measured, continuity_weight=0.5
+        )
+        torch.testing.assert_close(target, torch.tensor([[[0.6, 0.0]]]))
+        torch.testing.assert_close(
+            continuity_regularized_velocity_target(
+                preferred, measured, continuity_weight=0.0
+            ),
+            preferred,
+        )
 
 
 if __name__ == "__main__":

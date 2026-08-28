@@ -7,7 +7,7 @@ import vmas
 from vmas.simulator.core import Sphere
 
 from scenarios.avocado_holonomic import DirectVelocityDynamics, Scenario
-from utilities.avocado.controller import AVOCADOController
+from utilities.avocado.controller import AVOCADOController, fixed_orca_actions
 from utilities.avocado.bicycle import path_velocity_cone_constraints
 from utilities.avocado.core import AVOCADOParameters
 
@@ -69,6 +69,36 @@ class HolonomicEnvironmentTests(unittest.TestCase):
         controller.step(positions, velocities, velocities)
         expected = ~torch.eye(3, dtype=torch.bool).unsqueeze(0)
         torch.testing.assert_close(controller.last_neighbor_mask, expected)
+
+    def test_inactive_current_vo_still_adds_anticipatory_oca_line(self):
+        controller = AVOCADOController(
+            AVOCADOParameters(perception_radius=2.0, noise_sigma=0.0),
+            batch_size=1,
+            entity_count=2,
+            controlled_mask=torch.ones(2, dtype=torch.bool),
+            security_radii=torch.full((2,), 0.1),
+            maximum_speeds=torch.ones(2),
+            seed=5,
+        )
+        positions = torch.tensor([[[0.0, 0.0], [1.0, 0.0]]])
+        velocities = torch.zeros_like(positions)
+        preferred = torch.tensor([[[0.6, 0.0], [0.6, 0.0]]])
+        actions = controller.step(positions, velocities, preferred)
+        self.assertFalse(bool(controller.last_vo_active.any()))
+        self.assertTrue(bool(controller.last_constraint_count.gt(0).all()))
+        self.assertFalse(bool(torch.allclose(actions, preferred)))
+
+        orca_actions = fixed_orca_actions(
+            positions,
+            velocities,
+            preferred,
+            controlled_mask=torch.ones(2, dtype=torch.bool),
+            security_radii=torch.full((2,), 0.1),
+            maximum_speeds=torch.ones(2),
+            perception_radius=2.0,
+            time_horizon=2.5,
+        )
+        self.assertFalse(bool(torch.allclose(orca_actions, preferred)))
 
     def test_agent_reset_clears_incoming_and_outgoing_pair_state(self):
         controller = AVOCADOController(

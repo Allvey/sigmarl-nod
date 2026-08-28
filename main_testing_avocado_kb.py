@@ -86,6 +86,16 @@ def main(
             "TTC shield intervention rate: "
             f"{100.0 * metrics.shield_intervention_rate:.2f}%"
         )
+        print(
+            "commanded / measured mean speed: "
+            f"{metrics.mean_commanded_speed_mps:.3f} / "
+            f"{metrics.mean_measured_speed_mps:.3f} m/s"
+        )
+        print(
+            "steering change p95 / reversal rate: "
+            f"{metrics.p95_absolute_steering_change_degrees:.2f} deg / "
+            f"{100.0 * metrics.steering_reversal_rate:.2f}%"
+        )
         return
     result = run_road_benchmark(
         config,
@@ -98,7 +108,7 @@ def main(
     print("\nA3 AVOCADO-KB road-environment benchmark")
     print(
         "case                    planner        agent_col lane_col route_done "
-        "ref_p95 vel_err steer_sat shield%"
+        "ref_p95 speed vel_err steer_sat shield%"
     )
     for item in result.metrics:
         print(
@@ -107,6 +117,7 @@ def main(
             f"{item.lane_collision_events_per_1000_steps:>8.3f} "
             f"{item.route_completion_events_per_1000_steps:>10.3f} "
             f"{item.p95_reference_distance_meters:>8.3f} "
+            f"{item.mean_measured_speed_mps:>5.3f} "
             f"{item.mean_tracking_error_mps:>9.3f} "
             f"{item.steering_saturation_rate:>9.3f} "
             f"{100.0 * item.shield_intervention_rate:>7.2f}"

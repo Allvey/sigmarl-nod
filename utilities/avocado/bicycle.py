@@ -126,6 +126,26 @@ def path_velocity_cone_constraints(
     return normals, offsets
 
 
+def continuity_regularized_velocity_target(
+    preferred_velocity: Tensor,
+    measured_velocity: Tensor,
+    continuity_weight: float,
+) -> Tensor:
+    """Return the unconstrained minimizer of the velocity continuity cost."""
+
+    if preferred_velocity.shape != measured_velocity.shape:
+        raise ValueError(
+            "preferred_velocity and measured_velocity must have equal shape."
+        )
+    if preferred_velocity.shape[-1:] != (2,):
+        raise ValueError("velocities must have final dimension 2.")
+    if not math.isfinite(continuity_weight) or continuity_weight < 0:
+        raise ValueError("continuity_weight must be finite and nonnegative.")
+    return (
+        preferred_velocity + float(continuity_weight) * measured_velocity
+    ) / (1.0 + float(continuity_weight))
+
+
 def reference_path_preferred_velocity(
     positions: Tensor,
     short_term_reference_paths: Tensor,
