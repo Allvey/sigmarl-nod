@@ -29,7 +29,12 @@ class A5YCorrectionConfig:
     freeze: bool
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, Any]) -> "A5YCorrectionConfig":
+    def from_dict(
+        cls,
+        raw: Mapping[str, Any],
+        *,
+        require_frozen_zero: bool = True,
+    ) -> "A5YCorrectionConfig":
         raw = _object(raw, "y_correction")
         _exact_keys(raw, set(cls.__dataclass_fields__), "y_correction")
         hidden = raw["hidden_sizes"]
@@ -69,7 +74,7 @@ class A5YCorrectionConfig:
             raise AVOCADOConfigError(
                 "y_correction.maximum_correction must not exceed 0.5."
             )
-        if not result.strict_zero or not result.freeze:
+        if require_frozen_zero and (not result.strict_zero or not result.freeze):
             raise AVOCADOConfigError(
                 "A5 requires strict_zero=true and freeze=true."
             )

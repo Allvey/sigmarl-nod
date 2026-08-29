@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "method": "avocado_marl",
+  "stage": "a6",
+  "a5_config": "configs/avocado_marl/a5_zero_correction.json",
+  "output_root": "outputs/avocado_marl/a6_y_correction",
+  "base_policy": {
+    "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+    "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+    "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+  },
+  "y_correction": {
+    "feature_dim": 14,
+    "hidden_sizes": [64, 64],
+    "maximum_correction": 0.1,
+    "temperature": 1.0,
+    "candidate_count": 2,
+    "strict_zero": false,
+    "freeze": false
+  },
+  "opinion_residual": {
+    "opinion_scale": 1.0,
+    "gain": 0.1,
+    "maximum_absolute_residual": 0.1
+  },
+  "training": {
+    "scenario_type": "CPM_mixed",
+    "n_agents": 4,
+    "seed": 0,
+    "iterations": 25,
+    "parallel_environments": 8,
+    "rollout_steps": 128,
+    "epochs": 8,
+    "minibatch_size": 256,
+    "y_learning_rate": 0.0001,
+    "critic_learning_rate": 0.0002,
+    "gamma": 0.99,
+    "gae_lambda": 0.9,
+    "clip_epsilon": 0.2,
+    "entropy_coefficient": 0.0001,
+    "correction_regularization": 0.01,
+    "saturation_regularization": 0.01,
+    "soft_fusion_limit": 0.95,
+    "maximum_gradient_norm": 1.0
+  }
+}

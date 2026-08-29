@@ -2,15 +2,17 @@
 
 > 文档角色：后续 AVOCADO-MARL 方法的最高级理论真源
 > 当前基线：A0-A2 严格全向 AVOCADO；A3.4 AVOCADO-KB 道路确定性基线；
-> A4 Base-MAPPO 与固定 AVOCADO 动作级耦合；A5 零修正网络等价接口
+> A4 Base-MAPPO 与固定 AVOCADO 动作级耦合；A5 零修正网络等价接口；
+> A6 冻结 Base Actor 的单步截断 PPO 修正学习
 > 目标方法：保留 AVOCADO 的注意力、合作估计和非线性意见动力学，仅由 MARL 学习
 > 启发式合作估计 \(y^H\) 的有界修正 \(\Delta y^{RL}\)
 > 对齐日期：2026-08-29
 
 ## 0. 当前实现与后续目标的边界
 
-A0-A2、A3.4、A4和A5已完成。前三者继续作为不可混淆的无学习基线，A4作为动作级
-耦合基线，A5作为零修正接口基线：
+A0-A2、A3.4、A4和A5已完成；A6单步训练链已完成代码和pilot验证，正式多seed性能
+实验尚未执行。前三者继续作为不可混淆的无学习基线，A4作为动作级耦合基线，A5作为
+零修正接口基线：
 
 - A0-A2 使用圆盘单积分器和二维速度动作，验证 AVOCADO 官方几何与意见递推；
 - A3.4 将其接入 SigmaRL `road_traffic`、RK4 自行车动力学、道路速度锥、互补责任、
@@ -334,25 +336,36 @@ q
 反向更新 Base Actor 或 `YCorrectionNet`。执行阶段不调用 Central Critic，也不会在线
 更新网络参数。
 
-## 7. 为什么必须使用序列 PPO
+## 7. A6采用单步截断 PPO
 
-因为：
+完整时间梯度原本可以写成：
 
 \[
 \Delta y^t\rightarrow z^t\rightarrow z^{t+1}\rightarrow\cdots,
 \]
 
-训练样本不能完全打乱成独立单步。Rollout Buffer 必须保存：
+但前期序列 PPO 实验稳定性和效果较差，因此 A6 主路线暂不跨物理步反向传播。每个
+样本保存更新前的 (z_t)，并把它视为停止梯度的控制器状态；当前步重新计算：
 
-- 连续时间片段起点的 \(A,z,u\) 状态；
-- 上一拍实测速度；
-- 邻车 global-ID、有效边 mask 和 reset mask；
+\[
+\Delta y_t^{RL}\rightarrow y_t^F\rightarrow z_{t+1}
+\rightarrow\Delta\mu_{op,t}\rightarrow\log\pi_t.
+\]
+
+动作均值必须使用当前新计算的 (z_{t+1})。如果使用更新前的 (z_t)，当前
+\(\Delta y_t^{RL}\) 不影响当前动作，单步 PPO 将无法为 `YCorrectionNet` 提供策略梯度。
+
+普通 Rollout Buffer 保存：
+
+- 当前步的14维局部车辆对特征；
+- 更新前的 \(z_t\)、注意力 \(A_t\)、有效边 mask 和 reset mask；
 - 启发式 \(y^H\)、融合 \(y^F\) 与 \(\Delta y^{RL}\)；
 - 名义动作、执行动作、旧策略 log-prob；
 - episode 和单车重置边界。
 
-更新时从片段初始状态重放 AVOCADO 递推，片段起点状态停止梯度，片段内部采用截断
-时间反向传播。环境、自行车动力学与 OCA 求解器无需可微。
+样本可按普通 PPO minibatch 随机打乱。该方案忽略修正对更远期意见状态的时间梯度，
+但保留当前步的可微因果链，优先验证修正学习本身。序列 PPO 只保留为后续可选消融，
+不再是 A6 的前置条件。环境、自行车动力学与 OCA 求解器仍无需可微。
 
 ## 8. 分阶段、每步可验收的实施路线
 
@@ -395,8 +408,11 @@ q
 
 ### A6：只训练有界 \(\Delta y\)
 
+实现状态：已完成单步截断PPO、显式Base checkpoint绑定、训练/评估入口、断点恢复和
+审计指标；当前只通过短pilot，不能据此宣称性能优于A5。
+
 冻结 Base Actor、AVOCADO 参数、残差方向与安全层，仅训练 `YCorrectionNet`；Critic 可
-独立更新以提供优势估计。
+独立更新以提供优势估计。采用第7节的单步截断 PPO，不进行跨步 BPTT。
 
 验收：
 
