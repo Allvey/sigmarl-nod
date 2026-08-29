@@ -76,6 +76,12 @@ class AVOCADOController:
             matrix_shape, torch.inf, device=self.device
         )
         self.last_estimated_opinion = torch.zeros(matrix_shape, device=self.device)
+        self.last_estimate_correction = torch.zeros(
+            matrix_shape, device=self.device
+        )
+        self.last_fused_estimated_opinion = torch.zeros(
+            matrix_shape, device=self.device
+        )
         initial_cooperation = (parameters.initial_opinion + 1.0) / 2.0
         self.last_cooperation = torch.full(
             matrix_shape,
@@ -112,6 +118,8 @@ class AVOCADOController:
         self.last_neighbor_mask.zero_()
         self.last_time_to_collision.fill_(torch.inf)
         self.last_estimated_opinion.zero_()
+        self.last_estimate_correction.zero_()
+        self.last_fused_estimated_opinion.zero_()
         initial_cooperation = (self.parameters.initial_opinion + 1.0) / 2.0
         self.last_cooperation.fill_(min(max(initial_cooperation, 0.0), 1.0))
         self.last_infeasible.zero_()
@@ -138,6 +146,8 @@ class AVOCADOController:
         self.last_neighbor_mask[pair_mask] = False
         self.last_time_to_collision[pair_mask] = torch.inf
         self.last_estimated_opinion[pair_mask] = 0.0
+        self.last_estimate_correction[pair_mask] = 0.0
+        self.last_fused_estimated_opinion[pair_mask] = 0.0
         self.last_cooperation[pair_mask] = initial_cooperation
         self.previous_observed_velocity[reset_mask] = 0.0
         self.last_infeasible[reset_mask] = False
@@ -157,6 +167,7 @@ class AVOCADOController:
         active_environment_mask: Optional[Tensor] = None,
         additional_half_plane_normals: Optional[Tensor] = None,
         additional_half_plane_offsets: Optional[Tensor] = None,
+        estimated_opinion_correction: Optional[Tensor] = None,
     ) -> Tensor:
         """Update all pair states and return directly executable 2-D velocities."""
 
@@ -206,6 +217,22 @@ class AVOCADOController:
             additional_half_plane_offsets = additional_half_plane_offsets.to(
                 self.device
             )
+        if estimated_opinion_correction is not None:
+            expected_correction = (
+                self.batch_size,
+                self.entity_count,
+                self.entity_count,
+            )
+            if estimated_opinion_correction.shape != expected_correction:
+                raise ValueError(
+                    "estimated_opinion_correction must have shape "
+                    f"{expected_correction}."
+                )
+            if not bool(torch.isfinite(estimated_opinion_correction).all()):
+                raise ValueError("estimated_opinion_correction must be finite.")
+            estimated_opinion_correction = estimated_opinion_correction.to(
+                self.device
+            )
 
         positions = positions.to(self.device)
         measured_velocities = measured_velocities.to(self.device)
@@ -224,6 +251,8 @@ class AVOCADOController:
         self.last_neighbor_mask.copy_(neighbor_mask)
         self.last_time_to_collision.fill_(torch.inf)
         self.last_estimated_opinion.zero_()
+        self.last_estimate_correction.zero_()
+        self.last_fused_estimated_opinion.zero_()
         self.last_infeasible.zero_()
         self.last_active_vo_count.zero_()
         self.last_constraint_count.zero_()
@@ -293,10 +322,22 @@ class AVOCADOController:
                         self.parameters.epsilon,
                     )
                     self.last_estimated_opinion[batch, robot, agent] = estimated
+                    correction = (
+                        estimated_opinion_correction[batch, robot, agent]
+                        if estimated_opinion_correction is not None
+                        else torch.zeros_like(estimated)
+                    )
+                    fused_estimated = (estimated + correction).clamp(-1.0, 1.0)
+                    self.last_estimate_correction[
+                        batch, robot, agent
+                    ] = correction
+                    self.last_fused_estimated_opinion[
+                        batch, robot, agent
+                    ] = fused_estimated
                     new_opinion = opinion_euler_step(
                         self.opinion[batch, robot, agent],
                         new_attention,
-                        estimated,
+                        fused_estimated,
                         dt=self.parameters.dt,
                         decay=self.parameters.opinion_decay,
                         self_weight=self.parameters.opinion_self_weight,

@@ -8,7 +8,7 @@ import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -171,7 +171,7 @@ def _set_live_diagnostics(
     nominal = diagnostic.nominal_action[0, 0]
     executed = diagnostic.executed_action[0, 0]
     lines = [
-        "stage: A4 MARL nominal + fixed AVOCADO",
+        f"stage: {bridge.stage_label}",
         f"step: {step}",
         f"MARL nominal: {float(nominal[0]):.2f} m/s, "
         f"{math.degrees(float(nominal[1])):.1f} deg",
@@ -197,6 +197,22 @@ def _set_live_diagnostics(
                 f"joint infeasible: {int(controller.last_infeasible[0].sum())}",
             )
         )
+        if bridge.last is not None and bridge.last.estimate_correction is not None:
+            fusion_error = float(
+                (
+                    bridge.last.fused_estimate
+                    - bridge.last.heuristic_estimate
+                )
+                .abs()
+                .max()
+            )
+            lines.extend(
+                (
+                    "max |Delta y|: "
+                    f"{float(bridge.last.estimate_correction.abs().max()):.4f}",
+                    f"max |yF-yH|: {fusion_error:.4f}",
+                )
+            )
     if diagnostic.shield_result is not None:
         lines.append(
             "TTC shield interventions: "
@@ -216,6 +232,9 @@ def run_a4_rollout(
     episodes_override: Optional[int] = None,
     max_steps_override: Optional[int] = None,
     render_live: bool = False,
+    bridge_factory: Optional[
+        Callable[[torch.nn.Module, A3ScenarioRoadTraffic, A3RoadExperimentConfig], A4ActionBridge]
+    ] = None,
 ) -> A4RolloutMetrics:
     if planner not in A4_SUPPORTED_PLANNERS:
         raise ValueError(f"Unsupported A4 planner: {planner}")
@@ -255,22 +274,27 @@ def run_a4_rollout(
         raise NotImplementedError(
             "A4 currently supports the standard Base-MAPPO actor, not prioritized AP."
         )
-    bridge = A4ActionBridge(
-        policy,
-        scenario,
-        a3_config,
-        use_avocado=planner == "base_mappo_avocado",
-        deterministic=config.base_policy.deterministic,
-        velocity_continuity_weight=(
-            config.coupling.velocity_continuity_weight
-        ),
-        speed_intervention_tolerance_mps=(
-            config.diagnostics.speed_intervention_tolerance_mps
-        ),
-        steering_intervention_tolerance_degrees=(
-            config.diagnostics.steering_intervention_tolerance_degrees
-        ),
-    )
+    if bridge_factory is None:
+        bridge = A4ActionBridge(
+            policy,
+            scenario,
+            a3_config,
+            use_avocado=planner == "base_mappo_avocado",
+            deterministic=config.base_policy.deterministic,
+            velocity_continuity_weight=(
+                config.coupling.velocity_continuity_weight
+            ),
+            speed_intervention_tolerance_mps=(
+                config.diagnostics.speed_intervention_tolerance_mps
+            ),
+            steering_intervention_tolerance_degrees=(
+                config.diagnostics.steering_intervention_tolerance_degrees
+            ),
+        )
+    else:
+        if planner != "base_mappo_avocado":
+            raise ValueError("A custom bridge requires base_mappo_avocado planner.")
+        bridge = bridge_factory(policy, scenario, a3_config)
 
     agent_collisions = 0
     lane_collisions = 0

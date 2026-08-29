@@ -38,6 +38,22 @@ class A4StepDiagnostics:
     conflict_mask: Tensor
     intervention_mask: Tensor
     shield_result: Optional[TTCSafetyShieldResult]
+    heuristic_estimate: Optional[Tensor]
+    estimate_correction: Optional[Tensor]
+    fused_estimate: Optional[Tensor]
+    opinion: Optional[Tensor]
+
+
+@dataclass(frozen=True)
+class A4BridgeTrace:
+    nominal_action: Tensor
+    executed_action: Tensor
+    heuristic_estimate: Tensor
+    estimate_correction: Tensor
+    fused_estimate: Tensor
+    opinion: Tensor
+    attention: Tensor
+    pair_mask: Tensor
 
 
 @dataclass(frozen=True)
@@ -86,6 +102,7 @@ class A4ActionBridge:
     """
 
     action_key = ("agents", "action")
+    stage_label = "A4 MARL nominal + fixed AVOCADO"
 
     def __init__(
         self,
@@ -162,6 +179,12 @@ class A4ActionBridge:
         self._conflict_masks = []
         self._intervention_masks = []
         self._shield_masks = []
+        self._heuristic_estimates = []
+        self._estimate_corrections = []
+        self._fused_estimates = []
+        self._opinions = []
+        self._attentions = []
+        self._pair_masks = []
         self._infeasible_count = 0
         self._projection_count = 0
         self._maximum_attention = 0.0
@@ -178,6 +201,16 @@ class A4ActionBridge:
             [agent.state.rot for agent in self.scenario.world.agents], dim=1
         )
         return positions, velocities, yaws
+
+    def opinion_estimate_correction(
+        self,
+        positions: Tensor,
+        velocities: Tensor,
+        yaws: Tensor,
+    ) -> Optional[Tensor]:
+        """Optional A5+ hook; A4 preserves the heuristic estimate exactly."""
+
+        return None
 
     @torch.no_grad()
     def __call__(self, tensordict):
@@ -234,12 +267,16 @@ class A4ActionBridge:
                 velocities,
                 self.velocity_continuity_weight,
             )
+            estimate_correction = self.opinion_estimate_correction(
+                positions, velocities, yaws
+            )
             safe_velocity = self.controller.step(
                 positions,
                 velocities,
                 optimization_velocity,
                 additional_half_plane_normals=path_normals,
                 additional_half_plane_offsets=path_offsets,
+                estimated_opinion_correction=estimate_correction,
             )
             bicycle_result = vector_velocity_to_bicycle_action(
                 safe_velocity, yaws, self.adapter
@@ -296,12 +333,49 @@ class A4ActionBridge:
             conflict_mask=conflict_mask.detach().clone(),
             intervention_mask=intervention_mask.detach().clone(),
             shield_result=shield_result,
+            heuristic_estimate=(
+                self.controller.last_estimated_opinion.detach().clone()
+                if self.controller is not None
+                else None
+            ),
+            estimate_correction=(
+                self.controller.last_estimate_correction.detach().clone()
+                if self.controller is not None
+                else None
+            ),
+            fused_estimate=(
+                self.controller.last_fused_estimated_opinion.detach().clone()
+                if self.controller is not None
+                else None
+            ),
+            opinion=(
+                self.controller.opinion.detach().clone()
+                if self.controller is not None
+                else None
+            ),
         )
         self._nominal_actions.append(nominal_action.cpu())
         self._executed_actions.append(executed_action.detach().cpu())
         self._conflict_masks.append(conflict_mask.cpu())
         self._intervention_masks.append(intervention_mask.cpu())
         self._shield_masks.append(shield_mask.cpu())
+        if self.controller is not None:
+            self._heuristic_estimates.append(
+                self.controller.last_estimated_opinion.detach().cpu().clone()
+            )
+            self._estimate_corrections.append(
+                self.controller.last_estimate_correction.detach().cpu().clone()
+            )
+            self._fused_estimates.append(
+                self.controller.last_fused_estimated_opinion.detach().cpu().clone()
+            )
+            self._opinions.append(self.controller.opinion.detach().cpu().clone())
+            self._attentions.append(
+                self.controller.attention.detach().cpu().clone()
+            )
+            self._pair_masks.append(
+                self.controller.last_neighbor_mask.detach().cpu().clone()
+            )
         return tensordict
 
     def reset_agents(self, reset_mask: Tensor) -> None:
@@ -355,4 +429,18 @@ class A4ActionBridge:
                 self._infeasible_count / max(self._projection_count, 1)
             ),
             nonfinite_action_count=self._nonfinite_count,
+        )
+
+    def trace(self) -> A4BridgeTrace:
+        if not self._nominal_actions or not self._heuristic_estimates:
+            raise RuntimeError("An AVOCADO bridge rollout is required for a trace.")
+        return A4BridgeTrace(
+            nominal_action=torch.stack(self._nominal_actions),
+            executed_action=torch.stack(self._executed_actions),
+            heuristic_estimate=torch.stack(self._heuristic_estimates),
+            estimate_correction=torch.stack(self._estimate_corrections),
+            fused_estimate=torch.stack(self._fused_estimates),
+            opinion=torch.stack(self._opinions),
+            attention=torch.stack(self._attentions),
+            pair_mask=torch.stack(self._pair_masks),
         )

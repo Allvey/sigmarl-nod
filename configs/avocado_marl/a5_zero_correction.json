@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "method": "avocado_marl",
+  "stage": "a5",
+  "a4_config": "configs/avocado_marl/a4_base_avocado.json",
+  "output_root": "outputs/avocado_marl/a5_zero_correction",
+  "y_correction": {
+    "feature_dim": 14,
+    "hidden_sizes": [64, 64],
+    "maximum_correction": 0.1,
+    "temperature": 1.0,
+    "candidate_count": 2,
+    "strict_zero": true,
+    "freeze": true
+  }
+}

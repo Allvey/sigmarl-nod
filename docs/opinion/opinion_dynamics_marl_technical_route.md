@@ -2,15 +2,15 @@
 
 > 文档角色：后续 AVOCADO-MARL 方法的最高级理论真源
 > 当前基线：A0-A2 严格全向 AVOCADO；A3.4 AVOCADO-KB 道路确定性基线；
-> A4 Base-MAPPO 与固定 AVOCADO 动作级耦合
+> A4 Base-MAPPO 与固定 AVOCADO 动作级耦合；A5 零修正网络等价接口
 > 目标方法：保留 AVOCADO 的注意力、合作估计和非线性意见动力学，仅由 MARL 学习
 > 启发式合作估计 \(y^H\) 的有界修正 \(\Delta y^{RL}\)
-> 对齐日期：2026-08-28
+> 对齐日期：2026-08-29
 
 ## 0. 当前实现与后续目标的边界
 
-A0-A2、A3.4和A4已完成。前三者继续作为不可混淆的无学习基线，A4作为动作级耦合
-基线：
+A0-A2、A3.4、A4和A5已完成。前三者继续作为不可混淆的无学习基线，A4作为动作级
+耦合基线，A5作为零修正接口基线：
 
 - A0-A2 使用圆盘单积分器和二维速度动作，验证 AVOCADO 官方几何与意见递推；
 - A3.4 将其接入 SigmaRL `road_traffic`、RK4 自行车动力学、道路速度锥、互补责任、
@@ -18,20 +18,23 @@ A0-A2、A3.4和A4已完成。前三者继续作为不可混淆的无学习基线
 - A3.4 不使用 MAPPO、EvidenceNet 或任何学习参数。
 - A4由冻结的Base-MAPPO输出名义自行车动作，固定A3安全链输出执行动作；仍然没有
   `YCorrectionNet`，且 \(\Delta y^{RL}=0\)。
+- A5加入冻结的严格零输出 `YCorrectionNet` 和融合接口；完整闭环严格退化为A4，
+  AVOCADO内部的估计与非线性递推严格退化为A3。
 
 现有 M2-M9 Opinion-MARL 代码实现了另一条历史原型：网络输出加性证据 `b`，再进入
 重新设计的 OpinionDynamics。该代码和对应文档保留用于复现及消融，但它不再是后续
 AVOCADO-MARL 的目标理论路线。新路线不得把原 AVOCADO 的固定偏置 \(b\) 重新命名为
 学习证据。
 
-新路线的零修正条件必须精确退化为 A3：
+新路线的零修正条件必须使完整闭环精确退化为A4，并使AVOCADO子模块精确退化为A3：
 
 \[
 \Delta y^{RL}=0
 \quad\Longrightarrow\quad
 y^{F}=y^{H}
 \quad\Longrightarrow\quad
-\text{原 AVOCADO 意见递推不变}.
+\text{原 AVOCADO 意见递推不变},\qquad
+\text{A5执行动作}=\text{A4执行动作}.
 \]
 
 ## 1. 方法目标与模块分工
@@ -377,13 +380,17 @@ q
 
 ### A5：零修正网络等价性
 
+实现状态：已于2026-08-29完成。配置、实时入口和逐步等价验证分别位于
+`configs/avocado_marl/a5_zero_correction.json`、`main_testing_avocado_marl_a5.py` 和
+`utilities/avocado_marl/`。
+
 加入 `YCorrectionNet`、融合器和序列状态接口，但冻结网络并令输出严格为零。
 
 验收：
 
 - A5 与 A4 在同 seed 下逐步满足
   \(y^F=y^H\)、\(z_{A5}=z_{A4}\)、执行动作一致；
-- 网络参数不更新，训练入口和测试入口均能完整运行；
+- 网络参数冻结，测试与诊断入口能完整运行；
 - 保存完整的 \(A,y^H,\Delta y,y^F,z\) 诊断序列。
 
 ### A6：只训练有界 \(\Delta y\)
