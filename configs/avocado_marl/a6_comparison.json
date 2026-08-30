@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "method": "avocado_marl",
+  "stage": "a6_comparison",
+  "a6_config": "configs/avocado_marl/a6_y_correction.json",
+  "output_root": "outputs/avocado_marl/a6_comparison",
+  "evaluation": {
+    "scenarios": ["CPM_mixed", "intersection_2"],
+    "environment_seeds": [0, 1, 2, 3, 4],
+    "parallel_environments": 4,
+    "max_steps": 600,
+    "stop_speed_threshold_mps": 0.05,
+    "steering_reversal_threshold_degrees": 1.0,
+    "ttc_bins_seconds": [0.0, 0.6, 1.2, 2.5]
+  }
+}

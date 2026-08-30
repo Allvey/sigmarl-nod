@@ -64,6 +64,7 @@ class A5ActionBridge(A4ActionBridge):
         self.y_correction_net.eval()
         self.last_correction_features: Optional[YCorrectionFeatures] = None
         self.last_correction_output: Optional[YCorrectionOutput] = None
+        self._correction_features = []
 
     def opinion_estimate_correction(
         self,
@@ -87,7 +88,13 @@ class A5ActionBridge(A4ActionBridge):
         )
         self.last_correction_features = features
         self.last_correction_output = output
+        self._correction_features.append(features.values.detach().cpu().clone())
         return output.correction
+
+    def correction_feature_trace(self) -> Tensor:
+        if not self._correction_features:
+            raise RuntimeError("No A5 correction features have been evaluated.")
+        return torch.stack(self._correction_features)
 
     @torch.no_grad()
     def __call__(self, tensordict):

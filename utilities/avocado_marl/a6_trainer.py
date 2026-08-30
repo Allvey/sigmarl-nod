@@ -8,7 +8,7 @@ import json
 import math
 import random
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -137,6 +137,7 @@ class A6OneStepTrainer:
         environment_steps_override: Optional[int] = None,
         parallel_environments_override: Optional[int] = None,
         scenario_type_override: Optional[str] = None,
+        seed_override: Optional[int] = None,
         load_critic: bool = True,
         render_live: bool = False,
     ) -> None:
@@ -148,6 +149,13 @@ class A6OneStepTrainer:
         self.a4_config = A4ExperimentConfig.from_json(self.a5_config.a4_config)
         self.a3_config = A3RoadExperimentConfig.from_json(self.a4_config.a3_config)
         training = config.training
+        seed = training.seed if seed_override is None else seed_override
+        if type(seed) is not int or seed < 0:
+            raise ValueError("seed_override must be a non-negative integer.")
+        self.a3_config = replace(
+            self.a3_config,
+            simulation=replace(self.a3_config.simulation, seed=seed),
+        )
         scenario_type = (
             training.scenario_type
             if scenario_type_override is None
@@ -188,15 +196,15 @@ class A6OneStepTrainer:
             environment_steps,
             render_live=render_live,
         )
-        parameters.seed = training.seed
+        parameters.seed = seed
         parameters.frames_per_batch = parallel_environments * environment_steps
         parameters.num_vmas_envs = parallel_environments
         parameters.max_steps = environment_steps
         if render_live:
             parameters.render_title = f"A6 MARL--AVOCADO | {scenario_type}"
-        random.seed(training.seed)
-        np.random.seed(training.seed)
-        torch.manual_seed(training.seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
         self.scenario = A3ScenarioRoadTraffic()
         self.env, base_policy, priority, self.parameters = mappo_cavs(

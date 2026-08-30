@@ -40,6 +40,8 @@ class A5RolloutDiagnostics:
 class A5RolloutResult:
     metrics: A4RolloutMetrics
     diagnostics: A5RolloutDiagnostics
+    trace: A4BridgeTrace
+    correction_features: Tensor
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,7 @@ def run_a5_rollout(
     checkpoint: Optional[Path] = None,
     episodes_override: Optional[int] = None,
     max_steps_override: Optional[int] = None,
+    seed_override: Optional[int] = None,
     render_live: bool = False,
 ) -> A5RolloutResult:
     a4_config = A4ExperimentConfig.from_json(config.a4_config)
@@ -174,12 +177,19 @@ def run_a5_rollout(
         checkpoint=checkpoint,
         episodes_override=episodes_override,
         max_steps_override=max_steps_override,
+        seed_override=seed_override,
         render_live=render_live,
         bridge_factory=_a5_bridge_factory(a4_config, config, captured),
     )
     if len(captured) != 1:
         raise RuntimeError("A5 bridge factory did not capture exactly one bridge.")
-    return A5RolloutResult(metrics, _a5_diagnostics(captured[0]))
+    bridge = captured[0]
+    return A5RolloutResult(
+        metrics,
+        _a5_diagnostics(bridge),
+        bridge.trace(),
+        bridge.correction_feature_trace(),
+    )
 
 
 def _maximum_difference(first: Tensor, second: Tensor) -> float:

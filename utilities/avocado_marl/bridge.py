@@ -47,7 +47,12 @@ class A4StepDiagnostics:
 @dataclass(frozen=True)
 class A4BridgeTrace:
     nominal_action: Tensor
+    pre_shield_action: Tensor
     executed_action: Tensor
+    conflict_mask: Tensor
+    intervention_mask: Tensor
+    shield_mask: Tensor
+    reset_mask: Tensor
     heuristic_estimate: Tensor
     estimate_correction: Tensor
     fused_estimate: Tensor
@@ -175,10 +180,12 @@ class A4ActionBridge:
         )
         self.last: Optional[A4StepDiagnostics] = None
         self._nominal_actions = []
+        self._pre_shield_actions = []
         self._executed_actions = []
         self._conflict_masks = []
         self._intervention_masks = []
         self._shield_masks = []
+        self._reset_masks = []
         self._heuristic_estimates = []
         self._estimate_corrections = []
         self._fused_estimates = []
@@ -355,6 +362,7 @@ class A4ActionBridge:
             ),
         )
         self._nominal_actions.append(nominal_action.cpu())
+        self._pre_shield_actions.append(pre_shield_action.detach().cpu())
         self._executed_actions.append(executed_action.detach().cpu())
         self._conflict_masks.append(conflict_mask.cpu())
         self._intervention_masks.append(intervention_mask.cpu())
@@ -379,6 +387,7 @@ class A4ActionBridge:
         return tensordict
 
     def reset_agents(self, reset_mask: Tensor) -> None:
+        self._reset_masks.append(reset_mask.detach().cpu().clone())
         if self.controller is not None and bool(reset_mask.any()):
             self.controller.reset_agents(reset_mask)
 
@@ -436,7 +445,12 @@ class A4ActionBridge:
             raise RuntimeError("An AVOCADO bridge rollout is required for a trace.")
         return A4BridgeTrace(
             nominal_action=torch.stack(self._nominal_actions),
+            pre_shield_action=torch.stack(self._pre_shield_actions),
             executed_action=torch.stack(self._executed_actions),
+            conflict_mask=torch.stack(self._conflict_masks),
+            intervention_mask=torch.stack(self._intervention_masks),
+            shield_mask=torch.stack(self._shield_masks),
+            reset_mask=torch.stack(self._reset_masks),
             heuristic_estimate=torch.stack(self._heuristic_estimates),
             estimate_correction=torch.stack(self._estimate_corrections),
             fused_estimate=torch.stack(self._fused_estimates),

@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import asdict, dataclass
+import random
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 from torch import Tensor
 from torchrl.envs.utils import step_mdp
@@ -42,6 +44,8 @@ class A4RolloutMetrics:
     episodes: int
     executed_steps: int
     checkpoint: str
+    seed: int
+    mean_reward_per_agent_step: float
     agent_collision_events_per_1000_steps: float
     lane_collision_events_per_1000_steps: float
     wrong_entry_events_per_1000_steps: float
@@ -231,6 +235,7 @@ def run_a4_rollout(
     checkpoint: Optional[Path] = None,
     episodes_override: Optional[int] = None,
     max_steps_override: Optional[int] = None,
+    seed_override: Optional[int] = None,
     render_live: bool = False,
     bridge_factory: Optional[
         Callable[[torch.nn.Module, A3ScenarioRoadTraffic, A3RoadExperimentConfig], A4ActionBridge]
@@ -239,6 +244,13 @@ def run_a4_rollout(
     if planner not in A4_SUPPORTED_PLANNERS:
         raise ValueError(f"Unsupported A4 planner: {planner}")
     a3_config = A3RoadExperimentConfig.from_json(config.a3_config)
+    if seed_override is not None:
+        if type(seed_override) is not int or seed_override < 0:
+            raise ValueError("seed_override must be a non-negative integer.")
+        a3_config = replace(
+            a3_config,
+            simulation=replace(a3_config.simulation, seed=seed_override),
+        )
     episodes = (
         a3_config.simulation.episodes
         if episodes_override is None
@@ -264,6 +276,9 @@ def run_a4_rollout(
         max_steps,
         render_live=render_live,
     )
+    random.seed(a3_config.simulation.seed)
+    np.random.seed(a3_config.simulation.seed)
+    torch.manual_seed(a3_config.simulation.seed)
     scenario = A3ScenarioRoadTraffic()
     env, policy, priority_module, _ = mappo_cavs(
         parameters=parameters,
@@ -302,11 +317,15 @@ def run_a4_rollout(
     route_completions = 0
     reference_values = []
     measured_speed_sum = 0.0
+    reward_sum = 0.0
     action_samples = 0
     tensordict = env.reset()
     for step in range(max_steps):
         tensordict = bridge(tensordict)
         step_tensordict = env.step(tensordict)
+        reward_sum += float(
+            step_tensordict.get(("next", "agents", "reward")).sum()
+        )
         reset_mask = _reset_mask(scenario)
         agent_collisions += int(scenario.a3_last_agent_collisions.sum())
         lane_collisions += int(scenario.a3_last_lane_collisions.sum())
@@ -346,6 +365,8 @@ def run_a4_rollout(
         episodes=episodes,
         executed_steps=max_steps,
         checkpoint=str(selected_checkpoint),
+        seed=a3_config.simulation.seed,
+        mean_reward_per_agent_step=reward_sum / max(action_samples, 1),
         agent_collision_events_per_1000_steps=agent_collisions * scale,
         lane_collision_events_per_1000_steps=lane_collisions * scale,
         wrong_entry_events_per_1000_steps=wrong_entries * scale,
