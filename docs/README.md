@@ -6,24 +6,25 @@ MARL 方法与旧 TSC 实现明确分开。
 ## 新 Session 的阅读顺序
 
 1. [`opinion/opinion_dynamics_marl_technical_route.md`](opinion/opinion_dynamics_marl_technical_route.md)
-2. [`opinion/AVOCADO_A0_A2_STRICT_BASELINE.md`](opinion/AVOCADO_A0_A2_STRICT_BASELINE.md)
-3. [`opinion/AVOCADO_A3_ROAD_ENVIRONMENT.md`](opinion/AVOCADO_A3_ROAD_ENVIRONMENT.md)
-4. [`opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md`](opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md)
-5. [`opinion/OPINION_MARL_NETWORK_ARCHITECTURE.md`](opinion/OPINION_MARL_NETWORK_ARCHITECTURE.md)
-6. [`opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](opinion/M2_CONFIG_AND_ENTRYPOINTS.md)
-7. [`opinion/M3_MATH_MODULES.md`](opinion/M3_MATH_MODULES.md)
-8. [`opinion/M4_CONFLICT_GRAPH.md`](opinion/M4_CONFLICT_GRAPH.md)
-9. [`opinion/M5_POLICY_BRIDGE.md`](opinion/M5_POLICY_BRIDGE.md)
-10. [`opinion/M6_STATEFUL_OPINION.md`](opinion/M6_STATEFUL_OPINION.md)
-11. [`opinion/M7_SEQUENCE_BUFFER.md`](opinion/M7_SEQUENCE_BUFFER.md)
-12. [`opinion/M8_SEQUENCE_PPO.md`](opinion/M8_SEQUENCE_PPO.md)
-13. [`opinion/M9_TRAINER_AND_CHECKPOINT.md`](opinion/M9_TRAINER_AND_CHECKPOINT.md)
-14. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
-15. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
-16. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
-17. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
-18. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
-19. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
+2. [`opinion/AVOCADO_A6_ACTION.md`](opinion/AVOCADO_A6_ACTION.md)
+3. [`opinion/AVOCADO_A0_A2_STRICT_BASELINE.md`](opinion/AVOCADO_A0_A2_STRICT_BASELINE.md)
+4. [`opinion/AVOCADO_A3_ROAD_ENVIRONMENT.md`](opinion/AVOCADO_A3_ROAD_ENVIRONMENT.md)
+5. [`opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md`](opinion/OPINION_MARL_IMPLEMENTATION_GUIDE.md)
+6. [`opinion/OPINION_MARL_NETWORK_ARCHITECTURE.md`](opinion/OPINION_MARL_NETWORK_ARCHITECTURE.md)
+7. [`opinion/M2_CONFIG_AND_ENTRYPOINTS.md`](opinion/M2_CONFIG_AND_ENTRYPOINTS.md)
+8. [`opinion/M3_MATH_MODULES.md`](opinion/M3_MATH_MODULES.md)
+9. [`opinion/M4_CONFLICT_GRAPH.md`](opinion/M4_CONFLICT_GRAPH.md)
+10. [`opinion/M5_POLICY_BRIDGE.md`](opinion/M5_POLICY_BRIDGE.md)
+11. [`opinion/M6_STATEFUL_OPINION.md`](opinion/M6_STATEFUL_OPINION.md)
+12. [`opinion/M7_SEQUENCE_BUFFER.md`](opinion/M7_SEQUENCE_BUFFER.md)
+13. [`opinion/M8_SEQUENCE_PPO.md`](opinion/M8_SEQUENCE_PPO.md)
+14. [`opinion/M9_TRAINER_AND_CHECKPOINT.md`](opinion/M9_TRAINER_AND_CHECKPOINT.md)
+15. [`sigmarl_1_2_0/CODEBASE_AUDIT.md`](sigmarl_1_2_0/CODEBASE_AUDIT.md)
+16. [`sigmarl_1_2_0/R0_USAGE.md`](sigmarl_1_2_0/R0_USAGE.md)
+17. [`sigmarl_1_2_0/R1_BASE_ARTIFACTS.md`](sigmarl_1_2_0/R1_BASE_ARTIFACTS.md)
+18. [`sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md`](sigmarl_1_2_0/RL_ENVIRONMENT_DESIGN.md)
+19. [`sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md`](sigmarl_1_2_0/OBSERVATION_SPACE_DETAILS.md)
+20. [`sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md`](sigmarl_1_2_0/NETWORK_STRUCTURE_DETAILS.md)
 
 ## 目录职责
 
@@ -32,6 +33,7 @@ docs/
 ├── README.md
 ├── opinion/
 │   ├── opinion_dynamics_marl_technical_route.md
+│   ├── AVOCADO_A6_ACTION.md
 │   ├── AVOCADO_A0_A2_STRICT_BASELINE.md
 │   ├── AVOCADO_A3_ROAD_ENVIRONMENT.md
 │   ├── OPINION_MARL_IMPLEMENTATION_GUIDE.md

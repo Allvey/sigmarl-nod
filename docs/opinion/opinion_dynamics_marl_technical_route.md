@@ -1,17 +1,19 @@
 # AVOCADO 与 MARL：学习邻车合作估计的有界修正
 
-> 文档角色：后续 AVOCADO-MARL 方法的最高级理论真源
+> 文档角色：A6-Y 理论与实施记录；当前 A6-Action 以其独立规范文档为准
 > 当前基线：A0-A2 严格全向 AVOCADO；A3.4 AVOCADO-KB 道路确定性基线；
 > A4 Base-MAPPO 与固定 AVOCADO 动作级耦合；A5 零修正网络等价接口；
-> A6 冻结 Base Actor 的单步截断 PPO 修正学习
-> 目标方法：保留 AVOCADO 的注意力、合作估计和非线性意见动力学，仅由 MARL 学习
-> 启发式合作估计 \(y^H\) 的有界修正 \(\Delta y^{RL}\)
-> 对齐日期：2026-08-29
+> A6-Y 冻结 Base Actor 的单步截断 PPO 意见修正学习
+> 策略迁移：A6-Y 的实测行为仍接近 A5，因此从 2026-08-30 起首先推进 A6-Action，
+> 由 RL 直接修正首选动作，AVOCADO 退回固定安全投影角色。A6-Action 的规范见
+> `docs/opinion/AVOCADO_A6_ACTION.md`；本文其余章节保留 A6-Y 的理论与实验记录。
+> 对齐日期：2026-08-30
 
 ## 0. 当前实现与后续目标的边界
 
-A0-A2、A3.4、A4和A5已完成；A6单步训练链、pilot验证及A5/A6单checkpoint多环境
-seed配对评估工具已完成，正式多训练seed性能实验尚未执行。前三者继续作为不可混淆的
+A0-A2、A3.4、A4和A5已完成；A6-Y单步训练链、pilot验证及A5/A6-Y单checkpoint多环境
+seed配对评估工具已完成。A6-Action 第一阶段的策略、训练、checkpoint、评估和严格
+A5 等价验证已完成，正式多训练seed性能实验尚未执行。前三者继续作为不可混淆的
 无学习基线，A4作为动作级耦合基线，A5作为零修正接口基线：
 
 - A0-A2 使用圆盘单积分器和二维速度动作，验证 AVOCADO 官方几何与意见递推；
@@ -421,6 +423,24 @@ q
 - 修正网络不读取 \(z\)，梯度只能来自 PPO Actor loss；
 - 同预算、多训练 seed 比较 A5 与 A6，报告安全、效率和平滑性；
 - 不能只报告最终奖励，必须报告修正幅值、饱和率、符号切换率以及冲突窗口指标。
+
+### A6-Action：直接学习首选动作
+
+实现状态：第一阶段已于 2026-08-30 完成。详细语义、阶段合同、入口和验收命令见
+`docs/opinion/AVOCADO_A6_ACTION.md`。
+
+A6-Action 不再学习 \(\Delta y\)。冻结 Base Actor 和完整 AVOCADO 安全链，只用交互网络
+学习 Base 动作分布的二维 loc 修正 \(\Delta\mu^A\)。这样 RL 的策略表达不再受
+AVOCADO 意见变量约束，而 AVOCADO 仍对实际执行动作施加道路/OCA/TTC 安全约束。
+
+第一阶段验收：
+
+- 动作头零初始化时，A6-Action 分布严格等于 Base Actor；
+- 同 seed 四步闭环中，A6-Action 与 A5 的名义动作、执行动作和全部 AVOCADO 状态差值
+  均为零；
+- PPO 梯度只进入交互动作网络，Base Actor 参数哈希不变；
+- pilot 后 loc 修正非零且未饱和，checkpoint 可确定性重载评估；
+- 尚未进行正式多 seed 比较，因此不能宣称性能优于 A5 或 A6-Y。
 
 ### A7：Actor、\(\Delta y\) 与 Critic 联合训练
 

@@ -11,6 +11,11 @@ from utilities.avocado_marl.a5_config import A5ExperimentConfig
 from utilities.avocado_marl.y_correction import YCorrectionNet
 from utilities.avocado_marl.a6_config import A6ExperimentConfig
 from utilities.avocado_marl.a6_policy import A6OneStepPolicy
+from utilities.avocado_marl.a6_action_config import A6ActionExperimentConfig
+from utilities.avocado_marl.a6_action_policy import (
+    A6ActionPolicy,
+    InteractionActionNet,
+)
 
 __all__ = [
     "A4ActionBridge",
@@ -22,4 +27,7 @@ __all__ = [
     "YCorrectionNet",
     "A6ExperimentConfig",
     "A6OneStepPolicy",
+    "A6ActionExperimentConfig",
+    "A6ActionPolicy",
+    "InteractionActionNet",
 ]

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "method": "avocado_marl",
+  "stage": "a6_action",
+  "a5_config": "configs/avocado_marl/a5_zero_correction.json",
+  "output_root": "outputs/avocado_marl/a6_action_pilot",
+  "base_policy": {
+    "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+    "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+    "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+  },
+  "action_policy": {
+    "feature_dim": 14,
+    "hidden_sizes": [64, 64],
+    "maximum_loc_correction": [2.0, 2.0],
+    "candidate_count": 2,
+    "zero_initialization": true,
+    "freeze": false
+  },
+  "training": {
+    "scenario_type": "CPM_mixed",
+    "n_agents": 4,
+    "seed": 0,
+    "iterations": 1,
+    "parallel_environments": 2,
+    "rollout_steps": 8,
+    "epochs": 1,
+    "minibatch_size": 8,
+    "action_learning_rate": 0.0003,
+    "critic_learning_rate": 0.0002,
+    "gamma": 0.99,
+    "gae_lambda": 0.9,
+    "clip_epsilon": 0.2,
+    "entropy_coefficient": 0.0001,
+    "action_regularization": 0.001,
+    "maximum_gradient_norm": 1.0
+  }
+}
