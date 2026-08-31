@@ -1,5 +1,15 @@
 # 项目文档导航
 
+## 当前 PSB-MARL 路线
+
+新的 Proximal Saturating Bifurcation MARL 使用根目录
+`proximal_saturating_bifurcation_marl_theory.md` 作为理论规范，并采用独立的
+`utilities/psb_marl/` 实现路径。阶段说明见：
+
+1. [`psb_marl/P0_BASE_PASSTHROUGH.md`](psb_marl/P0_BASE_PASSTHROUGH.md)
+
+旧 Opinion-MARL 与 AVOCADO-MARL 代码继续作为基线和消融，不定义 PSB 接口。
+
 本文档目录以 **SigmaRL 1.2.0 为唯一代码底座**，并将新的 Opinion Dynamics +
 MARL 方法与旧 TSC 实现明确分开。
 

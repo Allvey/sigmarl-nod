@@ -1,0 +1,12 @@
+{
+    "schema_version": 1,
+    "method": "psb_marl",
+    "stage": "p0_base_passthrough",
+    "base_config": "config.json",
+    "output_root": "outputs/psb_marl/p0_base_passthrough",
+    "base": {
+        "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+        "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+        "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+    }
+}

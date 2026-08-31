@@ -81,7 +81,11 @@ def initialize_run(
             "note": (
                 "R1 preserves the original SigmaRL 1.2.0 training path."
                 if method == "base_mappo"
-                else "Opinion-MARL performance validation is performed manually."
+                else (
+                    "PSB-MARL performance validation is performed manually."
+                    if method == "psb_marl"
+                    else "Opinion-MARL performance validation is performed manually."
+                )
             ),
         },
     )

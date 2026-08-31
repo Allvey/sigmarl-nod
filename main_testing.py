@@ -3,37 +3,27 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from __future__ import annotations
+
 import json
 import os
 import argparse
 from pathlib import Path
-from typing import Mapping, Optional
-
-from vmas.simulator.utils import save_video
+from typing import Mapping, Optional, Sequence
 
 from utilities.experiment_artifacts import (
     resolve_latest_testable_run,
     resolve_policy_checkpoint,
 )
-from utilities.helper_training import Parameters, SaveData
 from utilities.constants import SCENARIOS
-from utilities.mappo_cavs import mappo_cavs
 
 
 DEFAULT_CONFIG_FILE = Path("config.json")
 
-# Select the scenario used by main_testing.py.
-TEST_SCENARIO_TYPE = (
-    # "intersection_2"
-    # "roundabout_1"
-    # "CPM_entire"
-    # "CPM_mixed"
-    "on_ramp_1"
-    # roundabout_1, intersection_1/2/3, CPM_mixed
-)
 
+def _load_run_parameters(run_directory: Path):
+    from utilities.helper_training import Parameters, SaveData
 
-def _load_run_parameters(run_directory: Path) -> Parameters:
     resolved_config_path = run_directory / "config_resolved.json"
     if resolved_config_path.is_file():
         with resolved_config_path.open("r", encoding="utf-8") as file:
@@ -58,7 +48,23 @@ def test_base(
     opinion_visualization_config: Optional[Mapping[str, object]] = None,
     save_simulation_video: bool = False,
     scenario_type: Optional[str] = None,
-) -> None:
+    max_steps: int = 1200,
+    episodes: int = 1,
+    seed: Optional[int] = None,
+    render: bool = True,
+):
+    # Import simulator-heavy modules only for an actual rollout. This keeps
+    # config dispatch, --help, and P0 filesystem checks lightweight.
+    from utilities.mappo_cavs import mappo_cavs
+
+    if type(max_steps) is not int or max_steps <= 1:
+        raise ValueError("max_steps must be an integer greater than 1.")
+    if type(episodes) is not int or episodes <= 0:
+        raise ValueError("episodes must be a positive integer.")
+    if seed is not None and (type(seed) is not int or seed < 0):
+        raise ValueError("seed must be a non-negative integer.")
+    if render and episodes != 1:
+        raise ValueError("Live rendering requires exactly one environment.")
     if checkpoint_path is not None and run_directory is None:
         run_directory = checkpoint_path.expanduser().resolve().parent
     elif run_directory is None:
@@ -79,14 +85,16 @@ def test_base(
     parameters.where_to_save = str(run_directory) + os.sep
     parameters.artifact_logging_enabled = False
     parameters.is_testing_mode = True
-    parameters.is_real_time_rendering = True
+    parameters.is_real_time_rendering = bool(render)
     parameters.is_save_eval_results = False
     parameters.is_load_model = True
     parameters.is_load_final_model = True
     parameters.is_continue_train = False
     parameters.is_load_out_td = False
-    parameters.max_steps = 1200  # 1200 steps correspond to one minute at dt=0.05.
-    parameters.num_vmas_envs = 1
+    parameters.max_steps = max_steps
+    parameters.num_vmas_envs = episodes
+    if seed is not None:
+        parameters.seed = seed
 
     # Evaluate on the saved training scenario by default. Cross-scenario
     # evaluation will use an explicit M10 evaluation configuration.
@@ -116,47 +124,137 @@ def test_base(
             )
         return render_env.render(mode="rgb_array", visualize_when_rgb=True)
 
-    rollout_result = env.rollout(
-        max_steps=parameters.max_steps - 1,
-        policy=policy,
-        priority_module=priority_module,
-        callback=render_callback,
-        auto_cast_to_device=True,
-        break_when_any_done=False,
-        is_save_simulation_video=parameters.is_save_simulation_video,
+    callback = (
+        render_callback
+        if render or parameters.is_save_simulation_video
+        else None
     )
-    if parameters.is_save_simulation_video:
-        out_td, frame_list = rollout_result
-        video_path = run_directory / "video"
-        save_video(str(video_path), frame_list, fps=1 / parameters.dt)
-        print(f"[INFO] Saved simulation video: {video_path}.mp4")
-    else:
-        out_td = rollout_result
+    try:
+        rollout_result = env.rollout(
+            max_steps=parameters.max_steps - 1,
+            policy=policy,
+            priority_module=priority_module,
+            callback=callback,
+            auto_cast_to_device=True,
+            break_when_any_done=False,
+            is_save_simulation_video=parameters.is_save_simulation_video,
+        )
+        if parameters.is_save_simulation_video:
+            from vmas.simulator.utils import save_video
+
+            out_td, frame_list = rollout_result
+            video_path = run_directory / "video"
+            save_video(str(video_path), frame_list, fps=1 / parameters.dt)
+            print(f"[INFO] Saved simulation video: {video_path}.mp4")
+        else:
+            out_td = rollout_result
+        return out_td
+    finally:
+        close = getattr(env, "close", None)
+        if callable(close):
+            close()
 
 
 def main(
     config_file: Path = DEFAULT_CONFIG_FILE,
     run_directory: Optional[Path] = None,
     checkpoint_path: Optional[Path] = None,
-) -> None:
-    source_parameters = Parameters.from_json(str(config_file))
-    test_base(
-        source_parameters.where_to_save,
-        run_directory,
-        checkpoint_path,
-        scenario_type=TEST_SCENARIO_TYPE,
-    )
+    *,
+    scenario_type: Optional[str] = None,
+    max_steps: int = 1200,
+    episodes: int = 1,
+    seeds: Optional[Sequence[int]] = None,
+    render: bool = True,
+    save_simulation_video: bool = False,
+    compare_base: bool = False,
+    promote_if_noninferior: bool = False,
+):
+    with config_file.open("r", encoding="utf-8") as stream:
+        source_config = json.load(stream)
+    method = source_config.get("method")
+    if method == "psb_marl":
+        from utilities.psb_marl.evaluator import test_psb
+
+        return test_psb(
+            config_file,
+            run_directory=run_directory,
+            checkpoint_path=checkpoint_path,
+            scenario_type=scenario_type,
+            max_steps=max_steps,
+            episodes=episodes,
+            seeds=seeds,
+            render=render,
+            save_simulation_video=save_simulation_video,
+            compare_base=compare_base,
+            promote_if_noninferior=promote_if_noninferior,
+        )
+    if method == "opinion_marl":
+        if (
+            scenario_type is not None
+            or max_steps != 1200
+            or episodes != 1
+            or seeds is not None
+            or not render
+            or compare_base
+            or promote_if_noninferior
+        ):
+            raise ValueError(
+                "Advanced unified testing options are not yet supported by the "
+                "legacy Opinion-MARL entrypoint."
+            )
+        from main_testing_opinion import main as test_opinion
+
+        return test_opinion(
+            config_file,
+            run_directory,
+            checkpoint_path,
+            save_simulation_video,
+        )
+    if method not in (None, "base_mappo"):
+        raise ValueError(f"Unsupported testing method: {method!r}")
+    if method == "base_mappo":
+        source_config = {
+            key: value for key, value in source_config.items() if key != "method"
+        }
+    if compare_base or promote_if_noninferior:
+        raise ValueError(
+            "--compare-base and --promote-if-noninferior apply only to PSB runs."
+        )
+    from utilities.helper_training import Parameters
+
+    source_parameters = Parameters.from_dict(source_config)
+    selected_seeds = tuple(seeds) if seeds is not None else (source_parameters.seed,)
+    if render and (episodes != 1 or len(selected_seeds) != 1):
+        raise ValueError("Rendering requires one episode and one seed.")
+    if save_simulation_video and (episodes != 1 or len(selected_seeds) != 1):
+        raise ValueError("Video capture requires one episode and one seed.")
+    outputs = []
+    for selected_seed in selected_seeds:
+        outputs.append(
+            test_base(
+                source_parameters.where_to_save,
+                run_directory,
+                checkpoint_path,
+                save_simulation_video=save_simulation_video,
+                scenario_type=scenario_type,
+                max_steps=max_steps,
+                episodes=episodes,
+                seed=selected_seed,
+                render=render,
+            )
+        )
+    return outputs[0] if len(outputs) == 1 else outputs
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test a final or intermediate SigmaRL Base policy."
+        description="Test a Base, Opinion-MARL, or PSB-MARL policy."
     )
     parser.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_CONFIG_FILE,
-        help="Configuration whose where_to_save selects the run (default: config.json).",
+        help="Base, Opinion-MARL, or PSB-MARL configuration.",
     )
     parser.add_argument(
         "--run-dir",
@@ -173,5 +271,47 @@ if __name__ == "__main__":
             "Its parent directory is used as --run-dir when --run-dir is omitted."
         ),
     )
+    parser.add_argument(
+        "--scenario",
+        choices=tuple(SCENARIOS),
+        default=None,
+        help="Override the saved training scenario.",
+    )
+    parser.add_argument("--max-steps", type=int, default=1200)
+    parser.add_argument("--episodes", type=int, default=1)
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="One or more non-negative environment seeds.",
+    )
+    render_group = parser.add_mutually_exclusive_group()
+    render_group.add_argument("--render", dest="render", action="store_true")
+    render_group.add_argument("--no-render", dest="render", action="store_false")
+    parser.set_defaults(render=True)
+    parser.add_argument("--save-video", action="store_true")
+    parser.add_argument(
+        "--compare-base",
+        action="store_true",
+        help="For PSB, verify or evaluate against its recorded Base source.",
+    )
+    parser.add_argument(
+        "--promote-if-noninferior",
+        action="store_true",
+        help="For supported PSB stages, apply the configured promotion gate.",
+    )
     arguments = parser.parse_args()
-    main(arguments.config, arguments.run_dir, arguments.checkpoint)
+    main(
+        arguments.config,
+        arguments.run_dir,
+        arguments.checkpoint,
+        scenario_type=arguments.scenario,
+        max_steps=arguments.max_steps,
+        episodes=arguments.episodes,
+        seeds=arguments.seeds,
+        render=arguments.render,
+        save_simulation_video=arguments.save_video,
+        compare_base=arguments.compare_base,
+        promote_if_noninferior=arguments.promote_if_noninferior,
+    )
