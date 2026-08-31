@@ -46,6 +46,7 @@ def test_base(
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
     opinion_policy_config: Optional[Mapping[str, object]] = None,
     opinion_visualization_config: Optional[Mapping[str, object]] = None,
+    psb_runtime_config: Optional[Mapping[str, object]] = None,
     save_simulation_video: bool = False,
     scenario_type: Optional[str] = None,
     max_steps: int = 1200,
@@ -108,6 +109,7 @@ def test_base(
         parameters=parameters,
         opinion_pair_info_config=opinion_pair_info_config,
         opinion_policy_config=opinion_policy_config,
+        psb_runtime_config=psb_runtime_config,
         policy_checkpoint_path=checkpoint_path,
     )
 

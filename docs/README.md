@@ -7,6 +7,7 @@
 `utilities/psb_marl/` 实现路径。阶段说明见：
 
 1. [`psb_marl/P0_BASE_PASSTHROUGH.md`](psb_marl/P0_BASE_PASSTHROUGH.md)
+2. [`psb_marl/P1_ZERO_CONTROL_EQUIVALENCE.md`](psb_marl/P1_ZERO_CONTROL_EQUIVALENCE.md)
 
 旧 Opinion-MARL 与 AVOCADO-MARL 代码继续作为基线和消融，不定义 PSB 接口。
 

@@ -1,0 +1,35 @@
+{
+    "schema_version": 1,
+    "method": "psb_marl",
+    "stage": "p1_zero_control_equivalence",
+    "base_config": "config.json",
+    "output_root": "outputs/psb_marl/p1_zero_control_equivalence",
+    "base": {
+        "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+        "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+        "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+    },
+    "parent_run": "outputs/psb_marl/p0_base_passthrough/runs/psb-p0-seed0-20260831T073123146291Z-a2fc6079",
+    "conflict_graph": {
+        "emit_pair_info": true,
+        "candidate_count": 2,
+        "pair_feature_dim": 10,
+        "prediction_horizon_seconds": 3.0,
+        "conflict_distance_meters": 2.0,
+        "sensing_distance_meters": 20.0,
+        "cpa_epsilon": 1e-06,
+        "urgency_time_scale_seconds": 3.0,
+        "urgency_distance_scale_meters": 2.0
+    },
+    "proximal": {
+        "kappa": 1.0,
+        "nu": 1.0,
+        "alpha": 1.0,
+        "rho_max": 2.0,
+        "tau_z": 0.2,
+        "b_max": 0.0,
+        "residual_tolerance": 1e-06,
+        "max_iterations": 64,
+        "zero_threshold": 1e-08
+    }
+}

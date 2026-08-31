@@ -89,6 +89,7 @@ def mappo_cavs(
     parameters: Parameters,
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
     opinion_policy_config: Optional[Mapping[str, object]] = None,
+    psb_runtime_config: Optional[Mapping[str, object]] = None,
     artifact_method: str = "base_mappo",
     artifact_stage: str = "base",
     policy_checkpoint_path: Optional[Path] = None,
@@ -514,6 +515,35 @@ def mappo_cavs(
     else:
         policy = base_policy
         policy_for_collection = policy
+
+    if psb_runtime_config is not None:
+        if is_opinion_policy:
+            raise ValueError(
+                "PSB and legacy Opinion policy paths are mutually exclusive."
+            )
+        if not emits_opinion_pair_info:
+            raise ValueError("The PSB P1 runtime requires local conflict pair info.")
+        from utilities.psb_marl.policy import (
+            P1ZeroControlPolicyController,
+            validate_p1_runtime_contract,
+        )
+        from utilities.psb_marl.proximal import ProximalSaturatingBifurcation
+        from utilities.psb_marl.state import P1ZeroControlStateTracker
+
+        validate_p1_runtime_contract(psb_runtime_config, parameters.n_agents)
+        proximal_config = dict(psb_runtime_config["proximal"])
+        proximal_layer = ProximalSaturatingBifurcation.from_runtime_config(
+            proximal_config
+        ).to(parameters.device)
+        psb_tracker = P1ZeroControlStateTracker(
+            n_agents=parameters.n_agents,
+            proximal=proximal_layer,
+            zero_threshold=float(proximal_config["zero_threshold"]),
+        )
+        policy_for_collection = P1ZeroControlPolicyController(
+            policy=policy,
+            tracker=psb_tracker,
+        ).to(parameters.device)
 
     mappo = True  # IPPO (Independent PPO) if False
 

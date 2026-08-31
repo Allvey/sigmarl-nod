@@ -1,18 +1,19 @@
-"""Proximal Saturating Bifurcation MARL.
-
-P0 contains only the Base-MAPPO passthrough and experiment contracts.  Later
-stages add local pair perception, proximal state, and trainable PSB modules
-without changing the P0 compatibility guarantee.
-"""
+"""Proximal Saturating Bifurcation MARL stage contracts."""
 
 from utilities.psb_marl.config import (
     PSBConfigError,
+    PSBConflictGraphConfig,
     PSBExperimentConfig,
+    PSBProximalConfig,
     load_psb_experiment,
 )
+from utilities.psb_marl.proximal import ProximalSaturatingBifurcation
 
 __all__ = [
     "PSBConfigError",
+    "PSBConflictGraphConfig",
     "PSBExperimentConfig",
+    "PSBProximalConfig",
+    "ProximalSaturatingBifurcation",
     "load_psb_experiment",
 ]
