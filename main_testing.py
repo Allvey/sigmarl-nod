@@ -47,6 +47,7 @@ def test_base(
     opinion_policy_config: Optional[Mapping[str, object]] = None,
     opinion_visualization_config: Optional[Mapping[str, object]] = None,
     psb_runtime_config: Optional[Mapping[str, object]] = None,
+    psb_action_projection: Optional[str] = None,
     save_simulation_video: bool = False,
     scenario_type: Optional[str] = None,
     max_steps: int = 1200,
@@ -110,6 +111,7 @@ def test_base(
         opinion_pair_info_config=opinion_pair_info_config,
         opinion_policy_config=opinion_policy_config,
         psb_runtime_config=psb_runtime_config,
+        psb_action_projection=psb_action_projection,
         policy_checkpoint_path=checkpoint_path,
     )
 
@@ -131,6 +133,20 @@ def test_base(
         if render or parameters.is_save_simulation_video
         else None
     )
+    # Policy construction can initialize a different number of modules for
+    # Base and PSB.  Re-seed immediately before rollout so paired evaluation
+    # uses common environment and action-sampling randomness rather than RNG
+    # offsets caused by network construction.
+    import random
+
+    import numpy as np
+    import torch
+
+    random.seed(parameters.seed)
+    np.random.seed(parameters.seed)
+    torch.manual_seed(parameters.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(parameters.seed)
     try:
         rollout_result = env.rollout(
             max_steps=parameters.max_steps - 1,
@@ -170,6 +186,8 @@ def main(
     save_simulation_video: bool = False,
     compare_base: bool = False,
     promote_if_noninferior: bool = False,
+    psb_action_projection: Optional[str] = None,
+    psb_report_label: Optional[str] = None,
 ):
     with config_file.open("r", encoding="utf-8") as stream:
         source_config = json.load(stream)
@@ -189,6 +207,8 @@ def main(
             save_simulation_video=save_simulation_video,
             compare_base=compare_base,
             promote_if_noninferior=promote_if_noninferior,
+            psb_action_projection=psb_action_projection,
+            report_label=psb_report_label,
         )
     if method == "opinion_marl":
         if (
@@ -199,6 +219,8 @@ def main(
             or not render
             or compare_base
             or promote_if_noninferior
+            or psb_action_projection is not None
+            or psb_report_label is not None
         ):
             raise ValueError(
                 "Advanced unified testing options are not yet supported by the "
@@ -218,9 +240,10 @@ def main(
         source_config = {
             key: value for key, value in source_config.items() if key != "method"
         }
-    if compare_base or promote_if_noninferior:
+    if compare_base or promote_if_noninferior or psb_action_projection is not None:
         raise ValueError(
-            "--compare-base and --promote-if-noninferior apply only to PSB runs."
+            "PSB comparison, promotion, and action projection options apply "
+            "only to PSB runs."
         )
     from utilities.helper_training import Parameters
 
@@ -269,7 +292,8 @@ if __name__ == "__main__":
         type=Path,
         default=None,
         help=(
-            "Load this exact final_policy.pth or reward<value>_policy.pth. "
+            "Load this exact final_policy.pth, candidate_policy.pth, or "
+            "reward<value>_policy.pth. "
             "Its parent directory is used as --run-dir when --run-dir is omitted."
         ),
     )
@@ -303,6 +327,23 @@ if __name__ == "__main__":
         action="store_true",
         help="For supported PSB stages, apply the configured promotion gate.",
     )
+    parser.add_argument(
+        "--psb-action-projection",
+        choices=("full", "longitudinal_only"),
+        default=None,
+        help=(
+            "Inference-only P2 counterfactual. longitudinal_only preserves "
+            "the Base steering mean and applies only the learned speed correction."
+        ),
+    )
+    parser.add_argument(
+        "--psb-report-label",
+        default=None,
+        help=(
+            "Optional safe suffix for an independent PSB evaluation report; "
+            "it does not change policy or evaluation semantics."
+        ),
+    )
     arguments = parser.parse_args()
     main(
         arguments.config,
@@ -316,4 +357,6 @@ if __name__ == "__main__":
         save_simulation_video=arguments.save_video,
         compare_base=arguments.compare_base,
         promote_if_noninferior=arguments.promote_if_noninferior,
+        psb_action_projection=arguments.psb_action_projection,
+        psb_report_label=arguments.psb_report_label,
     )

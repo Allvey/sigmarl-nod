@@ -2726,6 +2726,144 @@ q_{ij}=\tanh(z_{ij}/z_0)
 
 编码为边上下文，经masked attention或图消息传递聚合后生成连续动作分布。不要使用固定的“正意见加速、负意见减速”动作残差。
 
+为排除Actor忽略或绕过分岔状态的退化解，可将一般分支条件策略收紧为Base锚定的
+因果门控子类。令：
+
+\[
+e_{ij}=E_\theta(\chi_{ij},|q_{ij}|,\rho_{ij}),
+\qquad
+c_i=\sum_j\alpha_{ij}q_{ij}e_{ij},
+\]
+
+并对分布参数 \(\eta=(\mu,\log\sigma)\) 使用：
+
+\[
+r_i=N_\theta(o_i,c_i,\eta_i^{\mathrm{base}}),
+\qquad
+g_i=\tanh(W_gc_i),
+\]
+
+\[
+\eta_i
+=
+\eta_i^{\mathrm{base}}
++B\tanh(r_i\odot g_i),
+\]
+
+其中 \(W_g\) 不含偏置。于是得到严格的零分支恢复性质：
+
+\[
+\boxed{
+\{q_{ij}=0\}_{j\in\mathcal N_i}
+\Longrightarrow
+\pi_{\mathrm{PSB}}(\cdot\mid o_i,\mathbf q_i)
+=
+\pi_{\mathrm{Base}}(\cdot\mid o_i)
+}.
+\]
+
+该约束只缩小Actor函数类，不改变近端分岔动力学、增广Markov状态或序列策略梯度。
+由于 \(r_i\) 和 \(W_g\) 均由MARL学习，\(q\) 的符号没有被预先绑定为加速、减速、
+转向或任何固定物理动作语义。
+
+当任务中的Base探索尺度已经充分校准时，可进一步采用尺度冻结的mean-only子类：
+
+\[
+\mu_i
+=
+\mu_i^{\mathrm{base}}
++B_\mu\tanh(r_{\mu,i}\odot g_{\mu,i}),
+\qquad
+\log\sigma_i=\log\sigma_i^{\mathrm{base}}.
+\]
+
+此时MARL仍通过连续动作均值表达分支条件控制，但不能通过扩大冲突状态下的采样方差
+绕过Base探索先验。该约束同样只收紧Actor函数类；近端根、隐式梯度、反对称控制和
+CTDE训练结构均保持不变。
+
+若Base策略已经提供可靠的路径跟踪控制，还可以把分支修正投影到冲突协调子空间。对
+SigmaRL的原生控制 (a=(v,\delta))，取纵向投影：
+
+\[
+P_{\parallel}=\operatorname{diag}(1,0),
+\qquad
+\mu_i
+=
+\mu_i^{\mathrm{base}}
++P_{\parallel}B_\mu\tanh(r_{\mu,i}\odot g_{\mu,i}).
+\]
+
+于是Base Actor负责空间路径稳定和转向，分岔MARL负责冲突到达时序和纵向协调。这是
+对动作修正空间的控制投影，不预设 (q>0) 对应加速或减速；速度修正的符号和大小仍由
+MARL学习。投影只删除与协调目标无关的控制自由度，不改变无通信执行、近端唯一性或
+隐式梯度理论。
+
+仅有零分支恢复仍允许一种可缩放退化：能量正则把 \(b,z,q\) 压小，而下游网络增大
+参数增益，使动作修正保持非零。为使“分岔幅值”与“策略影响”具有不可绕过的量化联系，
+定义局部分岔活动度：
+
+\[
+a_i
+=
+\sum_{j\in\mathcal N_i}\alpha_{ij}|q_{ij}|,
+\qquad
+0\le a_i\le1,
+\]
+
+并采用增益有界的扇区门控子类：
+
+\[
+\mu_i
+=
+\mu_i^{\mathrm{base}}
++P_{\parallel}B_\mu a_i
+\tanh(r_{\mu,i}\odot g_{\mu,i}),
+\qquad
+\log\sigma_i=\log\sigma_i^{\mathrm{base}}.
+\]
+
+于是得到与网络参数无关的硬约束：
+
+\[
+\boxed{
+|\Delta\mu_i|
+\le
+P_{\parallel}B_\mu a_i
+}.
+\]
+
+特别地，\(a_i\to0\Rightarrow\Delta\mu_i\to0\)，任何 adapter 增益都不能补偿消失的
+分岔活动。该约束仍不规定动作修正的符号；分支内采取加速还是减速继续由 MARL 依据
+长期回报学习。它只收紧 Actor 函数类，不修改近端势能、单步适定性、隐式 Jacobian、
+反对称控制或 CTDE 假设。
+
+若希望意见保留协调记忆，但避免已失去物理冲突支持的残留意见继续干预车辆，则进一步
+定义冲突支持系数：
+
+\[
+s_{ij}=\frac{\rho_{ij}}{\rho_{\max}}\in[0,1],
+\qquad
+a_i^\rho
+=
+\sum_{j\in\mathcal N_i}\alpha_{ij}s_{ij}|q_{ij}|.
+\]
+
+将上式中的 \(a_i\) 替换为 \(a_i^\rho\)，得到 urgency-supported sector gate：
+
+\[
+|\Delta\mu_i|
+\le
+P_{\parallel}B_\mu a_i^\rho,
+\qquad
+\{\rho_{ij}=0\}_{j\in\mathcal N_i}
+\Longrightarrow
+\Delta\mu_i=0.
+\]
+
+这并不在冲突解除时清除 \(z\)：近端意见仍可连续衰减并保留迟滞记忆，只是当前动作
+影响被解析冲突图暂时关闭。由此把“协调记忆”和“动作干预资格”分开，保持
+物理冲突 \(\rightarrow\) 非线性分岔 \(\rightarrow\) MARL 连续控制的因果链条。
+
 ### 29.5 增广中央Critic
 
 训练阶段使用：
@@ -2757,11 +2895,12 @@ Input: physical observation o_t, pair features chi_t,
 5. b_t = bounded_antisymmetric_control(score_ij-score_ji, rho_t, lambda_t)
 6. z_next = ProxSaturatingNOD(z_t, rho_t, hold_within_solve(b_t), residual_tol=eps_F)
 7. branch_context = GraphAggregate(o_t, chi_t, tanh(z_next/z0))
-8. action_dist = Actor(o_t, branch_context)
-9. a_t ~ action_dist
-10. x_next, reward = environment.step(a_t)
-11. 检查根残差、反对称误差和有限性；rollout时提交z_next
-12. 训练时从chunk初态顺序重算，chunk内部不detach
+8. activity = Sum(attention * normalized_rho * abs(tanh(z_next/z0)))
+9. action_dist = SectorBoundedActor(o_t, branch_context, activity)
+10. a_t ~ action_dist
+11. x_next, reward = environment.step(a_t)
+12. 检查根残差、反对称误差和有限性；rollout时提交z_next
+13. 训练时从chunk初态顺序重算，chunk内部不detach
 ```
 
 `hold_within_solve` 表示Newton/二分迭代中不重新调用PairScorer，不表示对 \(b_t\) 停止梯度；隐式反向仍然通过 \(\partial P/\partial b_t\) 更新 \(\phi\)。

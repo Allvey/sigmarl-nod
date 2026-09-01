@@ -44,6 +44,12 @@ def train_psb(
     """Run the configured PSB stage and return its isolated run directory."""
 
     experiment = load_psb_experiment(config_path)
+    if experiment.stage == "p2_frozen_base_bifurcation":
+        return _train_p2(
+            experiment,
+            resume_checkpoint=resume_checkpoint,
+            iterations_override=iterations_override,
+        )
     if experiment.stage == "p1_zero_control_equivalence":
         return _package_p1(
             experiment,
@@ -155,6 +161,105 @@ def train_psb(
         write_artifact_manifest(run_directory)
         raise
 
+    return run_directory
+
+
+def _train_p2(
+    experiment,
+    *,
+    resume_checkpoint: Optional[Path],
+    iterations_override: Optional[int],
+) -> Path:
+    """Train a quarantined P2 candidate while retaining exact Base fallback."""
+
+    assert experiment.parent_run is not None
+    assert experiment.conflict_graph is not None
+    assert experiment.training is not None
+    from main_training import train_base
+
+    parameters = experiment.base_parameters
+    # P2 robustness studies vary only the stochastic PSB training process while
+    # retaining the exact same frozen Base checkpoint.
+    parameters.seed = experiment.effective_training_seed
+    parameters.where_to_save = str(
+        Path(experiment.output_root).expanduser().resolve()
+    )
+    iterations = (
+        experiment.training.iterations
+        if iterations_override is None
+        else iterations_override
+    )
+    if type(iterations) is not int or iterations <= 0:
+        raise PSBConfigError("P2 --iterations must be a positive integer.")
+    parameters.n_iters = iterations
+    parameters.total_frames = parameters.frames_per_batch * iterations
+    runtime_config = experiment.p2_runtime_config()
+    comparison_payload = {
+        "schema_version": 1,
+        "reference": "recorded_base_source",
+        "status": "pending_manual_paired_validation",
+        "automated_performance_validation": False,
+        "deployment": "base_fallback",
+        "candidate_checkpoint": "candidate_policy.pth",
+        "promotion": runtime_config["promotion"],
+    }
+    run_directory = train_base(
+        parameters=parameters,
+        source_config=experiment.source_config,
+        run_label="psb-p2",
+        supplementary_snapshots={
+            "psb_config_resolved.json": {
+                **experiment.source_config,
+                "resolved_base_config": str(experiment.base_config_path),
+                "resolved_base_run": str(experiment.base.run_directory),
+                "resolved_parent_run": str(experiment.parent_run),
+                "runtime_config": runtime_config,
+                "config_fingerprint": _fingerprint(experiment.source_config),
+            }
+        },
+        comparison_payload=comparison_payload,
+        opinion_pair_info_config=experiment.conflict_graph.to_dict(),
+        psb_runtime_config=runtime_config,
+        artifact_method="psb_marl",
+        artifact_stage=experiment.stage,
+        resume_checkpoint=resume_checkpoint,
+    )
+
+    base_policy = run_directory / "base_fallback_policy.pth"
+    base_critic = run_directory / "base_fallback_critic.pth"
+    candidate_policy = run_directory / "candidate_policy.pth"
+    candidate_critic = run_directory / "candidate_critic.pth"
+    for path in (base_policy, base_critic, candidate_policy, candidate_critic):
+        if not path.is_file():
+            raise RuntimeError(f"P2 training did not create required artifact: {path}")
+    base_policy_hash = sha256_file(base_policy)
+    base_critic_hash = sha256_file(base_critic)
+    if base_policy_hash != sha256_file(experiment.base.policy_checkpoint):
+        raise RuntimeError("P2 Base fallback policy is not byte-identical to Base.")
+    if base_critic_hash != sha256_file(experiment.base.critic_checkpoint):
+        raise RuntimeError("P2 Base fallback critic is not byte-identical to Base.")
+    atomic_write_json(
+        run_directory / "deployment_manifest.json",
+        {
+            "schema_version": 1,
+            "method": "psb_marl",
+            "stage": experiment.stage,
+            "selected": "base_fallback_pending_validation",
+            "policy_checkpoint": "final_policy.pth",
+            "critic_checkpoint": "final_critic.pth",
+            "base_fallback_policy": "base_fallback_policy.pth",
+            "base_fallback_critic": "base_fallback_critic.pth",
+            "candidate_policy": "candidate_policy.pth",
+            "candidate_critic": "candidate_critic.pth",
+            "base_policy_sha256": base_policy_hash,
+            "base_critic_sha256": base_critic_hash,
+            "candidate_policy_sha256": sha256_file(candidate_policy),
+            "candidate_critic_sha256": sha256_file(candidate_critic),
+            "promotion_gate": runtime_config["promotion"],
+        },
+    )
+    write_artifact_manifest(run_directory)
+    mark_latest_completed_run(experiment.output_root, run_directory)
     return run_directory
 
 

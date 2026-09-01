@@ -309,12 +309,13 @@ def resolve_policy_checkpoint(
             )
         if not checkpoint.is_file():
             raise FileNotFoundError(f"Policy checkpoint does not exist: {checkpoint}")
-        if checkpoint.name != "final_policy.pth" and not (
+        if checkpoint.name not in {"final_policy.pth", "candidate_policy.pth"} and not (
             _INTERMEDIATE_POLICY_PATTERN.fullmatch(checkpoint.name)
         ):
             raise ValueError(
-                "A testable policy checkpoint must be final_policy.pth or "
-                f"reward<value>_policy.pth, got: {checkpoint.name}"
+                "A testable policy checkpoint must be final_policy.pth, "
+                "candidate_policy.pth, or reward<value>_policy.pth, got: "
+                f"{checkpoint.name}"
             )
         return checkpoint
 

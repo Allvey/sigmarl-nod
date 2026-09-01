@@ -1,0 +1,72 @@
+{
+    "schema_version": 1,
+    "method": "psb_marl",
+    "stage": "p2_frozen_base_bifurcation",
+    "base_config": "config.json",
+    "output_root": "outputs/psb_marl/p2_1_g_sector_projected_mean_only",
+    "base": {
+        "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+        "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+        "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+    },
+    "parent_run": "outputs/psb_marl/p1_zero_control_equivalence/runs/psb-p1-seed0-20260831T080749534056Z-9d13c6f5",
+    "conflict_graph": {
+        "emit_pair_info": true,
+        "candidate_count": 2,
+        "pair_feature_dim": 10,
+        "prediction_horizon_seconds": 3.0,
+        "conflict_distance_meters": 2.0,
+        "sensing_distance_meters": 20.0,
+        "cpa_epsilon": 1e-06,
+        "urgency_time_scale_seconds": 3.0,
+        "urgency_distance_scale_meters": 2.0
+    },
+    "proximal": {
+        "kappa": 1.0,
+        "nu": 1.0,
+        "alpha": 1.0,
+        "rho_max": 2.0,
+        "tau_z": 0.2,
+        "b_max": 0.5,
+        "residual_tolerance": 1e-06,
+        "max_iterations": 64,
+        "zero_threshold": 1e-08
+    },
+    "control": {
+        "hidden_sizes": [64, 64],
+        "temperature": 1.0,
+        "support_power": 1.0,
+        "critical_gate_enabled": false,
+        "critical_width": 0.35,
+        "critical_floor": 0.25,
+        "final_layer_gain": 0.01
+    },
+    "branch_adapter": {
+        "pair_hidden_sizes": [64, 64],
+        "context_dim": 32,
+        "adapter_hidden_sizes": [128, 128],
+        "z_scale": 0.5,
+        "max_delta_loc": 0.35,
+        "max_delta_log_scale": 0.0,
+        "conditioning_mode": "sector_q_gate",
+        "action_projection": "longitudinal_only"
+    },
+    "training": {
+        "iterations": 250,
+        "chunk_length": 16,
+        "control_learning_rate_scale": 0.5,
+        "adapter_learning_rate_scale": 0.5,
+        "critic_learning_rate_scale": 1.0,
+        "energy_coefficient": 0.001,
+        "control_trust_region_coefficient": 0.01,
+        "saturation_coefficient": 0.001,
+        "saturation_fraction": 0.8,
+        "checkpoint_interval": 10
+    },
+    "promotion": {
+        "minimum_paired_seeds": 5,
+        "confidence_z": 1.645,
+        "reward_margin": 0.002,
+        "collision_margin": 0.002
+    }
+}

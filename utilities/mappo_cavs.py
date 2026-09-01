@@ -90,6 +90,7 @@ def mappo_cavs(
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
     opinion_policy_config: Optional[Mapping[str, object]] = None,
     psb_runtime_config: Optional[Mapping[str, object]] = None,
+    psb_action_projection: Optional[str] = None,
     artifact_method: str = "base_mappo",
     artifact_stage: str = "base",
     policy_checkpoint_path: Optional[Path] = None,
@@ -102,14 +103,37 @@ def mappo_cavs(
     np.random.seed(parameters.seed)
     torch.manual_seed(parameters.seed)
 
+    psb_stage = (
+        str(psb_runtime_config.get("stage")) if psb_runtime_config else ""
+    )
+    is_psb_p1 = psb_stage == "p1_zero_control_equivalence"
+    is_psb_p2 = psb_stage == "p2_frozen_base_bifurcation"
+    if psb_runtime_config is not None and not (is_psb_p1 or is_psb_p2):
+        raise ValueError(f"Unsupported PSB runtime stage: {psb_stage!r}.")
+    if psb_action_projection not in {None, "full", "longitudinal_only"}:
+        raise ValueError("Unsupported PSB action projection.")
+    if psb_action_projection not in {None, "full"} and not is_psb_p2:
+        raise ValueError("PSB action projection requires a P2 policy.")
+    if psb_action_projection not in {None, "full"} and not bool(
+        parameters.is_testing_mode
+    ):
+        raise ValueError("PSB action projection is inference-only.")
+
     resume_payload = None
     resume_start_iteration = 0
     if training_resume_checkpoint is not None:
-        from utilities.opinion.checkpoint import load_m9_checkpoint
+        if is_psb_p2:
+            from utilities.psb_marl.p2_checkpoint import load_p2_checkpoint
 
-        resume_payload = load_m9_checkpoint(
-            training_resume_checkpoint, parameters.device
-        )
+            resume_payload = load_p2_checkpoint(
+                training_resume_checkpoint, parameters.device
+            )
+        else:
+            from utilities.opinion.checkpoint import load_m9_checkpoint
+
+            resume_payload = load_m9_checkpoint(
+                training_resume_checkpoint, parameters.device
+            )
         resume_start_iteration = int(resume_payload["iteration"])
         if resume_start_iteration >= parameters.n_iters:
             raise ValueError(
@@ -136,6 +160,11 @@ def mappo_cavs(
         continuous_actions=True,  # VMAS supports both continuous and discrete actions
         max_steps=parameters.max_steps,
         device=parameters.device,
+        # VMAS maps seed=None to seed 0 and resets the global Python, NumPy,
+        # and Torch RNGs during construction.  Passing the experiment seed is
+        # therefore required both for environment diversity and for the P2
+        # modules initialized immediately after the environment.
+        seed=parameters.seed,
         # Scenario kwargs
         n_agents=parameters.n_agents,  # These are custom kwargs that change for each VMAS scenario, see the VMAS repo to know more.
     )
@@ -187,7 +216,10 @@ def mappo_cavs(
 
     env = TransformedEnvCustom(env, env_transform)
 
-    check_env_specs(env)
+    # TorchRL's default is seed=0 and the check mutates the environment plus
+    # the global RNG state.  Preserve the configured experiment seed instead
+    # of silently collapsing all nonzero training seeds back to zero.
+    check_env_specs(env, seed=parameters.seed)
 
     observation_key = get_observation_key(parameters)
 
@@ -269,18 +301,30 @@ def mappo_cavs(
         is_m9_trainer
         and opinion_policy_config.get("initialize_from_scratch", False)
     )
-    if training_resume_checkpoint is not None and not is_m9_trainer:
-        raise ValueError("--resume is only supported by the M9 trainer.")
+    if (
+        training_resume_checkpoint is not None
+        and not is_m9_trainer
+        and not is_psb_p2
+    ):
+        raise ValueError("--resume is supported only by M9 and PSB P2 trainers.")
     if resume_payload is not None:
-        saved_runtime = resume_payload.get("opinion_runtime_config", {})
-        if saved_runtime.get("trainer") != trainer_runtime_config:
-            raise ValueError(
-                "Resume checkpoint Trainer configuration does not match the "
-                "current configuration."
-            )
+        if is_psb_p2:
+            if resume_payload.get("runtime_config") != dict(psb_runtime_config):
+                raise ValueError(
+                    "P2 resume checkpoint runtime does not match the current config."
+                )
+        else:
+            saved_runtime = resume_payload.get("opinion_runtime_config", {})
+            if saved_runtime.get("trainer") != trainer_runtime_config:
+                raise ValueError(
+                    "Resume checkpoint Trainer configuration does not match the "
+                    "current configuration."
+                )
     opinion_bridge = None
     state_tracker = None
     base_actor_source_state = None
+    psb_bridge = None
+    psb_tracker = None
     if is_opinion_policy:
         if not emits_opinion_pair_info:
             raise ValueError("The Opinion policy bridge requires M4 pair info.")
@@ -522,28 +566,193 @@ def mappo_cavs(
                 "PSB and legacy Opinion policy paths are mutually exclusive."
             )
         if not emits_opinion_pair_info:
-            raise ValueError("The PSB P1 runtime requires local conflict pair info.")
-        from utilities.psb_marl.policy import (
-            P1ZeroControlPolicyController,
-            validate_p1_runtime_contract,
-        )
-        from utilities.psb_marl.proximal import ProximalSaturatingBifurcation
-        from utilities.psb_marl.state import P1ZeroControlStateTracker
-
-        validate_p1_runtime_contract(psb_runtime_config, parameters.n_agents)
+            raise ValueError("The PSB runtime requires local conflict pair info.")
         proximal_config = dict(psb_runtime_config["proximal"])
+        from utilities.psb_marl.proximal import ProximalSaturatingBifurcation
+
         proximal_layer = ProximalSaturatingBifurcation.from_runtime_config(
             proximal_config
         ).to(parameters.device)
-        psb_tracker = P1ZeroControlStateTracker(
-            n_agents=parameters.n_agents,
-            proximal=proximal_layer,
-            zero_threshold=float(proximal_config["zero_threshold"]),
-        )
-        policy_for_collection = P1ZeroControlPolicyController(
-            policy=policy,
-            tracker=psb_tracker,
-        ).to(parameters.device)
+        if is_psb_p1:
+            from utilities.psb_marl.policy import (
+                P1ZeroControlPolicyController,
+                validate_p1_runtime_contract,
+            )
+            from utilities.psb_marl.state import P1ZeroControlStateTracker
+
+            validate_p1_runtime_contract(psb_runtime_config, parameters.n_agents)
+            psb_tracker = P1ZeroControlStateTracker(
+                n_agents=parameters.n_agents,
+                proximal=proximal_layer,
+                zero_threshold=float(proximal_config["zero_threshold"]),
+            )
+            policy_for_collection = P1ZeroControlPolicyController(
+                policy=policy,
+                tracker=psb_tracker,
+            ).to(parameters.device)
+        else:
+            from utilities.psb_marl.p2_network import (
+                AntisymmetricBifurcationControl,
+                BranchContextEncoder,
+                BranchDistributionAdapter,
+            )
+            from utilities.psb_marl.p2_policy import (
+                FrozenBaseBifurcationPolicyBridge,
+                P2PolicyController,
+                validate_p2_runtime_contract,
+            )
+            from utilities.psb_marl.p2_state import P2EdgeStateTracker
+
+            validate_p2_runtime_contract(psb_runtime_config, parameters.n_agents)
+            base_actor_checkpoint = Path(
+                str(psb_runtime_config["base_policy_checkpoint"])
+            ).expanduser().resolve()
+            if not base_actor_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"P2 Base Actor checkpoint not found: {base_actor_checkpoint}"
+                )
+            base_actor_source_state = torch.load(
+                base_actor_checkpoint, map_location=parameters.device
+            )
+            base_policy.load_state_dict(base_actor_source_state, strict=True)
+            base_actor_source_state = copy.deepcopy(base_actor_source_state)
+            if artifact_logging_enabled:
+                torch.save(
+                    base_actor_source_state,
+                    artifact_run_directory / "source_base_actor.pth",
+                )
+
+            control_config = dict(psb_runtime_config["control"])
+            adapter_config = dict(psb_runtime_config["branch_adapter"])
+            configured_action_projection = str(
+                adapter_config.get("action_projection", "full")
+            )
+            if configured_action_projection not in {
+                "full",
+                "longitudinal_only",
+            }:
+                raise ValueError("Unsupported configured P2 action projection.")
+            effective_action_projection = (
+                configured_action_projection
+                if psb_action_projection is None
+                else psb_action_projection
+            )
+            control_net = AntisymmetricBifurcationControl(
+                pair_feature_dim=int(
+                    opinion_pair_info_config["pair_feature_dim"]
+                ),
+                hidden_sizes=tuple(control_config["hidden_sizes"]),
+                b_max=float(proximal_config["b_max"]),
+                temperature=float(control_config["temperature"]),
+                support_power=float(control_config["support_power"]),
+                critical_gate_enabled=bool(
+                    control_config["critical_gate_enabled"]
+                ),
+                critical_width=float(control_config["critical_width"]),
+                critical_floor=float(control_config["critical_floor"]),
+                final_layer_gain=float(control_config["final_layer_gain"]),
+                rho_c=float(proximal_config["rho_c"]),
+                rho_max=float(proximal_config["rho_max"]),
+            ).to(parameters.device)
+            branch_encoder = BranchContextEncoder(
+                pair_feature_dim=int(
+                    opinion_pair_info_config["pair_feature_dim"]
+                ),
+                hidden_sizes=tuple(adapter_config["pair_hidden_sizes"]),
+                context_dim=int(adapter_config["context_dim"]),
+                z_scale=float(adapter_config["z_scale"]),
+                rho_max=float(proximal_config["rho_max"]),
+                conditioning_mode=str(
+                    adapter_config.get("conditioning_mode", "general")
+                ),
+            ).to(parameters.device)
+            observation_dim = int(
+                env.observation_spec[observation_key].shape[-1]
+            )
+            action_dim = int(env.action_spec.shape[-1])
+            mean_action_mask = None
+            if effective_action_projection == "longitudinal_only":
+                if action_dim != 2:
+                    raise ValueError(
+                        "Longitudinal projection requires native "
+                        "[speed, steering] actions."
+                    )
+                mean_action_mask = (1.0, 0.0)
+            adapter = BranchDistributionAdapter(
+                observation_dim=observation_dim,
+                context_dim=int(adapter_config["context_dim"]),
+                action_dim=action_dim,
+                hidden_sizes=tuple(adapter_config["adapter_hidden_sizes"]),
+                max_delta_loc=float(adapter_config["max_delta_loc"]),
+                max_delta_log_scale=float(
+                    adapter_config["max_delta_log_scale"]
+                ),
+                conditioning_mode=str(
+                    adapter_config.get("conditioning_mode", "general")
+                ),
+                mean_action_mask=mean_action_mask,
+            ).to(parameters.device)
+            psb_bridge = FrozenBaseBifurcationPolicyBridge(
+                base_policy_net=policy_net,
+                control_net=control_net,
+                proximal=proximal_layer,
+                branch_encoder=branch_encoder,
+                adapter=adapter,
+                n_agents=parameters.n_agents,
+            ).to(parameters.device)
+            psb_module = TensorDictModule(
+                psb_bridge,
+                in_keys=[
+                    observation_key,
+                    ("agents", "info", "pair_features"),
+                    ("agents", "info", "neighbor_ids"),
+                    ("agents", "info", "urgency"),
+                    ("agents", "info", "confidence"),
+                    ("agents", "info", "pair_mask"),
+                    ("agents", "psb", "z_prev_dense"),
+                ],
+                out_keys=[
+                    ("agents", "loc"),
+                    ("agents", "scale"),
+                    ("agents", "psb", "base_loc"),
+                    ("agents", "psb", "base_scale"),
+                    ("agents", "psb", "raw_b"),
+                    ("agents", "psb", "b_candidates"),
+                    ("agents", "psb", "b"),
+                    ("agents", "psb", "rho"),
+                    ("agents", "psb", "z_next_dense"),
+                    ("agents", "psb", "z_next"),
+                    ("agents", "psb", "q"),
+                    ("agents", "psb", "attention"),
+                    ("agents", "psb", "branch_context"),
+                    ("agents", "psb", "branch_activity"),
+                    ("agents", "psb", "delta_loc"),
+                    ("agents", "psb", "delta_log_scale"),
+                    ("agents", "psb", "root_residual"),
+                    ("agents", "psb", "root_denominator"),
+                ],
+            )
+            policy = ProbabilisticActor(
+                module=psb_module,
+                spec=env.unbatched_action_spec,
+                in_keys=[("agents", "loc"), ("agents", "scale")],
+                out_keys=[env.action_key],
+                distribution_class=TanhNormal,
+                distribution_kwargs={
+                    "min": env.unbatched_action_spec[env.action_key].space.low,
+                    "max": env.unbatched_action_spec[env.action_key].space.high,
+                },
+                return_log_prob=True,
+                log_prob_key=("agents", "sample_log_prob"),
+            )
+            psb_tracker = P2EdgeStateTracker(
+                n_agents=parameters.n_agents,
+                zero_threshold=float(proximal_config["zero_threshold"]),
+            )
+            policy_for_collection = P2PolicyController(
+                policy=policy,
+                tracker=psb_tracker,
+            ).to(parameters.device)
 
     mappo = True  # IPPO (Independent PPO) if False
 
@@ -568,6 +777,45 @@ def mappo_cavs(
         ],  # Note that the critic in PPO only takes the same inputs (observations) as the actor
         out_keys=[("agents", "state_value")],
     )
+
+    # The critic is unused during pure policy evaluation.  Skipping this
+    # training-only warm start also permits a decentralized P2 actor trained
+    # with N agents to be evaluated in a different-N scenario: the Base
+    # centralized critic has an N-dependent input shape, while the actor and
+    # pairwise PSB modules do not.
+    if is_psb_p2 and not parameters.is_load_model:
+        base_critic_checkpoint = Path(
+            str(psb_runtime_config["base_critic_checkpoint"])
+        ).expanduser().resolve()
+        if not base_critic_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"P2 Base Critic checkpoint not found: {base_critic_checkpoint}"
+            )
+        critic.load_state_dict(
+            torch.load(base_critic_checkpoint, map_location=parameters.device),
+            strict=True,
+        )
+        from utilities.psb_marl.p2_critic import AugmentedCentralCritic
+
+        augmented_critic_net = AugmentedCentralCritic(
+            base_critic_net=critic_net,
+            n_agents=parameters.n_agents,
+            observation_dim=int(
+                env.observation_spec[observation_key].shape[-1]
+            ),
+            candidate_count=int(
+                opinion_pair_info_config["candidate_count"]
+            ),
+        ).to(parameters.device)
+        critic = TensorDictModule(
+            module=augmented_critic_net,
+            in_keys=[
+                observation_key,
+                ("agents", "psb", "z_prev_dense"),
+                ("agents", "info", "pair_mask"),
+            ],
+            out_keys=[("agents", "state_value")],
+        )
 
     if (
         is_opinion_policy
@@ -601,19 +849,24 @@ def mappo_cavs(
         )
 
     if resume_payload is not None:
-        if resume_payload["training_mode"] != trainer_runtime_config.get("mode"):
+        if not is_psb_p2 and (
+            resume_payload["training_mode"] != trainer_runtime_config.get("mode")
+        ):
             raise ValueError(
                 "Resume checkpoint training mode does not match current config."
             )
         policy.load_state_dict(resume_payload["policy_state"], strict=True)
         critic.load_state_dict(resume_payload["critic_state"], strict=True)
-        if resume_payload.get("base_source_state") is not None:
+        if (
+            not is_psb_p2
+            and resume_payload.get("base_source_state") is not None
+        ):
             base_actor_source_state = copy.deepcopy(
                 resume_payload["base_source_state"]
             )
         print(
             colored(
-                f"[INFO] Restored M9 model state at iteration "
+                f"[INFO] Restored {'P2' if is_psb_p2 else 'M9'} model state at iteration "
                 f"{resume_start_iteration}: {training_resume_checkpoint}",
                 "red",
             )
@@ -758,7 +1011,8 @@ def mappo_cavs(
         ),
     )
 
-    if is_sequence_buffer:
+    uses_sequence_buffer = is_sequence_buffer or is_psb_p2
+    if uses_sequence_buffer:
         replay_buffer = None
     elif parameters.is_prb:
         replay_buffer = TensorDictPrioritizedReplayBuffer(
@@ -816,6 +1070,7 @@ def mappo_cavs(
     GAE = loss_module.value_estimator  # Generalized Advantage Estimation
 
     sequence_ppo_loss = None
+    p2_sequence_loss = None
     if is_sequence_evidence_training:
         from utilities.opinion.sequence_ppo import OpinionSequencePPOLoss
 
@@ -847,9 +1102,96 @@ def mappo_cavs(
             ),
         )
 
+    if is_psb_p2:
+        from utilities.psb_marl.p2_loss import P2SequencePPOLoss
+
+        p2_training_config = dict(psb_runtime_config["training"])
+        p2_sequence_loss = P2SequencePPOLoss(
+            actor=policy,
+            bridge=psb_bridge,
+            observation_key=observation_key,
+            action_key=env.action_key,
+            advantage_key=loss_module.tensor_keys.advantage,
+            n_agents=parameters.n_agents,
+            clip_epsilon=parameters.clip_epsilon,
+            entropy_coefficient=parameters.entropy_eps,
+            energy_coefficient=float(
+                p2_training_config["energy_coefficient"]
+            ),
+            control_trust_region_coefficient=float(
+                p2_training_config["control_trust_region_coefficient"]
+            ),
+            saturation_coefficient=float(
+                p2_training_config["saturation_coefficient"]
+            ),
+            saturation_fraction=float(
+                p2_training_config["saturation_fraction"]
+            ),
+        )
+
     training_schedule = None
     current_training_phase = None
-    if is_m9_trainer:
+    if is_psb_p2:
+        trainable_groups = psb_bridge.trainable_groups()
+        control_parameters = trainable_groups["control"]
+        adapter_parameters = trainable_groups["adapter"]
+        critic_trainable_parameters = [
+            parameter
+            for parameter in loss_module.critic_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        if not control_parameters or not adapter_parameters:
+            raise RuntimeError("P2 Actor parameter groups must be non-empty.")
+        if not critic_trainable_parameters:
+            raise RuntimeError("P2 Critic parameter group must be non-empty.")
+        if any(
+            parameter.requires_grad
+            for parameter in psb_bridge.base_policy_net.parameters()
+        ):
+            raise RuntimeError("P2 Base Actor must remain frozen.")
+        optim = torch.optim.Adam(
+            [
+                {
+                    "params": control_parameters,
+                    "lr": parameters.lr
+                    * float(
+                        p2_training_config["control_learning_rate_scale"]
+                    ),
+                    "lr_scale": float(
+                        p2_training_config["control_learning_rate_scale"]
+                    ),
+                    "group_name": "control",
+                },
+                {
+                    "params": adapter_parameters,
+                    "lr": parameters.lr
+                    * float(
+                        p2_training_config["adapter_learning_rate_scale"]
+                    ),
+                    "lr_scale": float(
+                        p2_training_config["adapter_learning_rate_scale"]
+                    ),
+                    "group_name": "adapter",
+                },
+                {
+                    "params": critic_trainable_parameters,
+                    "lr": parameters.lr
+                    * float(
+                        p2_training_config["critic_learning_rate_scale"]
+                    ),
+                    "lr_scale": float(
+                        p2_training_config["critic_learning_rate_scale"]
+                    ),
+                    "group_name": "critic",
+                },
+            ]
+        )
+        if resume_payload is not None:
+            from utilities.psb_marl.p2_checkpoint import restore_p2_rng_state
+
+            optim.load_state_dict(resume_payload["optimizer_state"])
+            restore_p2_rng_state(resume_payload)
+    elif is_m9_trainer:
         from utilities.opinion.trainer import (
             OpinionTrainingSchedule,
             clip_m9_gradients,
@@ -1035,6 +1377,7 @@ def mappo_cavs(
         rollout_finished_at = time.time()
         rollout_seconds = rollout_finished_at - iteration_cycle_start
         optimization_started_at = rollout_finished_at
+        p2_rollout_diagnostics = {}
         loss_objective_sum = 0.0
         loss_critic_sum = 0.0
         loss_entropy_sum = 0.0
@@ -1048,6 +1391,16 @@ def mappo_cavs(
         sequence_state_replay_error_sum = 0.0
         sequence_neutral_penalty_sum = 0.0
         sequence_magnitude_penalty_sum = 0.0
+        p2_control_energy_sum = 0.0
+        p2_control_trust_sum = 0.0
+        p2_saturation_penalty_sum = 0.0
+        p2_max_root_residual = 0.0
+        p2_min_root_denominator = float("inf")
+        p2_mean_abs_b_sum = 0.0
+        p2_mean_abs_z_sum = 0.0
+        p2_mean_abs_delta_loc_sum = 0.0
+        p2_control_gradient_norm_sum = 0.0
+        p2_adapter_gradient_norm_sum = 0.0
         loss_update_count = 0
 
         tensordict_data.set(
@@ -1062,6 +1415,72 @@ def mappo_cavs(
             .unsqueeze(-1)
             .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
         )
+
+        if is_psb_p2:
+            from utilities.psb_marl.p2_diagnostics import (
+                p2_state_diagnostics,
+                p2_zero_branch_counterfactual_diagnostics,
+            )
+            from utilities.psb_marl.p2_state import P2EdgeStateTracker
+
+            if psb_bridge is None:
+                raise RuntimeError("P2 diagnostics require the policy bridge.")
+            p2_rollout_diagnostics = p2_state_diagnostics(
+                tensordict_data,
+                rho_c=float(psb_runtime_config["proximal"]["rho_c"]),
+                z_scale=float(
+                    psb_runtime_config["branch_adapter"]["z_scale"]
+                ),
+            )
+            p2_rollout_diagnostics.update(
+                p2_zero_branch_counterfactual_diagnostics(
+                    tensordict_data,
+                    bridge=psb_bridge,
+                )
+            )
+
+            task_reward = tensordict_data.get(("next", env.reward_key))
+            tensordict_data.set(
+                ("next", "agents", "psb", "task_reward"),
+                task_reward.detach().clone(),
+            )
+            collected_b = tensordict_data.get(("agents", "psb", "b"))
+            upper_mask = torch.triu(
+                torch.ones(
+                    parameters.n_agents,
+                    parameters.n_agents,
+                    dtype=torch.bool,
+                    device=collected_b.device,
+                ),
+                diagonal=1,
+            )
+            edge_count = float(
+                parameters.n_agents * (parameters.n_agents - 1) // 2
+            )
+            rollout_control_energy = (
+                collected_b.square()[..., upper_mask].sum(dim=-1)
+                / edge_count
+            )
+            reward_penalty = (
+                float(p2_training_config["energy_coefficient"])
+                * rollout_control_energy.unsqueeze(-1).unsqueeze(-1)
+            )
+            tensordict_data.set(
+                ("next", env.reward_key),
+                task_reward - reward_penalty.expand_as(task_reward),
+            )
+
+            z_for_next_value = P2EdgeStateTracker.apply_resets(
+                tensordict_data.get(("agents", "psb", "z_next_dense")),
+                tensordict_data.get(
+                    ("next", "agents", "info", "agent_reset_mask")
+                ),
+                tensordict_data.get(("next", "done")),
+            )
+            tensordict_data.set(
+                ("next", "agents", "psb", "z_prev_dense"),
+                z_for_next_value,
+            )
 
         with torch.no_grad():
             GAE(
@@ -1090,13 +1509,21 @@ def mappo_cavs(
 
         sequence_iteration_metrics = {}
         sequence_buffer = None
-        if is_sequence_buffer:
-            from utilities.opinion.sequence_buffer import OpinionSequenceBuffer
+        if uses_sequence_buffer:
+            if is_psb_p2:
+                from utilities.psb_marl.p2_buffer import P2SequenceBuffer
 
-            sequence_buffer = OpinionSequenceBuffer(
-                tensordict_data,
-                chunk_length=int(opinion_policy_config["chunk_length"]),
-            )
+                sequence_buffer = P2SequenceBuffer(
+                    tensordict_data,
+                    chunk_length=int(p2_training_config["chunk_length"]),
+                )
+            else:
+                from utilities.opinion.sequence_buffer import OpinionSequenceBuffer
+
+                sequence_buffer = OpinionSequenceBuffer(
+                    tensordict_data,
+                    chunk_length=int(opinion_policy_config["chunk_length"]),
+                )
             sequence_iteration_metrics = sequence_buffer.diagnostics()
         else:
             data_view = tensordict_data.reshape(
@@ -1106,7 +1533,7 @@ def mappo_cavs(
             # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
         for _ in range(parameters.num_epochs):
-            if is_sequence_buffer:
+            if uses_sequence_buffer:
                 if is_sequence_evidence_training:
                     mini_batches = sequence_buffer.iter_sequence_minibatches(
                         minibatch_size=parameters.minibatch_size,
@@ -1127,7 +1554,13 @@ def mappo_cavs(
                 mini_batches = replay_minibatches()
             for mini_batch_data in mini_batches:
 
-                if is_sequence_evidence_training:
+                if is_psb_p2:
+                    loss_vals = p2_sequence_loss(mini_batch_data)
+                    critic_batch = mini_batch_data.tensordict.reshape(-1)
+                    loss_vals["loss_critic"] = loss_module.loss_critic(
+                        critic_batch
+                    ).mean()
+                elif is_sequence_evidence_training:
                     loss_vals = sequence_ppo_loss(mini_batch_data)
                     critic_batch = mini_batch_data.tensordict.reshape(-1)
                     loss_vals["loss_critic"] = loss_module.loss_critic(
@@ -1162,6 +1595,48 @@ def mappo_cavs(
                     sequence_magnitude_penalty_sum += loss_vals[
                         "magnitude_penalty"
                     ].item()
+                if is_psb_p2:
+                    loss_regularization_sum += float(
+                        loss_vals["loss_regularization"].detach().item()
+                    )
+                    sequence_approx_kl_sum += float(
+                        loss_vals["approx_kl"].item()
+                    )
+                    sequence_clip_fraction_sum += float(
+                        loss_vals["clip_fraction"].item()
+                    )
+                    sequence_log_prob_error_sum += float(
+                        loss_vals["log_prob_abs_error"].item()
+                    )
+                    sequence_state_replay_error_sum += float(
+                        loss_vals["state_replay_abs_error"].item()
+                    )
+                    p2_control_energy_sum += float(
+                        loss_vals["control_energy"].item()
+                    )
+                    p2_control_trust_sum += float(
+                        loss_vals["control_trust"].item()
+                    )
+                    p2_saturation_penalty_sum += float(
+                        loss_vals["saturation_penalty"].item()
+                    )
+                    p2_max_root_residual = max(
+                        p2_max_root_residual,
+                        float(loss_vals["max_root_residual"].item()),
+                    )
+                    p2_min_root_denominator = min(
+                        p2_min_root_denominator,
+                        float(loss_vals["min_root_denominator"].item()),
+                    )
+                    p2_mean_abs_b_sum += float(
+                        loss_vals["mean_abs_b"].item()
+                    )
+                    p2_mean_abs_z_sum += float(
+                        loss_vals["mean_abs_z"].item()
+                    )
+                    p2_mean_abs_delta_loc_sum += float(
+                        loss_vals["mean_abs_delta_loc"].item()
+                    )
                 loss_update_count += 1
 
                 loss_value = (
@@ -1201,6 +1676,29 @@ def mappo_cavs(
                             )
                     base_actor_gradient_norm_sum += float(
                         squared_base_gradient_norm.sqrt().item()
+                    )
+                if is_psb_p2:
+                    squared_control_gradient_norm = torch.zeros(
+                        (), device=parameters.device
+                    )
+                    for parameter in control_parameters:
+                        if parameter.grad is not None:
+                            squared_control_gradient_norm += (
+                                parameter.grad.detach().norm(2).square()
+                            )
+                    p2_control_gradient_norm_sum += float(
+                        squared_control_gradient_norm.sqrt().item()
+                    )
+                    squared_adapter_gradient_norm = torch.zeros(
+                        (), device=parameters.device
+                    )
+                    for parameter in adapter_parameters:
+                        if parameter.grad is not None:
+                            squared_adapter_gradient_norm += (
+                                parameter.grad.detach().norm(2).square()
+                            )
+                    p2_adapter_gradient_norm_sum += float(
+                        squared_adapter_gradient_norm.sqrt().item()
                     )
 
                 if is_m9_trainer:
@@ -1314,6 +1812,115 @@ def mappo_cavs(
                             .float()
                             .mean()
                             .item()
+                        ),
+                    }
+                )
+        p2_iteration_metrics = {}
+        if is_psb_p2:
+            p2_collected_b = tensordict_data.get(("agents", "psb", "b"))
+            p2_collected_z = tensordict_data.get(
+                ("agents", "psb", "z_next_dense")
+            )
+            p2_collected_delta = tensordict_data.get(
+                ("agents", "psb", "delta_loc")
+            )
+            p2_collected_activity = tensordict_data.get(
+                ("agents", "psb", "branch_activity")
+            )
+            p2_collected_delta_log_scale = tensordict_data.get(
+                ("agents", "psb", "delta_log_scale")
+            )
+            p2_collected_scale = tensordict_data.get(("agents", "scale"))
+            p2_collected_base_scale = tensordict_data.get(
+                ("agents", "psb", "base_scale")
+            )
+            p2_collected_root = tensordict_data.get(
+                ("agents", "psb", "root_residual")
+            )
+            p2_collected_denominator = tensordict_data.get(
+                ("agents", "psb", "root_denominator")
+            )
+            p2_iteration_metrics = {
+                "rollout_control_energy": float(
+                    rollout_control_energy.mean().item()
+                ),
+                "rollout_b_abs_mean": float(p2_collected_b.abs().mean().item()),
+                "rollout_z_abs_mean": float(p2_collected_z.abs().mean().item()),
+                "rollout_delta_loc_abs_mean": float(
+                    p2_collected_delta.abs().mean().item()
+                ),
+                "rollout_branch_activity_mean": float(
+                    p2_collected_activity.mean().item()
+                ),
+                "rollout_branch_activity_max": float(
+                    p2_collected_activity.max().item()
+                ),
+                "rollout_delta_log_scale_abs_mean": float(
+                    p2_collected_delta_log_scale.abs().mean().item()
+                ),
+                "rollout_delta_log_scale_abs_max": float(
+                    p2_collected_delta_log_scale.abs().max().item()
+                ),
+                "rollout_scale_matches_base_exactly": bool(
+                    torch.equal(p2_collected_scale, p2_collected_base_scale)
+                ),
+                "rollout_max_root_residual": float(
+                    p2_collected_root.abs().max().item()
+                ),
+                "rollout_min_root_denominator": float(
+                    p2_collected_denominator.min().item()
+                ),
+                "rollout_z_antisymmetry_error": float(
+                    (
+                        p2_collected_z
+                        + p2_collected_z.transpose(-1, -2)
+                    )
+                    .abs()
+                    .max()
+                    .item()
+                ),
+                "base_actor_frozen": True,
+                **p2_rollout_diagnostics,
+            }
+            if str(
+                adapter_config.get("conditioning_mode", "general")
+            ) in {"sector_q_gate", "supported_sector_q_gate"}:
+                p2_sector_bound = (
+                    float(adapter_config["max_delta_loc"])
+                    * p2_collected_activity
+                )
+                p2_iteration_metrics[
+                    "rollout_sector_bound_max_violation"
+                ] = float(
+                    (
+                        p2_collected_delta.abs() - p2_sector_bound
+                    )
+                    .clamp_min(0.0)
+                    .max()
+                    .item()
+                )
+            if p2_collected_delta.shape[-1] == 2:
+                p2_speed_delta = p2_collected_delta[..., 0].abs()
+                p2_steering_delta = p2_collected_delta[..., 1].abs()
+                p2_iteration_metrics.update(
+                    {
+                        "rollout_delta_speed_abs_mean": float(
+                            p2_speed_delta.mean().item()
+                        ),
+                        "rollout_delta_speed_abs_p95": float(
+                            torch.quantile(p2_speed_delta, 0.95).item()
+                        ),
+                        "rollout_delta_speed_abs_max": float(
+                            p2_speed_delta.max().item()
+                        ),
+                        "rollout_delta_steering_abs_mean": float(
+                            p2_steering_delta.mean().item()
+                        ),
+                        "rollout_delta_steering_abs_p95": float(
+                            torch.quantile(p2_steering_delta, 0.95).item()
+                        ),
+                        "rollout_delta_steering_abs_max": float(
+                            p2_steering_delta.max().item()
                         ),
                     }
                 )
@@ -1443,6 +2050,71 @@ def mappo_cavs(
                         if is_sequence_evidence_training
                         else {}
                     ),
+                    **(
+                        {
+                            "loss_psb_regularization": (
+                                loss_regularization_sum / loss_update_count
+                            ),
+                            "sequence_approx_kl": (
+                                sequence_approx_kl_sum / loss_update_count
+                            ),
+                            "sequence_clip_fraction": (
+                                sequence_clip_fraction_sum / loss_update_count
+                            ),
+                            "sequence_log_prob_abs_error": (
+                                sequence_log_prob_error_sum / loss_update_count
+                            ),
+                            "sequence_state_replay_abs_error": (
+                                sequence_state_replay_error_sum
+                                / loss_update_count
+                            ),
+                            "control_energy": (
+                                p2_control_energy_sum / loss_update_count
+                            ),
+                            "control_trust": (
+                                p2_control_trust_sum / loss_update_count
+                            ),
+                            "saturation_penalty": (
+                                p2_saturation_penalty_sum / loss_update_count
+                            ),
+                            "max_root_residual": p2_max_root_residual,
+                            "min_root_denominator": p2_min_root_denominator,
+                            "mean_abs_b": p2_mean_abs_b_sum / loss_update_count,
+                            "mean_abs_z": p2_mean_abs_z_sum / loss_update_count,
+                            "mean_abs_delta_loc": (
+                                p2_mean_abs_delta_loc_sum / loss_update_count
+                            ),
+                            "control_gradient_norm": (
+                                p2_control_gradient_norm_sum / loss_update_count
+                            ),
+                            "adapter_gradient_norm": (
+                                p2_adapter_gradient_norm_sum / loss_update_count
+                            ),
+                            "control_learning_rate": float(
+                                next(
+                                    group["lr"]
+                                    for group in optim.param_groups
+                                    if group["group_name"] == "control"
+                                )
+                            ),
+                            "adapter_learning_rate": float(
+                                next(
+                                    group["lr"]
+                                    for group in optim.param_groups
+                                    if group["group_name"] == "adapter"
+                                )
+                            ),
+                            "critic_learning_rate": float(
+                                next(
+                                    group["lr"]
+                                    for group in optim.param_groups
+                                    if group["group_name"] == "critic"
+                                )
+                            ),
+                        }
+                        if is_psb_p2
+                        else {}
+                    ),
                     "learning_rate": float(
                         optim.param_groups[-1]["lr"]
                         if is_opinion_policy
@@ -1518,6 +2190,7 @@ def mappo_cavs(
                         else {}
                     ),
                     **opinion_iteration_metrics,
+                    **p2_iteration_metrics,
                     **sequence_iteration_metrics,
                     "rollout_seconds": float(rollout_seconds),
                     "optimization_seconds": float(optimization_seconds),
@@ -1535,7 +2208,36 @@ def mappo_cavs(
                 status="running",
                 iteration=pbar.n,
             )
-            if is_m9_trainer:
+            if is_psb_p2:
+                from utilities.psb_marl.checkpoint import sha256_file
+                from utilities.psb_marl.p2_checkpoint import save_p2_checkpoint
+
+                checkpoint_arguments = {
+                    "iteration": int(pbar.n),
+                    "policy": policy,
+                    "critic": critic,
+                    "optimizer": optim,
+                    "artifact_iterations": artifact_iterations,
+                    "runtime_config": psb_runtime_config,
+                    "base_policy_sha256": sha256_file(
+                        Path(str(psb_runtime_config["base_policy_checkpoint"]))
+                    ),
+                    "state_tracker": psb_tracker,
+                }
+                save_p2_checkpoint(
+                    artifact_run_directory / "latest_checkpoint.pt",
+                    **checkpoint_arguments,
+                )
+                checkpoint_interval = int(
+                    p2_training_config["checkpoint_interval"]
+                )
+                if pbar.n % checkpoint_interval == 0:
+                    save_p2_checkpoint(
+                        artifact_run_directory
+                        / f"checkpoint_iteration_{pbar.n:06d}.pt",
+                        **checkpoint_arguments,
+                    )
+            elif is_m9_trainer:
                 from utilities.opinion.checkpoint import save_m9_checkpoint
 
                 checkpoint_arguments = {
@@ -1579,9 +2281,64 @@ def mappo_cavs(
 
         iteration_cycle_start = time.time()
 
-    # Save the final model
-    torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
-    torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
+    # P2 keeps the learned policy quarantined as a candidate.  The stable
+    # final_* deployment pair remains byte-identical to Base until the manual
+    # paired non-inferiority gate explicitly promotes the candidate.
+    if is_psb_p2:
+        from utilities.psb_marl.checkpoint import copy_checkpoint_exact
+
+        torch.save(
+            policy.state_dict(),
+            parameters.where_to_save + "candidate_policy.pth",
+        )
+        torch.save(
+            critic.state_dict(),
+            parameters.where_to_save + "candidate_critic.pth",
+        )
+        source_policy = Path(
+            str(psb_runtime_config["base_policy_checkpoint"])
+        )
+        source_critic = Path(
+            str(psb_runtime_config["base_critic_checkpoint"])
+        )
+        copy_checkpoint_exact(
+            source_policy,
+            Path(parameters.where_to_save) / "base_fallback_policy.pth",
+        )
+        copy_checkpoint_exact(
+            source_critic,
+            Path(parameters.where_to_save) / "base_fallback_critic.pth",
+        )
+        copy_checkpoint_exact(
+            source_policy,
+            Path(parameters.where_to_save) / "final_policy.pth",
+        )
+        copy_checkpoint_exact(
+            source_critic,
+            Path(parameters.where_to_save) / "final_critic.pth",
+        )
+        torch.save(
+            psb_bridge.control_net.state_dict(),
+            parameters.where_to_save + "final_control_net.pth",
+        )
+        torch.save(
+            {
+                "branch_encoder": psb_bridge.branch_encoder.state_dict(),
+                "distribution_adapter": psb_bridge.adapter.state_dict(),
+            },
+            parameters.where_to_save + "final_branch_adapter.pth",
+        )
+        torch.save(
+            psb_tracker.snapshot(),
+            parameters.where_to_save + "final_psb_state.pt",
+        )
+    else:
+        torch.save(
+            policy.state_dict(), parameters.where_to_save + "final_policy.pth"
+        )
+        torch.save(
+            critic.state_dict(), parameters.where_to_save + "final_critic.pth"
+        )
     if is_opinion_policy:
         if opinion_bridge is None:
             raise RuntimeError(
@@ -1602,7 +2359,24 @@ def mappo_cavs(
         )
 
     if artifact_logging_enabled:
-        if is_opinion_policy:
+        if is_psb_p2:
+            from utilities.psb_marl.checkpoint import sha256_file
+            from utilities.psb_marl.p2_checkpoint import save_p2_checkpoint
+
+            save_p2_checkpoint(
+                artifact_run_directory / "final_checkpoint.pt",
+                iteration=int(pbar.n),
+                policy=policy,
+                critic=critic,
+                optimizer=optim,
+                artifact_iterations=artifact_iterations,
+                runtime_config=psb_runtime_config,
+                base_policy_sha256=sha256_file(
+                    Path(str(psb_runtime_config["base_policy_checkpoint"]))
+                ),
+                state_tracker=psb_tracker,
+            )
+        elif is_opinion_policy:
             if base_actor_source_state is None or opinion_bridge is None:
                 raise RuntimeError("Opinion checkpoint source state is unavailable.")
             torch.save(
@@ -1708,15 +2482,31 @@ def mappo_cavs(
             total_seconds=training_duration_seconds,
         )
         save_training_curves(artifact_run_directory, artifact_iterations)
-        atomic_write_json(
-            artifact_run_directory / "comparison_to_base.json",
+        comparison_payload = (
             {
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "reference": "recorded_base_source",
+                "status": "pending_manual_paired_validation",
+                "automated_performance_validation": False,
+                "deployment": "base_fallback",
+                "candidate_checkpoint": "candidate_policy.pth",
+                "note": (
+                    "Run main_testing.py with --compare-base; deployment remains "
+                    "Base until an explicit promotion passes the configured gate."
+                ),
+            }
+            if is_psb_p2
+            else {
                 "schema_version": ARTIFACT_SCHEMA_VERSION,
                 "reference": "self",
                 "status": "base_reference_created",
                 "automated_performance_validation": False,
                 "note": "Performance comparison is performed manually by the user.",
-            },
+            }
+        )
+        atomic_write_json(
+            artifact_run_directory / "comparison_to_base.json",
+            comparison_payload,
         )
 
     return env, policy, priority_module, parameters

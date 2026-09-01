@@ -1,0 +1,42 @@
+{
+    "schema_version": 1,
+    "method": "psb_marl_robustness",
+    "protocol": "p2_2_r_locked_holdout",
+    "training_iterations": 30,
+    "training_runs": [
+        {
+            "training_seed": 0,
+            "config": "configs/psb_marl/p2_2_r_seed0.json"
+        },
+        {
+            "training_seed": 1,
+            "config": "configs/psb_marl/p2_2_r_seed1.json"
+        },
+        {
+            "training_seed": 2,
+            "config": "configs/psb_marl/p2_2_r_seed2.json"
+        }
+    ],
+    "evaluations": [
+        {
+            "name": "holdout_cpm_mixed",
+            "scenario": "CPM_mixed",
+            "max_steps": 600,
+            "episodes": 4,
+            "seeds": [201, 202, 203, 204, 205, 206, 207, 208, 209, 210]
+        },
+        {
+            "name": "holdout_intersection_2",
+            "scenario": "intersection_2",
+            "max_steps": 600,
+            "episodes": 4,
+            "seeds": [301, 302, 303, 304, 305, 306, 307, 308, 309, 310]
+        }
+    ],
+    "required_gates": [
+        "reward_passed",
+        "collision_passed",
+        "lane_collision_passed",
+        "structural_passed"
+    ]
+}

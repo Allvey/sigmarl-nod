@@ -8,6 +8,14 @@
 
 1. [`psb_marl/P0_BASE_PASSTHROUGH.md`](psb_marl/P0_BASE_PASSTHROUGH.md)
 2. [`psb_marl/P1_ZERO_CONTROL_EQUIVALENCE.md`](psb_marl/P1_ZERO_CONTROL_EQUIVALENCE.md)
+3. [`psb_marl/P2_FROZEN_BASE_BIFURCATION.md`](psb_marl/P2_FROZEN_BASE_BIFURCATION.md)
+4. [`psb_marl/P2_1_DIAGNOSTICS.md`](psb_marl/P2_1_DIAGNOSTICS.md)
+5. [`psb_marl/P2_1_CAUSAL_BRANCH.md`](psb_marl/P2_1_CAUSAL_BRANCH.md)
+6. [`psb_marl/P2_1_MEAN_ONLY.md`](psb_marl/P2_1_MEAN_ONLY.md)
+7. [`psb_marl/P2_1_PROJECTED_COUNTERFACTUAL.md`](psb_marl/P2_1_PROJECTED_COUNTERFACTUAL.md)
+8. [`psb_marl/P2_1_GAIN_BOUNDED_GATE.md`](psb_marl/P2_1_GAIN_BOUNDED_GATE.md)
+9. [`psb_marl/P2_1_URGENCY_SUPPORTED_SECTOR.md`](psb_marl/P2_1_URGENCY_SUPPORTED_SECTOR.md)
+10. [`psb_marl/P2_2_ROBUSTNESS_VALIDATION.md`](psb_marl/P2_2_ROBUSTNESS_VALIDATION.md)
 
 旧 Opinion-MARL 与 AVOCADO-MARL 代码继续作为基线和消融，不定义 PSB 接口。
 

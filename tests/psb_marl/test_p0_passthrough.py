@@ -180,6 +180,8 @@ class P0PassthroughTests(unittest.TestCase):
                     render=False,
                     compare_base=True,
                     promote_if_noninferior=True,
+                    psb_action_projection="longitudinal_only",
+                    psb_report_label="confirmatory10",
                 )
             self.assertEqual(result, {"passed": True})
             kwargs = mocked_test.call_args.kwargs
@@ -190,6 +192,16 @@ class P0PassthroughTests(unittest.TestCase):
             self.assertFalse(kwargs["render"])
             self.assertTrue(kwargs["compare_base"])
             self.assertTrue(kwargs["promote_if_noninferior"])
+            self.assertEqual(
+                kwargs["psb_action_projection"], "longitudinal_only"
+            )
+            self.assertEqual(kwargs["report_label"], "confirmatory10")
+
+    def test_psb_report_label_rejects_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path, _, _ = self._experiment(Path(directory))
+            with self.assertRaises(ValueError):
+                run_psb_test(config_path, report_label="../overwrite")
 
 
 if __name__ == "__main__":
