@@ -1,6 +1,6 @@
 # PSB-MARL P5：解冻 Base 的单阶段联合训练
 
-P5 直接从已完成的 P3.3 Candidate warm-start，不再拆分额外子阶段。训练从第一个
+P5 直接从已完成的 P3.3 Candidate warm-start，不重新从零训练 Base，也不拆分额外子阶段。训练从第一个
 iteration 起同时更新 Candidate Base Actor、反对称控制网络、Branch Encoder/Adapter、
 augmented central critic 和在线 differential critic。
 
@@ -11,6 +11,27 @@ backbone 的分布 KL 锚点，以及验证通过前的部署回退。解冻的�
 首版继续锁定 P3.3 的结构边界：`longitudinal_only`、mean-only、
 `supported_sector_q_gate`，并仅启用 vehicle dual。P5 不同时开放 steering、scale 或 lane
 dual；若联合训练效果不佳，再依据诊断结果定位原因。
+
+## Transition PPO
+
+P5 不再使用 Sequence PPO。环境 rollout 仍逐物理步维护真实的有状态分岔变量
+`z_prev -> z_next`；优化时则把 rollout 展平，每个 transition 从采集时保存的
+`z_prev_dense` 独立重算当前步近端更新和动作分布。梯度可以通过当前步的 proximal solver
+传回 ControlNet 和 Actor，但不会跨 transition 传播，因此不再执行 16-step truncated
+BPTT。
+
+锁定设置为：
+
+- `ppo_mode = transition`；
+- 每批最多 `15` 个 PPO epochs；
+- minibatch 为 `1024`；
+- epoch 平均近似 KL 超过 `0.03` 时提前停止当前批次优化。
+
+这项修改有意牺牲跨时间 credit assignment，以降低计算量并避免原先 `60` 个 Sequence
+PPO epochs 对同一批数据的过度拟合。P2/P3 的历史 Sequence PPO 实现和产物保持不变。
+训练指标仍保留若干 `sequence_*` 兼容字段供旧分析脚本读取；P5 新 run 中
+`sequence_chunk_count=0`，应以 `ppo_mode` 和 `temporal_backpropagation_enabled` 判断实际
+训练模式。
 
 ## 联合目标与学习率
 
@@ -44,6 +65,9 @@ conda run -n sigmarl-nod python main_training.py \
 - `source_base_gaussian_kl` 与 `loss_base_anchor`；
 - `absolute_critic_loss` 与 `differential_critic_loss`；
 - Base Actor、absolute critic、differential critic 的实际学习率。
+- `ppo_mode`、`temporal_backpropagation_enabled`；
+- `ppo_epochs_configured`、`ppo_epochs_completed`、`ppo_early_stop_triggered`；
+- `ppo_target_kl`、`ppo_update_count` 和 `transition_count`。
 
 P5 训练产物仍处于 quarantine。只有通过 paired non-inferiority、绝对安全预算和 efficacy
 gate 后，Candidate 才能替代 `base_fallback_policy.pth`。

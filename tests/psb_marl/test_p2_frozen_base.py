@@ -22,7 +22,10 @@ from utilities.psb_marl.p2_diagnostics import (
     p2_state_diagnostics,
     p2_zero_branch_counterfactual_diagnostics,
 )
-from utilities.psb_marl.p2_loss import P2SequencePPOLoss
+from utilities.psb_marl.p2_loss import (
+    P2SequencePPOLoss,
+    P2TransitionPPOLoss,
+)
 from utilities.psb_marl.p2_network import (
     AntisymmetricBifurcationControl,
     BranchContextEncoder,
@@ -1153,6 +1156,42 @@ class P2SequenceTests(unittest.TestCase):
         buffer = P2SequenceBuffer(rollout, chunk_length=4)
         batch = next(buffer.iter_minibatches(minibatch_size=8))
         loss = P2SequencePPOLoss(
+            actor=DistributionBuilder(),
+            bridge=bridge,
+            observation_key=("agents", "observation"),
+            action_key=("agents", "action"),
+            advantage_key=("agents", "advantage"),
+            n_agents=3,
+            clip_epsilon=0.2,
+            entropy_coefficient=1e-4,
+            energy_coefficient=1e-3,
+            control_trust_region_coefficient=1e-2,
+            saturation_coefficient=1e-3,
+            saturation_fraction=0.8,
+        )
+        result = loss(batch)
+        total = (
+            result["loss_objective"]
+            + result["loss_entropy"]
+            + result["loss_regularization"]
+        )
+        total.backward()
+        self.assertLess(float(result["log_prob_abs_error"]), 1e-5)
+        self.assertLess(float(result["state_replay_abs_error"]), 1e-6)
+        self.assertGreater(
+            sum(
+                float(parameter.grad.abs().sum())
+                for parameter in bridge.adapter.parameters()
+                if parameter.grad is not None
+            ),
+            0.0,
+        )
+
+    def test_transition_recompute_uses_stored_state_and_backpropagates(self):
+        bridge = make_bridge()
+        rollout = self._rollout(bridge)
+        batch = rollout.reshape(-1).detach()
+        loss = P2TransitionPPOLoss(
             actor=DistributionBuilder(),
             bridge=bridge,
             observation_key=("agents", "observation"),

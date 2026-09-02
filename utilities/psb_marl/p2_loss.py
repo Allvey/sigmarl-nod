@@ -128,9 +128,11 @@ class P2SequencePPOLoss(nn.Module):
             )
         return fields
 
-    def forward(self, mini_batch: P2SequenceMiniBatch) -> Dict[str, torch.Tensor]:
-        td = mini_batch.tensordict
-        recomputed = self.unroll(mini_batch)
+    def _loss_from_recomputed(
+        self,
+        td,
+        recomputed: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
         distribution_td = td.clone(False)
         distribution_td.set(("agents", "loc"), recomputed["loc"])
         distribution_td.set(("agents", "scale"), recomputed["scale"])
@@ -251,3 +253,36 @@ class P2SequencePPOLoss(nn.Module):
             "mean_abs_z": recomputed["z_next_dense"].abs().mean().detach(),
             "mean_abs_delta_loc": recomputed["delta_loc"].abs().mean().detach(),
         }
+
+    def forward(self, mini_batch: P2SequenceMiniBatch) -> Dict[str, torch.Tensor]:
+        td = mini_batch.tensordict
+        return self._loss_from_recomputed(td, self.unroll(mini_batch))
+
+
+class P2TransitionPPOLoss(P2SequencePPOLoss):
+    """One-step PPO objective with rollout state treated as fixed input.
+
+    The collector still evolves the physical PSB state through time. During
+    optimization, however, every transition starts from its stored ``z_prev``
+    and gradients stop at that boundary. This preserves the differentiable
+    current-step proximal update while removing sequence replay and truncated
+    backpropagation through time.
+    """
+
+    def forward(self, td) -> Dict[str, torch.Tensor]:
+        if len(td.batch_size) != 1:
+            raise ValueError(
+                "P2 transition mini-batch must have a flat [sample] batch shape."
+            )
+        output = self.bridge(
+            observation=td.get(self.observation_key),
+            pair_features=td.get(("agents", "info", "pair_features")),
+            neighbor_ids=td.get(("agents", "info", "neighbor_ids")).to(
+                torch.long
+            ),
+            urgency=td.get(("agents", "info", "urgency")),
+            confidence=td.get(("agents", "info", "confidence")),
+            pair_mask=td.get(("agents", "info", "pair_mask")).to(torch.bool),
+            z_prev_dense=td.get(("agents", "psb", "z_prev_dense")).detach(),
+        )
+        return self._loss_from_recomputed(td, output._asdict())

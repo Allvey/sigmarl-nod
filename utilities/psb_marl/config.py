@@ -1052,6 +1052,10 @@ class PSBP33PairedDifferentialConfig:
 class PSBP5JointTrainingConfig:
     """Single-stage joint optimization settings for the final PSB policy."""
 
+    ppo_mode: str
+    ppo_epochs: int
+    minibatch_size: int
+    target_kl: float
     base_actor_learning_rate_scale: float
     absolute_critic_learning_rate_scale: float
     absolute_critic_loss_coefficient: float
@@ -1062,6 +1066,20 @@ class PSBP5JointTrainingConfig:
         raw = _object(raw, "joint_training")
         _exact_keys(raw, set(cls.__dataclass_fields__), "joint_training")
         result = cls(
+            ppo_mode=_string(raw["ppo_mode"], "joint_training.ppo_mode"),
+            ppo_epochs=_integer(
+                raw["ppo_epochs"], "joint_training.ppo_epochs", minimum=1
+            ),
+            minibatch_size=_integer(
+                raw["minibatch_size"],
+                "joint_training.minibatch_size",
+                minimum=1,
+            ),
+            target_kl=_number(
+                raw["target_kl"],
+                "joint_training.target_kl",
+                strictly_positive=True,
+            ),
             base_actor_learning_rate_scale=_number(
                 raw["base_actor_learning_rate_scale"],
                 "joint_training.base_actor_learning_rate_scale",
@@ -1082,6 +1100,10 @@ class PSBP5JointTrainingConfig:
                 "joint_training.base_anchor_coefficient",
             ),
         )
+        if result.ppo_mode != "transition":
+            raise PSBConfigError(
+                "P5 requires ppo_mode='transition'; Sequence PPO is disabled."
+            )
         if result.base_actor_learning_rate_scale > 1.0:
             raise PSBConfigError(
                 "P5 Base Actor learning-rate scale must not exceed 1."

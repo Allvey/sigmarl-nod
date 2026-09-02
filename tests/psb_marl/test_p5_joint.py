@@ -27,6 +27,10 @@ class P5JointTrainingTests(unittest.TestCase):
         self.assertEqual(runtime["stage"], "p2_frozen_base_bifurcation")
         self.assertEqual(runtime["p5_stage"], "p5_joint_psb_marl")
         self.assertFalse(runtime["freeze_base_actor"])
+        self.assertEqual(runtime["joint_training"]["ppo_mode"], "transition")
+        self.assertEqual(runtime["joint_training"]["ppo_epochs"], 15)
+        self.assertEqual(runtime["joint_training"]["minibatch_size"], 1024)
+        self.assertEqual(runtime["joint_training"]["target_kl"], 0.03)
         self.assertEqual(
             runtime["branch_adapter"]["action_projection"],
             "longitudinal_only",
@@ -50,7 +54,25 @@ class P5JointTrainingTests(unittest.TestCase):
 
     def test_joint_config_rejects_full_rate_backbone_updates(self):
         payload = {
+            "ppo_mode": "transition",
+            "ppo_epochs": 15,
+            "minibatch_size": 1024,
+            "target_kl": 0.03,
             "base_actor_learning_rate_scale": 1.01,
+            "absolute_critic_learning_rate_scale": 1.0,
+            "absolute_critic_loss_coefficient": 1.0,
+            "base_anchor_coefficient": 0.01,
+        }
+        with self.assertRaises(PSBConfigError):
+            PSBP5JointTrainingConfig.from_dict(payload)
+
+    def test_joint_config_rejects_sequence_ppo(self):
+        payload = {
+            "ppo_mode": "sequence",
+            "ppo_epochs": 15,
+            "minibatch_size": 1024,
+            "target_kl": 0.03,
+            "base_actor_learning_rate_scale": 0.1,
             "absolute_critic_learning_rate_scale": 1.0,
             "absolute_critic_loss_coefficient": 1.0,
             "base_anchor_coefficient": 0.01,

@@ -423,6 +423,23 @@ def mappo_cavs(
         is_psb_p33
         and psb_runtime_config.get("p5_stage") == "p5_joint_psb_marl"
     )
+    joint_training_config = dict(
+        psb_runtime_config.get("joint_training", {})
+        if psb_runtime_config is not None
+        else {}
+    )
+    p5_ppo_mode = (
+        str(joint_training_config.get("ppo_mode", "sequence"))
+        if is_psb_p5
+        else "sequence"
+    )
+    if (
+        is_psb_p5
+        and not bool(parameters.is_testing_mode)
+        and p5_ppo_mode != "transition"
+    ):
+        raise ValueError("P5 requires transition PPO; Sequence PPO is disabled.")
+    uses_psb_transition_ppo = bool(is_psb_p5 and p5_ppo_mode == "transition")
     if is_psb_p33:
         paired_contract = psb_runtime_config["paired_differential"]
         required_paired_flags = (
@@ -1425,7 +1442,9 @@ def mappo_cavs(
             reset_at_each_iter=True,
         )
 
-    uses_sequence_buffer = is_sequence_buffer or is_psb_p2
+    uses_sequence_buffer = is_sequence_buffer or (
+        is_psb_p2 and not uses_psb_transition_ppo
+    )
     if uses_sequence_buffer:
         replay_buffer = None
     elif parameters.is_prb:
@@ -1489,6 +1508,7 @@ def mappo_cavs(
 
     sequence_ppo_loss = None
     p2_sequence_loss = None
+    p2_transition_loss = None
     p3_dual_controller = None
     p3_differential_config = None
     if is_sequence_evidence_training:
@@ -1523,10 +1543,18 @@ def mappo_cavs(
         )
 
     if is_psb_p2:
-        from utilities.psb_marl.p2_loss import P2SequencePPOLoss
+        from utilities.psb_marl.p2_loss import (
+            P2SequencePPOLoss,
+            P2TransitionPPOLoss,
+        )
 
         p2_training_config = dict(psb_runtime_config["training"])
-        p2_sequence_loss = P2SequencePPOLoss(
+        p2_loss_class = (
+            P2TransitionPPOLoss
+            if uses_psb_transition_ppo
+            else P2SequencePPOLoss
+        )
+        configured_p2_loss = p2_loss_class(
             actor=policy,
             bridge=psb_bridge,
             observation_key=observation_key,
@@ -1554,6 +1582,10 @@ def mappo_cavs(
                 )
             ),
         )
+        if uses_psb_transition_ppo:
+            p2_transition_loss = configured_p2_loss
+        else:
+            p2_sequence_loss = configured_p2_loss
         if is_psb_p32:
             from utilities.psb_marl.p3_dual import ProjectedDualController
 
@@ -1616,9 +1648,6 @@ def mappo_cavs(
                 raise RuntimeError("P5 Candidate Base Actor must be trainable.")
         elif any(parameter.requires_grad for parameter in base_actor_parameters):
             raise RuntimeError("P2 Base Actor must remain frozen.")
-        joint_training_config = dict(
-            psb_runtime_config.get("joint_training", {})
-        )
         optimizer_groups = []
         if is_psb_p5:
             optimizer_groups.append(
@@ -2316,9 +2345,28 @@ def mappo_cavs(
                 -1
             )  # Flatten the batch size to shuffle data
             replay_buffer.extend(data_view)
+            if uses_psb_transition_ppo:
+                sequence_iteration_metrics = {
+                    "ppo_mode": "transition",
+                    "temporal_backpropagation_enabled": False,
+                    "transition_count": int(data_view.batch_size[0]),
+                    "sequence_chunk_count": 0,
+                    "sequence_valid_steps": 0,
+                    "sequence_boundary_violation_count": 0,
+                    "sequence_state_memory_mb": 0.0,
+                }
             # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
-        for _ in range(parameters.num_epochs):
+        ppo_epochs_completed = 0
+        ppo_early_stop_triggered = False
+        ppo_target_kl = (
+            float(joint_training_config["target_kl"])
+            if uses_psb_transition_ppo
+            else None
+        )
+        for epoch_index in range(parameters.num_epochs):
+            epoch_approx_kl_sum = 0.0
+            epoch_approx_kl_count = 0
             if uses_sequence_buffer:
                 if is_sequence_evidence_training:
                     mini_batches = sequence_buffer.iter_sequence_minibatches(
@@ -2341,13 +2389,24 @@ def mappo_cavs(
             for mini_batch_data in mini_batches:
 
                 if is_psb_p2:
-                    loss_vals = p2_sequence_loss(mini_batch_data)
+                    if uses_psb_transition_ppo:
+                        if p2_transition_loss is None:
+                            raise RuntimeError(
+                                "P5 transition PPO loss is unavailable."
+                            )
+                        loss_vals = p2_transition_loss(mini_batch_data)
+                        actor_critic_td = mini_batch_data
+                    else:
+                        if p2_sequence_loss is None:
+                            raise RuntimeError("P2 Sequence PPO loss is unavailable.")
+                        loss_vals = p2_sequence_loss(mini_batch_data)
+                        actor_critic_td = mini_batch_data.tensordict
                     if is_psb_p33:
                         from utilities.psb_marl.p3_differential import (
                             differential_critic_loss,
                         )
 
-                        critic_td = mini_batch_data.tensordict
+                        critic_td = actor_critic_td
                         differential_loss, differential_prediction = (
                             differential_critic_loss(
                                 p3_differential_critic,
@@ -2451,6 +2510,8 @@ def mappo_cavs(
                         loss_vals["loss_base_anchor"].detach().item()
                     )
                     sequence_approx_kl_sum += loss_vals["approx_kl"].item()
+                    epoch_approx_kl_sum += float(loss_vals["approx_kl"].item())
+                    epoch_approx_kl_count += 1
                     sequence_clip_fraction_sum += loss_vals["clip_fraction"].item()
                     sequence_log_prob_error_sum += loss_vals[
                         "log_prob_abs_error"
@@ -2477,6 +2538,8 @@ def mappo_cavs(
                     sequence_approx_kl_sum += float(
                         loss_vals["approx_kl"].item()
                     )
+                    epoch_approx_kl_sum += float(loss_vals["approx_kl"].item())
+                    epoch_approx_kl_count += 1
                     sequence_clip_fraction_sum += float(
                         loss_vals["clip_fraction"].item()
                     )
@@ -2621,6 +2684,14 @@ def mappo_cavs(
                     new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
                     mini_batch_data.set("td_error", new_td_errors)
                     replay_buffer.update_tensordict_priority(mini_batch_data)
+            ppo_epochs_completed = epoch_index + 1
+            if (
+                ppo_target_kl is not None
+                and epoch_approx_kl_count > 0
+                and epoch_approx_kl_sum / epoch_approx_kl_count > ppo_target_kl
+            ):
+                ppo_early_stop_triggered = True
+                break
         optimization_seconds = time.time() - optimization_started_at
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
         if is_psb_p33:
@@ -2991,6 +3062,34 @@ def mappo_cavs(
                     ),
                     **(
                         {
+                            "ppo_mode": (
+                                "transition"
+                                if uses_psb_transition_ppo
+                                else "sequence"
+                            ),
+                            "temporal_backpropagation_enabled": (
+                                not uses_psb_transition_ppo
+                            ),
+                            "ppo_epochs_configured": int(parameters.num_epochs),
+                            "ppo_epochs_completed": int(ppo_epochs_completed),
+                            "ppo_early_stop_triggered": bool(
+                                ppo_early_stop_triggered
+                            ),
+                            "ppo_target_kl": ppo_target_kl,
+                            "ppo_update_count": int(loss_update_count),
+                            "ppo_approx_kl": (
+                                sequence_approx_kl_sum / loss_update_count
+                            ),
+                            "ppo_clip_fraction": (
+                                sequence_clip_fraction_sum / loss_update_count
+                            ),
+                            "ppo_log_prob_abs_error": (
+                                sequence_log_prob_error_sum / loss_update_count
+                            ),
+                            "ppo_state_replay_abs_error": (
+                                sequence_state_replay_error_sum
+                                / loss_update_count
+                            ),
                             "loss_psb_regularization": (
                                 loss_regularization_sum / loss_update_count
                             ),

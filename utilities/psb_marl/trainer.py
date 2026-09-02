@@ -464,6 +464,12 @@ def _train_p5(
     )
     parameters.n_iters = iterations
     parameters.total_frames = parameters.frames_per_batch * iterations
+    parameters.num_epochs = experiment.joint_training.ppo_epochs
+    parameters.minibatch_size = experiment.joint_training.minibatch_size
+    if parameters.frames_per_batch % parameters.minibatch_size != 0:
+        raise PSBConfigError(
+            "P5 transition PPO minibatch_size must divide frames_per_batch."
+        )
     runtime = experiment.p5_runtime_config()
     runtime["training"] = {**runtime["training"], "iterations": iterations}
     run = train_base(
@@ -486,6 +492,11 @@ def _train_p5(
             "deployment": "base_fallback",
             "candidate_checkpoint": "candidate_policy.pth",
             "candidate_backbone_trainable_from_iteration": 1,
+            "ppo_mode": experiment.joint_training.ppo_mode,
+            "temporal_backpropagation_enabled": False,
+            "ppo_epochs": experiment.joint_training.ppo_epochs,
+            "minibatch_size": experiment.joint_training.minibatch_size,
+            "target_kl": experiment.joint_training.target_kl,
             "absolute_critic_learning_enabled": True,
             "differential_critic_learning_enabled": True,
             "dual_learning_enabled": True,
@@ -526,6 +537,11 @@ def _train_p5(
             "actor_learning_enabled": True,
             "candidate_backbone_trainable": True,
             "candidate_backbone_trainable_from_iteration": 1,
+            "ppo_mode": experiment.joint_training.ppo_mode,
+            "temporal_backpropagation_enabled": False,
+            "ppo_epochs": experiment.joint_training.ppo_epochs,
+            "minibatch_size": experiment.joint_training.minibatch_size,
+            "target_kl": experiment.joint_training.target_kl,
             "absolute_critic_learning_enabled": True,
             "dual_learning_enabled": True,
             "paired_differential_learning_enabled": True,
