@@ -20,9 +20,11 @@
 12. [`psb_marl/P3_1_DIFFERENTIAL_CRITIC.md`](psb_marl/P3_1_DIFFERENTIAL_CRITIC.md)
 13. [`psb_marl/P3_2_PRIMAL_DUAL_PPO.md`](psb_marl/P3_2_PRIMAL_DUAL_PPO.md)
 14. [`psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md`](psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md)
+15. [`psb_marl/P5_JOINT_PSB_MARL.md`](psb_marl/P5_JOINT_PSB_MARL.md)
 
 P3.3 已定义为 P3 的结构收口版本：Candidate/Base 使用联合 episode 边界和同 seed
-同步 reset。P3 后续只做集中微调与最终系统实验，不再扩展新的结构阶段。
+同步 reset。P5 在不扩展动作结构或约束通道的前提下，直接解冻 Candidate Base
+backbone，并与现有分支模块、绝对/差分 Critic 联合训练。
 
 旧 Opinion-MARL 与 AVOCADO-MARL 代码继续作为基线和消融，不定义 PSB 接口。
 

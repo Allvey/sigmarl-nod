@@ -44,6 +44,12 @@ def train_psb(
     """Run the configured PSB stage and return its isolated run directory."""
 
     experiment = load_psb_experiment(config_path)
+    if experiment.stage == "p5_joint_psb_marl":
+        return _train_p5(
+            experiment,
+            resume_checkpoint=resume_checkpoint,
+            iterations_override=iterations_override,
+        )
     if experiment.stage == "p3_paired_differential_primal_dual_ppo":
         return _train_p33(
             experiment,
@@ -392,6 +398,135 @@ def _train_p33(
             "stage": experiment.stage,
             "selected": "base_fallback_pending_p3_3_validation",
             "actor_learning_enabled": True,
+            "dual_learning_enabled": True,
+            "paired_differential_learning_enabled": True,
+            "paired_episode_boundaries_synchronized": True,
+            "paired_episode_boundary_mode": (
+                "union_truncate_and_common_seed_reset"
+            ),
+            "candidate_policy": "candidate_policy.pth",
+            "candidate_scalar_critic": "candidate_critic.pth",
+            "candidate_differential_critic": (
+                "candidate_differential_critic.pth"
+            ),
+            "dual_state": "p3_dual_state.pt",
+            "source_differential_critic": "source_differential_critic.pth",
+            "source_differential_critic_sha256": differential_hash,
+            "candidate_policy_sha256": sha256_file(
+                run / "candidate_policy.pth"
+            ),
+            "candidate_critic_sha256": sha256_file(
+                run / "candidate_critic.pth"
+            ),
+            "candidate_differential_critic_sha256": sha256_file(
+                run / "candidate_differential_critic.pth"
+            ),
+            "base_policy_sha256": sha256_file(
+                run / "base_fallback_policy.pth"
+            ),
+            "base_critic_sha256": sha256_file(
+                run / "base_fallback_critic.pth"
+            ),
+        },
+    )
+    write_artifact_manifest(run)
+    return run
+
+
+def _train_p5(
+    experiment,
+    *,
+    resume_checkpoint: Optional[Path],
+    iterations_override: Optional[int],
+) -> Path:
+    """Jointly train the Candidate backbone and all PSB learning modules."""
+
+    if resume_checkpoint is not None:
+        raise PSBConfigError("P5 resume is not enabled in the first version.")
+    assert experiment.parent_run is not None
+    assert experiment.conflict_graph is not None
+    assert experiment.primal_dual is not None
+    assert experiment.paired_differential is not None
+    assert experiment.joint_training is not None
+    from main_training import train_base
+
+    iterations = (
+        experiment.primal_dual.iterations
+        if iterations_override is None
+        else iterations_override
+    )
+    if type(iterations) is not int or iterations <= 0:
+        raise PSBConfigError("P5 --iterations must be a positive integer.")
+    parameters = experiment.base_parameters
+    parameters.seed = experiment.effective_training_seed
+    parameters.where_to_save = str(
+        Path(experiment.output_root).expanduser().resolve()
+    )
+    parameters.n_iters = iterations
+    parameters.total_frames = parameters.frames_per_batch * iterations
+    runtime = experiment.p5_runtime_config()
+    runtime["training"] = {**runtime["training"], "iterations": iterations}
+    run = train_base(
+        parameters=parameters,
+        source_config=experiment.source_config,
+        run_label="psb-p5-joint",
+        supplementary_snapshots={
+            "psb_config_resolved.json": {
+                **experiment.source_config,
+                "resolved_base_config": str(experiment.base_config_path),
+                "resolved_base_run": str(experiment.base.run_directory),
+                "resolved_parent_run": str(experiment.parent_run),
+                "runtime_config": runtime,
+                "config_fingerprint": _fingerprint(experiment.source_config),
+            }
+        },
+        comparison_payload={
+            "schema_version": 1,
+            "status": "pending_manual_paired_superiority_validation",
+            "deployment": "base_fallback",
+            "candidate_checkpoint": "candidate_policy.pth",
+            "candidate_backbone_trainable_from_iteration": 1,
+            "absolute_critic_learning_enabled": True,
+            "differential_critic_learning_enabled": True,
+            "dual_learning_enabled": True,
+            "paired_episode_boundary_mode": (
+                "union_truncate_and_common_seed_reset"
+            ),
+        },
+        opinion_pair_info_config=experiment.conflict_graph.to_dict(),
+        psb_runtime_config=runtime,
+        artifact_method="psb_marl",
+        artifact_stage=experiment.stage,
+        resume_checkpoint=None,
+    )
+    differential_hash = copy_checkpoint_exact(
+        experiment.parent_run / "candidate_differential_critic.pth",
+        run / "source_differential_critic.pth",
+    )
+    required = (
+        "candidate_policy.pth",
+        "candidate_critic.pth",
+        "candidate_differential_critic.pth",
+        "base_fallback_policy.pth",
+        "base_fallback_critic.pth",
+        "final_policy.pth",
+        "final_critic.pth",
+        "p3_dual_state.pt",
+    )
+    missing = [name for name in required if not (run / name).is_file()]
+    if missing:
+        raise RuntimeError(f"P5 training is missing artifacts: {missing}.")
+    atomic_write_json(
+        run / "deployment_manifest.json",
+        {
+            "schema_version": 1,
+            "method": "psb_marl",
+            "stage": experiment.stage,
+            "selected": "base_fallback_pending_p5_validation",
+            "actor_learning_enabled": True,
+            "candidate_backbone_trainable": True,
+            "candidate_backbone_trainable_from_iteration": 1,
+            "absolute_critic_learning_enabled": True,
             "dual_learning_enabled": True,
             "paired_differential_learning_enabled": True,
             "paired_episode_boundaries_synchronized": True,

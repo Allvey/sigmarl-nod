@@ -42,8 +42,14 @@ def validate_p2_runtime_contract(runtime_config, environment_n_agents: int) -> N
         raise ValueError("Unsupported P2 runtime stage.")
     if runtime_config.get("control_mode") != "learned_antisymmetric":
         raise ValueError("P2 requires learned antisymmetric control.")
-    if runtime_config.get("freeze_base_actor") is not True:
-        raise ValueError("P2 requires a frozen Base Actor.")
+    is_p5 = runtime_config.get("p5_stage") == "p5_joint_psb_marl"
+    expected_freeze = not is_p5
+    if runtime_config.get("freeze_base_actor") is not expected_freeze:
+        raise ValueError(
+            "P5 requires a trainable Candidate Base Actor."
+            if is_p5
+            else "P2 requires a frozen Base Actor."
+        )
     training_seed = runtime_config.get("training_seed")
     if training_seed is not None and (
         type(training_seed) is not int or training_seed < 0
@@ -105,6 +111,7 @@ class FrozenBaseBifurcationPolicyBridge(nn.Module):
         branch_encoder: BranchContextEncoder,
         adapter: BranchDistributionAdapter,
         n_agents: int,
+        freeze_base_actor: bool = True,
     ) -> None:
         super().__init__()
         self.base_policy_net = base_policy_net
@@ -113,11 +120,13 @@ class FrozenBaseBifurcationPolicyBridge(nn.Module):
         self.branch_encoder = branch_encoder
         self.adapter = adapter
         self.n_agents = int(n_agents)
+        self.freeze_base_actor = bool(freeze_base_actor)
         for parameter in self.base_policy_net.parameters():
-            parameter.requires_grad_(False)
+            parameter.requires_grad_(not self.freeze_base_actor)
 
     def trainable_groups(self) -> dict[str, list[nn.Parameter]]:
         return {
+            "base_actor": list(self.base_policy_net.parameters()),
             "control": list(self.control_net.parameters()),
             "adapter": list(self.branch_encoder.parameters())
             + list(self.adapter.parameters()),

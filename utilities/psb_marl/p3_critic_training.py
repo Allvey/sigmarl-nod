@@ -422,15 +422,24 @@ def load_differential_critic(
     device: torch.device = torch.device("cpu"),
 ) -> tuple[BaseRelativeDifferentialCritic, Dict[str, object]]:
     payload = torch.load(Path(path), map_location=device)
-    if not isinstance(payload, dict) or payload.get("stage") != (
-        "p3_differential_critic"
+    supported_stages = {
+        "p3_differential_critic",
+        "p3_paired_differential_primal_dual_ppo",
+        "p5_joint_psb_marl",
+    }
+    if (
+        not isinstance(payload, dict)
+        or payload.get("method") != "psb_marl"
+        or payload.get("stage") not in supported_stages
     ):
-        raise ValueError("Checkpoint is not a P3.1 differential critic.")
+        raise ValueError(
+            "Checkpoint is not a supported PSB differential critic."
+        )
     model_config = payload.get("model_config")
     if not isinstance(model_config, dict):
-        raise ValueError("P3.1 checkpoint is missing model_config.")
+        raise ValueError("Differential checkpoint is missing model_config.")
     if model_config.get("target_channels") != list(TARGET_CHANNELS):
-        raise ValueError("P3.1 checkpoint target channels do not match.")
+        raise ValueError("Differential checkpoint target channels do not match.")
     model = BaseRelativeDifferentialCritic(
         observation_dim=int(model_config["observation_dim"]),
         embedding_dim=int(model_config["embedding_dim"]),

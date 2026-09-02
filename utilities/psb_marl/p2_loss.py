@@ -27,6 +27,8 @@ class P2SequencePPOLoss(nn.Module):
         control_trust_region_coefficient: float,
         saturation_coefficient: float,
         saturation_fraction: float,
+        base_anchor_net: Optional[nn.Module] = None,
+        base_anchor_coefficient: float = 0.0,
     ) -> None:
         super().__init__()
         if n_agents < 2 or not 0.0 < clip_epsilon < 1.0:
@@ -36,6 +38,7 @@ class P2SequencePPOLoss(nn.Module):
             energy_coefficient,
             control_trust_region_coefficient,
             saturation_coefficient,
+            base_anchor_coefficient,
         ) < 0.0:
             raise ValueError("P2 loss coefficients must be non-negative.")
         if not 0.0 < saturation_fraction <= 1.0:
@@ -54,6 +57,8 @@ class P2SequencePPOLoss(nn.Module):
         )
         self.saturation_coefficient = float(saturation_coefficient)
         self.saturation_fraction = float(saturation_fraction)
+        self.base_anchor_net = base_anchor_net
+        self.base_anchor_coefficient = float(base_anchor_coefficient)
 
     @staticmethod
     def _optional(tensordict, key) -> Optional[torch.Tensor]:
@@ -188,6 +193,31 @@ class P2SequencePPOLoss(nn.Module):
             + self.saturation_coefficient * saturation
         )
 
+        loss_base_anchor = torch.zeros(
+            (), dtype=recomputed["base_loc"].dtype,
+            device=recomputed["base_loc"].device,
+        )
+        base_output_anchor = loss_base_anchor.detach()
+        if self.base_anchor_net is not None and self.base_anchor_coefficient > 0.0:
+            with torch.no_grad():
+                source_loc, source_scale = self.base_anchor_net(
+                    td.get(self.observation_key)
+                )
+            candidate_scale = recomputed["base_scale"].clamp_min(1e-8)
+            source_scale = source_scale.clamp_min(1e-8)
+            base_output_anchor = (
+                (source_scale / candidate_scale).log()
+                + (
+                    candidate_scale.square()
+                    + (recomputed["base_loc"] - source_loc).square()
+                )
+                / (2.0 * source_scale.square())
+                - 0.5
+            ).mean()
+            loss_base_anchor = (
+                self.base_anchor_coefficient * base_output_anchor
+            )
+
         with torch.no_grad():
             collected_z = td.get(("agents", "psb", "z_next_dense"))
             state_error = (
@@ -203,6 +233,8 @@ class P2SequencePPOLoss(nn.Module):
             "loss_objective": loss_objective,
             "loss_entropy": loss_entropy,
             "loss_regularization": loss_regularization,
+            "loss_base_anchor": loss_base_anchor,
+            "base_output_anchor": base_output_anchor.detach(),
             "control_energy": control_energy.detach(),
             "control_trust": control_trust.detach(),
             "saturation_penalty": saturation.detach(),
@@ -219,4 +251,3 @@ class P2SequencePPOLoss(nn.Module):
             "mean_abs_z": recomputed["z_next_dense"].abs().mean().detach(),
             "mean_abs_delta_loc": recomputed["delta_loc"].abs().mean().detach(),
         }
-

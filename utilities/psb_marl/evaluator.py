@@ -690,6 +690,7 @@ def test_psb(
     if experiment.stage in {
         "p3_primal_dual_ppo",
         "p3_paired_differential_primal_dual_ppo",
+        "p5_joint_psb_marl",
     }:
         from utilities.psb_marl.p3_dual_evaluation import test_p32
 

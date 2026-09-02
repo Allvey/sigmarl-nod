@@ -1049,6 +1049,52 @@ class PSBP33PairedDifferentialConfig:
 
 
 @dataclass(frozen=True)
+class PSBP5JointTrainingConfig:
+    """Single-stage joint optimization settings for the final PSB policy."""
+
+    base_actor_learning_rate_scale: float
+    absolute_critic_learning_rate_scale: float
+    absolute_critic_loss_coefficient: float
+    base_anchor_coefficient: float
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "PSBP5JointTrainingConfig":
+        raw = _object(raw, "joint_training")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "joint_training")
+        result = cls(
+            base_actor_learning_rate_scale=_number(
+                raw["base_actor_learning_rate_scale"],
+                "joint_training.base_actor_learning_rate_scale",
+                strictly_positive=True,
+            ),
+            absolute_critic_learning_rate_scale=_number(
+                raw["absolute_critic_learning_rate_scale"],
+                "joint_training.absolute_critic_learning_rate_scale",
+                strictly_positive=True,
+            ),
+            absolute_critic_loss_coefficient=_number(
+                raw["absolute_critic_loss_coefficient"],
+                "joint_training.absolute_critic_loss_coefficient",
+                strictly_positive=True,
+            ),
+            base_anchor_coefficient=_number(
+                raw["base_anchor_coefficient"],
+                "joint_training.base_anchor_coefficient",
+            ),
+        )
+        if result.base_actor_learning_rate_scale > 1.0:
+            raise PSBConfigError(
+                "P5 Base Actor learning-rate scale must not exceed 1."
+            )
+        return result
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            name: getattr(self, name) for name in self.__dataclass_fields__
+        }
+
+
+@dataclass(frozen=True)
 class PSBExperimentConfig:
     """Resolved PSB experiment plus its immutable JSON snapshots."""
 
@@ -1073,6 +1119,7 @@ class PSBExperimentConfig:
     differential_critic: Optional[PSBP31DifferentialCriticConfig] = None
     primal_dual: Optional[PSBP32PrimalDualConfig] = None
     paired_differential: Optional[PSBP33PairedDifferentialConfig] = None
+    joint_training: Optional[PSBP5JointTrainingConfig] = None
     source_p2_runtime: Optional[Dict[str, object]] = None
 
     @property
@@ -1244,6 +1291,40 @@ class PSBExperimentConfig:
                 ),
                 "p3_differential_critic_checkpoint": str(
                     self.parent_run / "candidate_critic.pth"
+                ),
+            }
+        )
+        return runtime
+
+    def p5_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p5_joint_psb_marl":
+            raise PSBConfigError("P5 runtime requested for a non-P5 stage.")
+        assert self.parent_run is not None
+        assert self.source_p2_runtime is not None
+        assert self.primal_dual is not None
+        assert self.paired_differential is not None
+        assert self.joint_training is not None
+        runtime = dict(self.source_p2_runtime)
+        training = dict(runtime["training"])
+        training["iterations"] = self.primal_dual.iterations
+        runtime.update(
+            {
+                "training": training,
+                "training_seed": self.effective_training_seed,
+                "freeze_base_actor": False,
+                "p3_stage": "p3_paired_differential_primal_dual_ppo",
+                "p5_stage": self.stage,
+                "primal_dual": self.primal_dual.to_dict(),
+                "paired_differential": self.paired_differential.to_dict(),
+                "joint_training": self.joint_training.to_dict(),
+                "initial_policy_checkpoint": str(
+                    self.parent_run / "candidate_policy.pth"
+                ),
+                "initial_scalar_critic_checkpoint": str(
+                    self.parent_run / "candidate_critic.pth"
+                ),
+                "p3_differential_critic_checkpoint": str(
+                    self.parent_run / "candidate_differential_critic.pth"
                 ),
             }
         )
@@ -1734,6 +1815,75 @@ def _validate_p32_parent(
     return dict(runtime["source_p2_runtime"]), conflict_graph
 
 
+def _validate_p5_parent(
+    parent: Path,
+    base: PSBBaseSourceConfig,
+) -> tuple[Dict[str, object], PSBConflictGraphConfig]:
+    """Require a completed P3.3 run while preserving the immutable Base."""
+
+    from utilities.psb_marl.checkpoint import sha256_file
+
+    required = {
+        "config_source.json",
+        "deployment_manifest.json",
+        "psb_config_resolved.json",
+        "training_status.json",
+        "candidate_policy.pth",
+        "candidate_critic.pth",
+        "candidate_differential_critic.pth",
+        "base_fallback_policy.pth",
+        "base_fallback_critic.pth",
+    }
+    missing = sorted(name for name in required if not (parent / name).is_file())
+    if missing:
+        raise PSBConfigError(f"P5 parent is missing artifacts: {missing}.")
+
+    def load(name: str) -> Mapping[str, Any]:
+        with (parent / name).open("r", encoding="utf-8") as stream:
+            return _object(json.load(stream), f"P5 parent {name}")
+
+    source = load("config_source.json")
+    manifest = load("deployment_manifest.json")
+    resolved = load("psb_config_resolved.json")
+    status = load("training_status.json")
+    runtime = resolved.get("runtime_config")
+    if (
+        source.get("stage") != "p3_paired_differential_primal_dual_ppo"
+        or manifest.get("stage")
+        != "p3_paired_differential_primal_dual_ppo"
+        or manifest.get("paired_differential_learning_enabled") is not True
+        or manifest.get("paired_episode_boundaries_synchronized") is not True
+        or status.get("status") != "completed"
+        or not isinstance(runtime, Mapping)
+    ):
+        raise PSBConfigError("P5 requires a completed synchronized P3.3 parent.")
+    hash_checks = (
+        manifest.get("candidate_policy_sha256")
+        == sha256_file(parent / "candidate_policy.pth"),
+        manifest.get("candidate_critic_sha256")
+        == sha256_file(parent / "candidate_critic.pth"),
+        manifest.get("candidate_differential_critic_sha256")
+        == sha256_file(parent / "candidate_differential_critic.pth"),
+        sha256_file(parent / "base_fallback_policy.pth")
+        == sha256_file(base.policy_checkpoint),
+        sha256_file(parent / "base_fallback_critic.pth")
+        == sha256_file(base.critic_checkpoint),
+    )
+    if not all(hash_checks):
+        raise PSBConfigError("P5 parent checkpoint integrity is invalid.")
+    p31_parent = Path(str(source["parent_run"])).expanduser().resolve()
+    source_p2_runtime, conflict_graph = _validate_p32_parent(p31_parent, base)
+    branch = source_p2_runtime.get("branch_adapter")
+    if (
+        not isinstance(branch, Mapping)
+        or branch.get("conditioning_mode") != "supported_sector_q_gate"
+        or branch.get("action_projection") != "longitudinal_only"
+        or float(branch.get("max_delta_log_scale", -1.0)) != 0.0
+    ):
+        raise PSBConfigError("P5 requires the locked P2.1-U branch contract.")
+    return source_p2_runtime, conflict_graph
+
+
 def load_psb_experiment(path: Path) -> PSBExperimentConfig:
     """Load and fully validate one PSB stage configuration."""
 
@@ -1835,12 +1985,26 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
             },
             "root",
         )
+    elif stage == "p5_joint_psb_marl":
+        _exact_keys(
+            raw,
+            common_keys
+            | {
+                "parent_run",
+                "training_seed",
+                "primal_dual",
+                "paired_differential",
+                "joint_training",
+            },
+            "root",
+        )
     else:
         raise PSBConfigError(
             "Supported PSB stages are P0 Base passthrough, P1 zero-control "
             "equivalence, P2 frozen-Base bifurcation, and P3.0 paired "
             "rollout equivalence, P3.1 differential critic, P3.2 "
-            "primal-dual PPO, and P3.3 paired differential primal-dual PPO."
+            "primal-dual PPO, P3.3 paired differential primal-dual PPO, "
+            "and P5 joint PSB-MARL."
         )
     base_config_path = _resolve_existing_path(
         raw["base_config"], "base_config", config_path, kind="file"
@@ -1861,6 +2025,7 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
     differential_critic = None
     primal_dual = None
     paired_differential = None
+    joint_training = None
     source_p2_runtime = None
     if stage in {
         "p3_primal_dual_ppo",
@@ -1885,6 +2050,29 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
         ):
             raise PSBConfigError(
                 f"{stage} conflict graph does not match the Base config."
+            )
+    if stage == "p5_joint_psb_marl":
+        parent_run = _resolve_existing_path(
+            raw["parent_run"], "parent_run", config_path, kind="directory"
+        )
+        source_p2_runtime, conflict_graph = _validate_p5_parent(
+            parent_run, base
+        )
+        training_seed = _integer(
+            raw["training_seed"], "training_seed", minimum=0
+        )
+        primal_dual = PSBP32PrimalDualConfig.from_dict(raw["primal_dual"])
+        paired_differential = PSBP33PairedDifferentialConfig.from_dict(
+            raw["paired_differential"]
+        )
+        joint_training = PSBP5JointTrainingConfig.from_dict(
+            raw["joint_training"]
+        )
+        if conflict_graph.candidate_count != int(
+            base_resolved["n_nearing_agents_observed"]
+        ):
+            raise PSBConfigError(
+                "P5 conflict graph does not match the Base config."
             )
     if stage == "p3_differential_critic":
         parent_run = _resolve_existing_path(
@@ -2007,6 +2195,7 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
         differential_critic=differential_critic,
         primal_dual=primal_dual,
         paired_differential=paired_differential,
+        joint_training=joint_training,
         source_p2_runtime=source_p2_runtime,
     )
     if stage == "p3_paired_rollout_equivalence":

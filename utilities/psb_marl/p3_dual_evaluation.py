@@ -1,4 +1,4 @@
-"""Paired long-horizon validation for PSB-MARL P3.2 and P3.3."""
+"""Paired long-horizon validation for PSB-MARL P3.2, P3.3, and P5."""
 
 from __future__ import annotations
 
@@ -34,15 +34,21 @@ def _load_json(path: Path, label: str) -> Dict[str, object]:
 def _verify_p32_run(experiment, run: Path, checkpoint_path: Optional[Path]):
     assert experiment.parent_run is not None
     assert experiment.primal_dual is not None
+    is_p5 = experiment.stage == "p5_joint_psb_marl"
     is_p33 = experiment.stage == "p3_paired_differential_primal_dual_ppo"
-    label = "P3.3" if is_p33 else "P3.2"
+    is_paired = is_p33 or is_p5
+    label = "P5" if is_p5 else ("P3.3" if is_p33 else "P3.2")
     manifest = _load_json(run / "deployment_manifest.json", f"{label} manifest")
     resolved = _load_json(run / "psb_config_resolved.json", f"{label} runtime")
     status = _load_json(run / "training_status.json", f"{label} status")
     expected_runtime = (
-        experiment.p33_runtime_config()
-        if is_p33
-        else experiment.p32_runtime_config()
+        experiment.p5_runtime_config()
+        if is_p5
+        else (
+            experiment.p33_runtime_config()
+            if is_p33
+            else experiment.p32_runtime_config()
+        )
     )
     runtime = resolved.get("runtime_config")
     if runtime != expected_runtime:
@@ -52,23 +58,25 @@ def _verify_p32_run(experiment, run: Path, checkpoint_path: Optional[Path]):
         or manifest.get("stage") != experiment.stage
         or manifest.get("selected")
         != (
-            "base_fallback_pending_p3_3_validation"
+            "base_fallback_pending_p5_validation"
+            if is_p5
+            else "base_fallback_pending_p3_3_validation"
             if is_p33
             else "base_fallback_pending_p3_2_validation"
         )
         or manifest.get("actor_learning_enabled") is not True
         or manifest.get("dual_learning_enabled") is not True
         or (
-            is_p33
+            is_paired
             and manifest.get("paired_differential_learning_enabled") is not True
         )
         or (
-            is_p33
+            is_paired
             and manifest.get("paired_episode_boundaries_synchronized")
             is not True
         )
         or (
-            is_p33
+            is_paired
             and manifest.get("paired_episode_boundary_mode")
             != "union_truncate_and_common_seed_reset"
         )
@@ -91,7 +99,7 @@ def _verify_p32_run(experiment, run: Path, checkpoint_path: Optional[Path]):
         "final_policy.pth",
         "final_critic.pth",
     }
-    if is_p33:
+    if is_paired:
         required.add("candidate_differential_critic.pth")
     missing = sorted(name for name in required if not (run / name).is_file())
     if missing:
@@ -102,7 +110,12 @@ def _verify_p32_run(experiment, run: Path, checkpoint_path: Optional[Path]):
     base_policy_hash = sha256_file(experiment.base.policy_checkpoint)
     base_critic_hash = sha256_file(experiment.base.critic_checkpoint)
     source_differential_hash = sha256_file(
-        experiment.parent_run / "candidate_critic.pth"
+        experiment.parent_run
+        / (
+            "candidate_differential_critic.pth"
+            if is_p5
+            else "candidate_critic.pth"
+        )
     )
     checks = {
         "candidate_policy_hash_matches_manifest": (
@@ -133,7 +146,7 @@ def _verify_p32_run(experiment, run: Path, checkpoint_path: Optional[Path]):
             sha256_file(checkpoint) == candidate_hash
         ),
     }
-    if is_p33:
+    if is_paired:
         online_hash = sha256_file(run / "candidate_differential_critic.pth")
         online_payload = torch.load(
             run / "candidate_differential_critic.pth", map_location="cpu"
@@ -162,6 +175,21 @@ def _verify_p32_run(experiment, run: Path, checkpoint_path: Optional[Path]):
                 "candidate_differential_critic_runtime_matches": (
                     isinstance(online_payload, dict)
                     and online_payload.get("runtime_config") == runtime
+                ),
+            }
+        )
+    if is_p5:
+        checks.update(
+            {
+                "candidate_backbone_trainable": (
+                    manifest.get("candidate_backbone_trainable") is True
+                ),
+                "absolute_critic_learning_enabled": (
+                    manifest.get("absolute_critic_learning_enabled") is True
+                ),
+                "source_base_policy_preserved": (
+                    sha256_file(run / "base_fallback_policy.pth")
+                    == base_policy_hash
                 ),
             }
         )
@@ -330,12 +358,17 @@ def test_p32(
     psb_action_projection: Optional[str],
     report_label: Optional[str],
 ) -> Dict[str, object]:
-    """Run the quarantined P3.2/P3.3 Candidate against Base with common seeds."""
+    """Run a quarantined P3.2/P3.3/P5 Candidate against Base with CRN."""
 
     label = (
-        "P3.3"
-        if experiment.stage == "p3_paired_differential_primal_dual_ppo"
-        else "P3.2"
+        "P5"
+        if experiment.stage == "p5_joint_psb_marl"
+        else (
+            "P3.3"
+            if experiment.stage
+            == "p3_paired_differential_primal_dual_ppo"
+            else "P3.2"
+        )
     )
 
     if not compare_base:
@@ -465,13 +498,15 @@ def test_p32(
         and safety_gate.get("passed") is True
     )
     efficacy_gate = None
-    if label == "P3.3":
+    if label in {"P3.3", "P5"}:
         efficacy_gate = p33_efficacy_gate(performance_gate, safety_gate)
     passed = bool(
         noninferiority_and_budget_passed
         and (efficacy_gate is None or efficacy_gate["passed"] is True)
     )
-    report_prefix = "p3_3" if label == "P3.3" else "p3_2"
+    report_prefix = (
+        "p5" if label == "P5" else ("p3_3" if label == "P3.3" else "p3_2")
+    )
     report_name = f"{report_prefix}_manual_validation.json"
     if report_label is not None:
         report_name = (

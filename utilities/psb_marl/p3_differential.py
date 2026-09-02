@@ -223,7 +223,9 @@ def save_online_differential_critic(
     payload = {
         "schema_version": 1,
         "method": "psb_marl",
-        "stage": "p3_paired_differential_primal_dual_ppo",
+        "stage": runtime_config.get(
+            "p5_stage", "p3_paired_differential_primal_dual_ppo"
+        ),
         "model_config": model.model_config(),
         "critic_state": model.state_dict(),
         "runtime_config": dict(runtime_config),

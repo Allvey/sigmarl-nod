@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "method": "psb_marl",
+  "stage": "p5_joint_psb_marl",
+  "training_seed": 0,
+  "base_config": "config.json",
+  "output_root": "outputs/psb_marl/p5_joint_psb_marl",
+  "base": {
+    "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+    "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+    "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+  },
+  "parent_run": "outputs/psb_marl/p3_3_paired_differential_primal_dual_ppo/runs/psb-p3-diff-dual-seed0-20260902T064453320726Z-207d7b53",
+  "primal_dual": {
+    "iterations": 250,
+    "vehicle_budget": 0.35,
+    "lane_budget": 0.0075,
+    "vehicle_learning_rate": 0.02,
+    "lane_learning_rate": 0.01,
+    "maximum_multiplier": 0.5,
+    "initial_vehicle_multiplier": 0.02,
+    "initial_lane_multiplier": 0.0,
+    "lane_safety_margin": 0.07,
+    "normalize_constraints": true,
+    "active_constraints": [
+      "vehicle"
+    ]
+  },
+  "paired_differential": {
+    "common_random_numbers": true,
+    "reset_at_each_iteration": true,
+    "synchronize_episode_boundaries": true,
+    "online_critic_learning_enabled": true,
+    "critic_learning_rate_scale": 2.0,
+    "huber_delta": 1.0,
+    "gradient_clip_norm": 1.0,
+    "normalize_advantage": true,
+    "advantage_scale_floor": 0.0001
+  },
+  "joint_training": {
+    "base_actor_learning_rate_scale": 0.1,
+    "absolute_critic_learning_rate_scale": 1.0,
+    "absolute_critic_loss_coefficient": 1.0,
+    "base_anchor_coefficient": 0.01
+  }
+}

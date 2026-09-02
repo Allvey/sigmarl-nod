@@ -419,6 +419,10 @@ def mappo_cavs(
         is_psb_p32
         and isinstance(psb_runtime_config.get("paired_differential"), Mapping)
     )
+    is_psb_p5 = bool(
+        is_psb_p33
+        and psb_runtime_config.get("p5_stage") == "p5_joint_psb_marl"
+    )
     if is_psb_p33:
         paired_contract = psb_runtime_config["paired_differential"]
         required_paired_flags = (
@@ -652,6 +656,8 @@ def mappo_cavs(
     opinion_bridge = None
     state_tracker = None
     base_actor_source_state = None
+    p5_base_actor_source_state = None
+    p5_source_base_anchor_net = None
     psb_bridge = None
     psb_tracker = None
     if is_opinion_policy:
@@ -945,6 +951,16 @@ def mappo_cavs(
             )
             base_policy.load_state_dict(base_actor_source_state, strict=True)
             base_actor_source_state = copy.deepcopy(base_actor_source_state)
+            if is_psb_p5:
+                p5_base_actor_source_state = copy.deepcopy(
+                    policy_net.state_dict()
+                )
+                p5_source_base_anchor_net = copy.deepcopy(policy_net).to(
+                    parameters.device
+                )
+                p5_source_base_anchor_net.eval()
+                for parameter in p5_source_base_anchor_net.parameters():
+                    parameter.requires_grad_(False)
             if artifact_logging_enabled:
                 torch.save(
                     base_actor_source_state,
@@ -1028,6 +1044,9 @@ def mappo_cavs(
                 branch_encoder=branch_encoder,
                 adapter=adapter,
                 n_agents=parameters.n_agents,
+                freeze_base_actor=bool(
+                    psb_runtime_config.get("freeze_base_actor", True)
+                ),
             ).to(parameters.device)
             psb_module = TensorDictModule(
                 psb_bridge,
@@ -1429,7 +1448,11 @@ def mappo_cavs(
         )
 
     base_anchor_net = None
-    if is_m9_trainer and float(
+    if is_psb_p5:
+        if p5_source_base_anchor_net is None:
+            raise RuntimeError("P5 Source Base Actor anchor is unavailable.")
+        base_anchor_net = p5_source_base_anchor_net
+    elif is_m9_trainer and float(
         trainer_runtime_config.get("base_anchor_coefficient", 0.0)
     ) > 0.0:
         base_anchor_net = copy.deepcopy(policy_net).to(parameters.device)
@@ -1524,6 +1547,12 @@ def mappo_cavs(
             saturation_fraction=float(
                 p2_training_config["saturation_fraction"]
             ),
+            base_anchor_net=base_anchor_net,
+            base_anchor_coefficient=float(
+                psb_runtime_config.get("joint_training", {}).get(
+                    "base_anchor_coefficient", 0.0
+                )
+            ),
         )
         if is_psb_p32:
             from utilities.psb_marl.p3_dual import ProjectedDualController
@@ -1559,27 +1588,57 @@ def mappo_cavs(
     current_training_phase = None
     if is_psb_p2:
         trainable_groups = psb_bridge.trainable_groups()
+        base_actor_parameters = trainable_groups["base_actor"]
         control_parameters = trainable_groups["control"]
         adapter_parameters = trainable_groups["adapter"]
+        absolute_critic_parameters = [
+            parameter
+            for parameter in loss_module.critic_params.values(True, True)
+            if parameter.requires_grad
+        ]
+        differential_critic_parameters = (
+            list(p3_differential_critic.parameters()) if is_psb_p33 else []
+        )
         critic_trainable_parameters = (
-            list(p3_differential_critic.parameters())
+            differential_critic_parameters
+            + (absolute_critic_parameters if is_psb_p5 else [])
             if is_psb_p33
-            else [
-                parameter
-                for parameter in loss_module.critic_params.values(True, True)
-                if parameter.requires_grad
-            ]
+            else absolute_critic_parameters
         )
         if not control_parameters or not adapter_parameters:
             raise RuntimeError("P2 Actor parameter groups must be non-empty.")
         if not critic_trainable_parameters:
             raise RuntimeError("P2 Critic parameter group must be non-empty.")
-        if any(
-            parameter.requires_grad
-            for parameter in psb_bridge.base_policy_net.parameters()
-        ):
+        if is_psb_p5:
+            if not base_actor_parameters or not all(
+                parameter.requires_grad for parameter in base_actor_parameters
+            ):
+                raise RuntimeError("P5 Candidate Base Actor must be trainable.")
+        elif any(parameter.requires_grad for parameter in base_actor_parameters):
             raise RuntimeError("P2 Base Actor must remain frozen.")
-        optim = torch.optim.Adam(
+        joint_training_config = dict(
+            psb_runtime_config.get("joint_training", {})
+        )
+        optimizer_groups = []
+        if is_psb_p5:
+            optimizer_groups.append(
+                {
+                    "params": base_actor_parameters,
+                    "lr": parameters.lr
+                    * float(
+                        joint_training_config[
+                            "base_actor_learning_rate_scale"
+                        ]
+                    ),
+                    "lr_scale": float(
+                        joint_training_config[
+                            "base_actor_learning_rate_scale"
+                        ]
+                    ),
+                    "group_name": "base_actor",
+                }
+            )
+        optimizer_groups.extend(
             [
                 {
                     "params": control_parameters,
@@ -1603,36 +1662,51 @@ def mappo_cavs(
                     ),
                     "group_name": "adapter",
                 },
+            ]
+        )
+        if is_psb_p5:
+            optimizer_groups.append(
                 {
-                    "params": critic_trainable_parameters,
+                    "params": absolute_critic_parameters,
                     "lr": parameters.lr
                     * float(
-                        (
-                            p3_differential_config[
-                                "critic_learning_rate_scale"
-                            ]
-                            if is_psb_p33
-                            else p2_training_config[
-                                "critic_learning_rate_scale"
-                            ]
-                        )
+                        joint_training_config[
+                            "absolute_critic_learning_rate_scale"
+                        ]
                     ),
                     "lr_scale": float(
-                        (
-                            p3_differential_config[
-                                "critic_learning_rate_scale"
-                            ]
-                            if is_psb_p33
-                            else p2_training_config[
-                                "critic_learning_rate_scale"
-                            ]
-                        )
+                        joint_training_config[
+                            "absolute_critic_learning_rate_scale"
+                        ]
                     ),
-                    "group_name": (
-                        "differential_critic" if is_psb_p33 else "critic"
-                    ),
-                },
-            ]
+                    "group_name": "absolute_critic",
+                }
+            )
+        optimizer_groups.append(
+            {
+                "params": (
+                    differential_critic_parameters
+                    if is_psb_p33
+                    else absolute_critic_parameters
+                ),
+                "lr": parameters.lr
+                * float(
+                    p3_differential_config["critic_learning_rate_scale"]
+                    if is_psb_p33
+                    else p2_training_config["critic_learning_rate_scale"]
+                ),
+                "lr_scale": float(
+                    p3_differential_config["critic_learning_rate_scale"]
+                    if is_psb_p33
+                    else p2_training_config["critic_learning_rate_scale"]
+                ),
+                "group_name": (
+                    "differential_critic" if is_psb_p33 else "critic"
+                ),
+            }
+        )
+        optim = torch.optim.Adam(
+            optimizer_groups
         )
         if resume_payload is not None:
             from utilities.psb_marl.p2_checkpoint import restore_p2_rng_state
@@ -1882,9 +1956,13 @@ def mappo_cavs(
         p2_control_gradient_norm_sum = 0.0
         p2_adapter_gradient_norm_sum = 0.0
         p3_differential_prediction_mae_sum = 0.0
+        p5_absolute_critic_loss_sum = 0.0
+        p5_differential_critic_loss_sum = 0.0
+        p5_base_output_anchor_sum = 0.0
         p3_safety_costs = None
         p3_dual_metrics = {}
         p3_differential_metrics = {}
+        p5_actor_advantage = None
         loss_update_count = 0
 
         if is_psb_p33:
@@ -1991,6 +2069,8 @@ def mappo_cavs(
                 loss_module.tensor_keys.advantage,
                 paired_advantage.detach(),
             )
+            if is_psb_p5:
+                p5_actor_advantage = paired_advantage.detach().clone()
             p3_differential_metrics = {
                 **p3_pairing_metrics,
                 "paired_crn_seed": int(p3_pair_seed),
@@ -2179,12 +2259,21 @@ def mappo_cavs(
             )
 
         with torch.no_grad():
-            if not is_psb_p33:
+            if not is_psb_p33 or is_psb_p5:
                 GAE(
                     tensordict_data,
                     params=loss_module.critic_params,
                     target_params=loss_module.target_critic_params,
                 )  # Compute GAE and add it to the data
+                if is_psb_p5:
+                    if p5_actor_advantage is None:
+                        raise RuntimeError(
+                            "P5 differential Actor advantage is unavailable."
+                        )
+                    tensordict_data.set(
+                        loss_module.tensor_keys.advantage,
+                        p5_actor_advantage,
+                    )
 
             if priority_module:
                 priority_module.GAE(
@@ -2298,7 +2387,28 @@ def mappo_cavs(
                                 ),
                             )
                         )
-                        loss_vals["loss_critic"] = differential_loss
+                        if is_psb_p5:
+                            critic_batch = critic_td.reshape(-1)
+                            absolute_critic_loss = loss_module.loss_critic(
+                                critic_batch
+                            ).mean()
+                            loss_vals["loss_critic"] = (
+                                differential_loss
+                                + float(
+                                    psb_runtime_config["joint_training"][
+                                        "absolute_critic_loss_coefficient"
+                                    ]
+                                )
+                                * absolute_critic_loss
+                            )
+                            p5_absolute_critic_loss_sum += float(
+                                absolute_critic_loss.detach().item()
+                            )
+                            p5_differential_critic_loss_sum += float(
+                                differential_loss.detach().item()
+                            )
+                        else:
+                            loss_vals["loss_critic"] = differential_loss
                         p3_differential_prediction_mae_sum += float(
                             (
                                 differential_prediction.detach()
@@ -2357,6 +2467,12 @@ def mappo_cavs(
                 if is_psb_p2:
                     loss_regularization_sum += float(
                         loss_vals["loss_regularization"].detach().item()
+                    )
+                    loss_base_anchor_sum += float(
+                        loss_vals["loss_base_anchor"].detach().item()
+                    )
+                    p5_base_output_anchor_sum += float(
+                        loss_vals["base_output_anchor"].detach().item()
                     )
                     sequence_approx_kl_sum += float(
                         loss_vals["approx_kl"].item()
@@ -2423,11 +2539,16 @@ def mappo_cavs(
                     evidence_gradient_norm_sum += float(
                         squared_gradient_norm.sqrt().item()
                     )
-                if is_m9_trainer:
+                if is_m9_trainer or is_psb_p5:
                     squared_base_gradient_norm = torch.zeros(
                         (), device=parameters.device
                     )
-                    for parameter in opinion_bridge.base_policy_net.parameters():
+                    base_gradient_parameters = (
+                        psb_bridge.base_policy_net.parameters()
+                        if is_psb_p5
+                        else opinion_bridge.base_policy_net.parameters()
+                    )
+                    for parameter in base_gradient_parameters:
                         if parameter.grad is not None:
                             squared_base_gradient_norm = (
                                 squared_base_gradient_norm
@@ -2595,6 +2716,43 @@ def mappo_cavs(
                 )
         p2_iteration_metrics = {}
         if is_psb_p2:
+            p5_backbone_metrics = {}
+            if is_psb_p5:
+                drift_square_sum = 0.0
+                drift_element_count = 0
+                drift_max_abs = 0.0
+                for name, value in psb_bridge.base_policy_net.state_dict().items():
+                    source_value = p5_base_actor_source_state[name].to(
+                        value.device
+                    )
+                    difference = value.detach() - source_value
+                    drift_square_sum += float(difference.square().sum().item())
+                    drift_element_count += int(difference.numel())
+                    drift_max_abs = max(
+                        drift_max_abs, float(difference.abs().max().item())
+                    )
+                p5_backbone_metrics = {
+                    "base_actor_trainable": True,
+                    "base_actor_gradient_norm": (
+                        base_actor_gradient_norm_sum / loss_update_count
+                    ),
+                    "base_actor_parameter_drift_rms": (
+                        drift_square_sum / max(drift_element_count, 1)
+                    ) ** 0.5,
+                    "base_actor_parameter_drift_max_abs": drift_max_abs,
+                    "source_base_gaussian_kl": (
+                        p5_base_output_anchor_sum / loss_update_count
+                    ),
+                    "loss_base_anchor": (
+                        loss_base_anchor_sum / loss_update_count
+                    ),
+                    "absolute_critic_loss": (
+                        p5_absolute_critic_loss_sum / loss_update_count
+                    ),
+                    "differential_critic_loss": (
+                        p5_differential_critic_loss_sum / loss_update_count
+                    ),
+                }
             p2_collected_b = tensordict_data.get(("agents", "psb", "b"))
             p2_collected_z = tensordict_data.get(
                 ("agents", "psb", "z_next_dense")
@@ -2657,7 +2815,8 @@ def mappo_cavs(
                     .max()
                     .item()
                 ),
-                "base_actor_frozen": True,
+                "base_actor_frozen": not is_psb_p5,
+                **p5_backbone_metrics,
                 **p2_rollout_diagnostics,
                 **p3_dual_metrics,
                 **p3_differential_metrics,
@@ -2891,6 +3050,36 @@ def mappo_cavs(
                                     if group["group_name"]
                                     in {"critic", "differential_critic"}
                                 )
+                            ),
+                            **(
+                                {
+                                    "base_actor_learning_rate": float(
+                                        next(
+                                            group["lr"]
+                                            for group in optim.param_groups
+                                            if group["group_name"]
+                                            == "base_actor"
+                                        )
+                                    ),
+                                    "absolute_critic_learning_rate": float(
+                                        next(
+                                            group["lr"]
+                                            for group in optim.param_groups
+                                            if group["group_name"]
+                                            == "absolute_critic"
+                                        )
+                                    ),
+                                    "differential_critic_learning_rate": float(
+                                        next(
+                                            group["lr"]
+                                            for group in optim.param_groups
+                                            if group["group_name"]
+                                            == "differential_critic"
+                                        )
+                                    ),
+                                }
+                                if is_psb_p5
+                                else {}
                             ),
                         }
                         if is_psb_p2
