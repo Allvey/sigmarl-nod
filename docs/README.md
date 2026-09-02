@@ -22,6 +22,10 @@
 14. [`psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md`](psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md)
 15. [`psb_marl/P5_JOINT_PSB_MARL.md`](psb_marl/P5_JOINT_PSB_MARL.md)
 
+P5 之后的候选研究设计（尚未实现，不属于当前训练合同）：
+
+- [`psb_marl/ANTIFERROMAGNETIC_CONTRASTIVE_BIFURCATION.md`](psb_marl/ANTIFERROMAGNETIC_CONTRASTIVE_BIFURCATION.md)：无通信反铁磁角色分岔、公共/角色特征分解与物理通过时间分离。
+
 P3.3 已定义为 P3 的结构收口版本：Candidate/Base 使用联合 episode 边界和同 seed
 同步 reset。P5 在不扩展动作结构或约束通道的前提下，直接解冻 Candidate Base
 backbone，并与现有分支模块、绝对/差分 Critic 联合训练。
