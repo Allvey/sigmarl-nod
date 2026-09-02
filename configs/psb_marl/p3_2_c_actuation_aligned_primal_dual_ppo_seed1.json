@@ -1,0 +1,29 @@
+{
+    "schema_version": 1,
+    "method": "psb_marl",
+    "stage": "p3_primal_dual_ppo",
+    "training_seed": 1,
+    "base_config": "config.json",
+    "output_root": "outputs/psb_marl/p3_2_c_actuation_aligned_primal_dual_ppo",
+    "base": {
+        "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+        "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+        "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+    },
+    "parent_run": "outputs/psb_marl/p3_1_differential_critic/runs/psb-p3-critic-seed0-20260901T084147751732Z-fb03be71",
+    "primal_dual": {
+        "iterations": 20,
+        "vehicle_budget": 0.35,
+        "lane_budget": 0.0075,
+        "vehicle_learning_rate": 0.02,
+        "lane_learning_rate": 0.01,
+        "maximum_multiplier": 0.5,
+        "initial_vehicle_multiplier": 0.02,
+        "initial_lane_multiplier": 0.0,
+        "lane_safety_margin": 0.07,
+        "normalize_constraints": true,
+        "active_constraints": [
+            "vehicle"
+        ]
+    }
+}

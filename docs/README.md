@@ -16,6 +16,13 @@
 8. [`psb_marl/P2_1_GAIN_BOUNDED_GATE.md`](psb_marl/P2_1_GAIN_BOUNDED_GATE.md)
 9. [`psb_marl/P2_1_URGENCY_SUPPORTED_SECTOR.md`](psb_marl/P2_1_URGENCY_SUPPORTED_SECTOR.md)
 10. [`psb_marl/P2_2_ROBUSTNESS_VALIDATION.md`](psb_marl/P2_2_ROBUSTNESS_VALIDATION.md)
+11. [`psb_marl/P3_0_PAIRED_ROLLOUT_EQUIVALENCE.md`](psb_marl/P3_0_PAIRED_ROLLOUT_EQUIVALENCE.md)
+12. [`psb_marl/P3_1_DIFFERENTIAL_CRITIC.md`](psb_marl/P3_1_DIFFERENTIAL_CRITIC.md)
+13. [`psb_marl/P3_2_PRIMAL_DUAL_PPO.md`](psb_marl/P3_2_PRIMAL_DUAL_PPO.md)
+14. [`psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md`](psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md)
+
+P3.3 已定义为 P3 的结构收口版本：Candidate/Base 使用联合 episode 边界和同 seed
+同步 reset。P3 后续只做集中微调与最终系统实验，不再扩展新的结构阶段。
 
 旧 Opinion-MARL 与 AVOCADO-MARL 代码继续作为基线和消融，不定义 PSB 接口。
 

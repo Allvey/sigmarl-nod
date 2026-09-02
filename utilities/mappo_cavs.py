@@ -33,7 +33,9 @@ from torchrl.data.replay_buffers.storages import LazyTensorStorage
 # Env
 from torchrl.envs import RewardSum
 from torchrl.envs.utils import (
+    _terminated_or_truncated,
     check_env_specs,
+    step_mdp,
 )
 
 # Multi-agent network
@@ -85,6 +87,307 @@ from utilities.experiment_artifacts import (
 )
 
 
+def _build_p3_shadow_base_environment(
+    parameters: Parameters,
+    opinion_pair_info_config: Mapping[str, object],
+):
+    """Build the independent Base environment used by P3.3 CRN pairing."""
+
+    scenario = ScenarioRoadTraffic()
+    scenario.parameters = parameters
+    scenario.configure_opinion_pair_info(dict(opinion_pair_info_config))
+    shadow = VmasEnv(
+        scenario=scenario,
+        num_envs=parameters.num_vmas_envs,
+        continuous_actions=True,
+        max_steps=parameters.max_steps,
+        device=parameters.device,
+        seed=parameters.seed,
+        n_agents=parameters.n_agents,
+    )
+    reward_sum = RewardSum(
+        in_keys=[shadow.reward_key],
+        out_keys=[("agents", "episode_reward")],
+    )
+    from torchrl.envs.transforms import Compose
+    from utilities.opinion.transforms import DiscreteDTypeCastTransform
+
+    transform = Compose(
+        reward_sum,
+        DiscreteDTypeCastTransform(
+            torch.float32,
+            torch.long,
+            n=parameters.n_agents,
+            in_keys=[("agents", "info", "neighbor_ids")],
+            in_keys_inv=[],
+        ),
+        DiscreteDTypeCastTransform(
+            torch.float32,
+            torch.bool,
+            n=2,
+            in_keys=[
+                ("agents", "info", "pair_mask"),
+                ("agents", "info", "agent_reset_mask"),
+            ],
+            in_keys_inv=[],
+        ),
+    )
+    result = TransformedEnvCustom(shadow, transform)
+    check_env_specs(result, seed=parameters.seed)
+    return result
+
+
+def _seed_p3_pair(seed: int) -> None:
+    """Reset every stochastic source before one side of a P3.3 pair."""
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _reset_p3_collector(collector, seed: int) -> None:
+    """Fully reset one side of a P3.3 pair from a deterministic seed."""
+
+    collector.env.set_seed(seed)
+    _seed_p3_pair(seed)
+    collector._tensordict.update(collector.env.reset())
+    reset_policy_state = getattr(collector.policy, "reset_state", None)
+    if callable(reset_policy_state):
+        reset_policy_state()
+
+
+def _step_p3_collector_without_reset(collector):
+    """Take one collector step while deferring reset to the pair coordinator."""
+
+    parameters = collector.env.base_env.scenario_name.parameters
+    if parameters.is_using_opponent_modeling:
+        raise RuntimeError("P3.3 lock-step collection forbids opponent modeling.")
+    if parameters.is_using_prioritized_marl:
+        raise RuntimeError("P3.3 lock-step collection forbids prioritized MARL.")
+    collector.policy(collector._tensordict)
+    transition = collector.env.step(collector._tensordict)
+    next_tensordict = step_mdp(
+        transition,
+        keep_other=True,
+        exclude_action=False,
+        exclude_reward=True,
+        reward_keys=collector.env.reward_keys,
+        action_keys=collector.env.action_keys,
+        done_keys=collector.env.done_keys,
+    )
+    return transition, next_tensordict
+
+
+def _maybe_reset_p3_collector(collector, next_tensordict, seed: int):
+    """Apply the synchronized partial reset mask already encoded in ``done``."""
+
+    any_done = _terminated_or_truncated(
+        next_tensordict,
+        full_done_spec=collector.env.output_spec["full_done_spec"],
+        key="_reset",
+    )
+    if any_done:
+        collector.env.set_seed(seed)
+        _seed_p3_pair(seed)
+        next_tensordict = collector.env.reset(next_tensordict)
+    return next_tensordict
+
+
+def _stack_p3_collector_steps(collector, steps):
+    """Finalize a lock-step rollout with the normal collector buffer contract."""
+
+    try:
+        collector._tensordict_out = torch.stack(
+            steps,
+            collector._tensordict_out.ndim - 1,
+            out=collector._tensordict_out,
+        )
+    except RuntimeError:
+        with collector._tensordict_out.unlock_():
+            collector._tensordict_out = torch.stack(
+                steps,
+                collector._tensordict_out.ndim - 1,
+                out=collector._tensordict_out,
+            )
+    collector._frames += collector._tensordict_out.numel()
+    collector._iter += 1
+    if collector.split_trajs:
+        raise RuntimeError("P3.3 lock-step collection does not support split_trajs.")
+    result = collector._tensordict_out
+    if collector.postproc is not None:
+        result = collector.postproc(result)
+    if collector._exclude_private_keys:
+        private_keys = [
+            key
+            for key in result.keys(True)
+            if (
+                isinstance(key, str)
+                and key.startswith("_")
+                or isinstance(key, tuple)
+                and any(part.startswith("_") for part in key)
+            )
+        ]
+        result = result.exclude(*private_keys, inplace=True)
+    return result.clone()
+
+
+@torch.no_grad()
+def _collect_p3_synchronized_batch(
+    candidate_collector,
+    base_collector,
+    pair_seed: int,
+):
+    """Collect one Candidate/Base batch with shared episode boundaries."""
+
+    from utilities.psb_marl.p3_differential import (
+        paired_reset_seed,
+        paired_transition_seed,
+    )
+    from utilities.psb_marl.p3_pairing import (
+        synchronize_paired_transition_boundaries,
+    )
+
+    if candidate_collector.frames_per_batch != base_collector.frames_per_batch:
+        raise RuntimeError("P3.3 paired collectors must have equal batch lengths.")
+    if candidate_collector.env.batch_size != base_collector.env.batch_size:
+        raise RuntimeError("P3.3 paired collectors must have equal environment batches.")
+    _reset_p3_collector(candidate_collector, pair_seed)
+    _reset_p3_collector(base_collector, pair_seed)
+    initial_error = float(
+        (
+            candidate_collector._tensordict.get(("agents", "observation"))
+            - base_collector._tensordict.get(("agents", "observation"))
+        )
+        .abs()
+        .max()
+        .item()
+    )
+    if initial_error > 1e-6:
+        raise RuntimeError(
+            "P3.3 paired collectors did not share an initial state: "
+            f"max observation error={initial_error}."
+        )
+
+    candidate_collector._tensordict_out.fill_(
+        ("collector", "traj_ids"), -1
+    )
+    base_collector._tensordict_out.fill_(("collector", "traj_ids"), -1)
+    candidate_steps = []
+    base_steps = []
+    synchronized_boundary_count = 0
+    candidate_synthetic_count = 0
+    base_synthetic_count = 0
+    post_reset_error = 0.0
+
+    for time_index in range(candidate_collector.frames_per_batch):
+        transition_seed = paired_transition_seed(pair_seed, time_index)
+        _seed_p3_pair(transition_seed)
+        candidate_transition, candidate_next = (
+            _step_p3_collector_without_reset(candidate_collector)
+        )
+        _seed_p3_pair(transition_seed)
+        base_transition, base_next = _step_p3_collector_without_reset(
+            base_collector
+        )
+        boundary = synchronize_paired_transition_boundaries(
+            candidate_transition, base_transition
+        )
+        synchronized_boundary_count += boundary.count
+        candidate_synthetic_count += int(
+            boundary.candidate_synthetic_truncation.sum().item()
+        )
+        base_synthetic_count += int(
+            boundary.base_synthetic_truncation.sum().item()
+        )
+
+        # Rebuild the next-state views after modifying the transition boundary.
+        candidate_next = step_mdp(
+            candidate_transition,
+            keep_other=True,
+            exclude_action=False,
+            exclude_reward=True,
+            reward_keys=candidate_collector.env.reward_keys,
+            action_keys=candidate_collector.env.action_keys,
+            done_keys=candidate_collector.env.done_keys,
+        )
+        base_next = step_mdp(
+            base_transition,
+            keep_other=True,
+            exclude_action=False,
+            exclude_reward=True,
+            reward_keys=base_collector.env.reward_keys,
+            action_keys=base_collector.env.action_keys,
+            done_keys=base_collector.env.done_keys,
+        )
+        reset_seed = paired_reset_seed(pair_seed, time_index)
+        candidate_next = _maybe_reset_p3_collector(
+            candidate_collector, candidate_next, reset_seed
+        )
+        base_next = _maybe_reset_p3_collector(
+            base_collector, base_next, reset_seed
+        )
+
+        reset_environments = boundary.done.reshape(
+            boundary.done.shape[0], -1
+        ).any(dim=-1)
+        if bool(reset_environments.any()):
+            error = (
+                candidate_next.get(("agents", "observation"))[
+                    reset_environments
+                ]
+                - base_next.get(("agents", "observation"))[
+                    reset_environments
+                ]
+            ).abs()
+            post_reset_error = max(post_reset_error, float(error.max().item()))
+            if post_reset_error > 1e-6:
+                raise RuntimeError(
+                    "P3.3 synchronized reset produced different states: "
+                    f"max observation error={post_reset_error}."
+                )
+
+        candidate_collector._tensordict = candidate_next.set(
+            "collector", candidate_transition.get("collector").clone(False)
+        )
+        base_collector._tensordict = base_next.set(
+            "collector", base_transition.get("collector").clone(False)
+        )
+        candidate_collector._update_traj_ids(candidate_transition)
+        base_collector._update_traj_ids(base_transition)
+        candidate_steps.append(
+            candidate_transition.to(
+                candidate_collector.storing_device, non_blocking=True
+            )
+        )
+        base_steps.append(
+            base_transition.to(
+                base_collector.storing_device, non_blocking=True
+            )
+        )
+
+    candidate_batch = _stack_p3_collector_steps(
+        candidate_collector, candidate_steps
+    )
+    base_batch = _stack_p3_collector_steps(base_collector, base_steps)
+    candidate_done = candidate_batch.get(("next", "done")).bool()
+    base_done = base_batch.get(("next", "done")).bool()
+    boundaries_exact = bool(torch.equal(candidate_done, base_done))
+    if not boundaries_exact:
+        raise RuntimeError("P3.3 synchronized episode boundaries diverged.")
+    return candidate_batch, base_batch, {
+        "paired_boundary_mode": "union_truncate_and_common_seed_reset",
+        "paired_episode_boundaries_exact": boundaries_exact,
+        "paired_synchronized_boundary_count": synchronized_boundary_count,
+        "paired_candidate_synthetic_truncation_count": (
+            candidate_synthetic_count
+        ),
+        "paired_base_synthetic_truncation_count": base_synthetic_count,
+        "paired_post_reset_observation_max_abs_error": post_reset_error,
+    }
+
+
 def mappo_cavs(
     parameters: Parameters,
     opinion_pair_info_config: Optional[Mapping[str, object]] = None,
@@ -108,6 +411,32 @@ def mappo_cavs(
     )
     is_psb_p1 = psb_stage == "p1_zero_control_equivalence"
     is_psb_p2 = psb_stage == "p2_frozen_base_bifurcation"
+    is_psb_p32 = bool(
+        is_psb_p2
+        and isinstance(psb_runtime_config.get("primal_dual"), Mapping)
+    )
+    is_psb_p33 = bool(
+        is_psb_p32
+        and isinstance(psb_runtime_config.get("paired_differential"), Mapping)
+    )
+    if is_psb_p33:
+        paired_contract = psb_runtime_config["paired_differential"]
+        required_paired_flags = (
+            "common_random_numbers",
+            "reset_at_each_iteration",
+            "synchronize_episode_boundaries",
+            "online_critic_learning_enabled",
+        )
+        disabled = [
+            name
+            for name in required_paired_flags
+            if paired_contract.get(name) is not True
+        ]
+        if disabled:
+            raise ValueError(
+                "P3.3 paired collection contract is disabled: "
+                f"{disabled}."
+            )
     if psb_runtime_config is not None and not (is_psb_p1 or is_psb_p2):
         raise ValueError(f"Unsupported PSB runtime stage: {psb_stage!r}.")
     if psb_action_projection not in {None, "full", "longitudinal_only"}:
@@ -817,6 +1146,54 @@ def mappo_cavs(
             out_keys=[("agents", "state_value")],
         )
 
+    if is_psb_p32 and not parameters.is_load_model:
+        initial_policy = Path(
+            str(psb_runtime_config["initial_policy_checkpoint"])
+        ).expanduser().resolve()
+        initial_critic = Path(
+            str(psb_runtime_config["initial_scalar_critic_checkpoint"])
+        ).expanduser().resolve()
+        if not initial_policy.is_file() or not initial_critic.is_file():
+            raise FileNotFoundError(
+                "P3.2 initial policy or scalar critic checkpoint is missing."
+            )
+        policy.load_state_dict(
+            torch.load(initial_policy, map_location=parameters.device),
+            strict=True,
+        )
+        critic.load_state_dict(
+            torch.load(initial_critic, map_location=parameters.device),
+            strict=True,
+        )
+
+    p3_differential_critic = None
+    p3_differential_source = None
+    p3_shadow_base_env = None
+    p3_shadow_base_policy = None
+    if is_psb_p33 and not parameters.is_load_model:
+        from utilities.psb_marl.p3_critic_training import (
+            load_differential_critic,
+        )
+
+        p3_differential_source = Path(
+            str(psb_runtime_config["p3_differential_critic_checkpoint"])
+        ).expanduser().resolve()
+        p3_differential_critic, _ = load_differential_critic(
+            p3_differential_source,
+            device=torch.device(parameters.device),
+        )
+        p3_differential_critic.train()
+        p3_shadow_base_env = _build_p3_shadow_base_environment(
+            parameters,
+            opinion_pair_info_config,
+        )
+        p3_shadow_base_policy = copy.deepcopy(base_policy).to(
+            parameters.device
+        )
+        p3_shadow_base_policy.eval()
+        for parameter in p3_shadow_base_policy.parameters():
+            parameter.requires_grad_(False)
+
     if (
         is_opinion_policy
         and not parameters.is_load_model
@@ -1009,7 +1386,25 @@ def mappo_cavs(
             parameters.frames_per_batch
             * (parameters.n_iters - resume_start_iteration)
         ),
+        reset_at_each_iter=is_psb_p33,
     )
+    p3_shadow_base_collector = None
+    if is_psb_p33:
+        if p3_shadow_base_env is None or p3_shadow_base_policy is None:
+            raise RuntimeError("P3.3 shadow Base collector is unavailable.")
+        p3_shadow_base_collector = SyncDataCollectorCustom(
+            p3_shadow_base_env,
+            p3_shadow_base_policy,
+            priority_module=None,
+            device=parameters.device,
+            storing_device=parameters.device,
+            frames_per_batch=parameters.frames_per_batch,
+            total_frames=(
+                parameters.frames_per_batch
+                * (parameters.n_iters - resume_start_iteration)
+            ),
+            reset_at_each_iter=True,
+        )
 
     uses_sequence_buffer = is_sequence_buffer or is_psb_p2
     if uses_sequence_buffer:
@@ -1071,6 +1466,8 @@ def mappo_cavs(
 
     sequence_ppo_loss = None
     p2_sequence_loss = None
+    p3_dual_controller = None
+    p3_differential_config = None
     if is_sequence_evidence_training:
         from utilities.opinion.sequence_ppo import OpinionSequencePPOLoss
 
@@ -1128,6 +1525,35 @@ def mappo_cavs(
                 p2_training_config["saturation_fraction"]
             ),
         )
+        if is_psb_p32:
+            from utilities.psb_marl.p3_dual import ProjectedDualController
+
+            dual = dict(psb_runtime_config["primal_dual"])
+            p3_dual_controller = ProjectedDualController(
+                vehicle_budget=float(dual["vehicle_budget"]),
+                lane_budget=float(dual["lane_budget"]),
+                vehicle_learning_rate=float(dual["vehicle_learning_rate"]),
+                lane_learning_rate=float(dual["lane_learning_rate"]),
+                maximum_multiplier=float(dual["maximum_multiplier"]),
+                initial_vehicle_multiplier=float(
+                    dual["initial_vehicle_multiplier"]
+                ),
+                initial_lane_multiplier=float(
+                    dual["initial_lane_multiplier"]
+                ),
+                normalize_constraints=bool(
+                    dual.get("normalize_constraints", False)
+                ),
+                active_constraints=tuple(
+                    dual.get("active_constraints", ("vehicle", "lane"))
+                ),
+            )
+            if is_psb_p33:
+                p3_differential_config = dict(
+                    psb_runtime_config["paired_differential"]
+                )
+                if p3_differential_critic is None:
+                    raise RuntimeError("P3.3 differential critic is unavailable.")
 
     training_schedule = None
     current_training_phase = None
@@ -1135,11 +1561,15 @@ def mappo_cavs(
         trainable_groups = psb_bridge.trainable_groups()
         control_parameters = trainable_groups["control"]
         adapter_parameters = trainable_groups["adapter"]
-        critic_trainable_parameters = [
-            parameter
-            for parameter in loss_module.critic_params.values(True, True)
-            if parameter.requires_grad
-        ]
+        critic_trainable_parameters = (
+            list(p3_differential_critic.parameters())
+            if is_psb_p33
+            else [
+                parameter
+                for parameter in loss_module.critic_params.values(True, True)
+                if parameter.requires_grad
+            ]
+        )
         if not control_parameters or not adapter_parameters:
             raise RuntimeError("P2 Actor parameter groups must be non-empty.")
         if not critic_trainable_parameters:
@@ -1177,12 +1607,30 @@ def mappo_cavs(
                     "params": critic_trainable_parameters,
                     "lr": parameters.lr
                     * float(
-                        p2_training_config["critic_learning_rate_scale"]
+                        (
+                            p3_differential_config[
+                                "critic_learning_rate_scale"
+                            ]
+                            if is_psb_p33
+                            else p2_training_config[
+                                "critic_learning_rate_scale"
+                            ]
+                        )
                     ),
                     "lr_scale": float(
-                        p2_training_config["critic_learning_rate_scale"]
+                        (
+                            p3_differential_config[
+                                "critic_learning_rate_scale"
+                            ]
+                            if is_psb_p33
+                            else p2_training_config[
+                                "critic_learning_rate_scale"
+                            ]
+                        )
                     ),
-                    "group_name": "critic",
+                    "group_name": (
+                        "differential_critic" if is_psb_p33 else "critic"
+                    ),
                 },
             ]
         )
@@ -1373,7 +1821,39 @@ def mappo_cavs(
             float(item["episode_reward_mean"]) for item in artifact_iterations
         ]
 
-    for tensordict_data in collector:
+    if is_psb_p33:
+        from utilities.psb_marl.p3_differential import paired_iteration_seed
+
+        def p3_paired_batches():
+            for offset in range(parameters.n_iters - resume_start_iteration):
+                iteration = resume_start_iteration + offset
+                pair_seed = paired_iteration_seed(parameters.seed, iteration)
+                candidate_batch, base_batch, pairing_metrics = (
+                    _collect_p3_synchronized_batch(
+                        collector,
+                        p3_shadow_base_collector,
+                        pair_seed,
+                    )
+                )
+                yield (
+                    candidate_batch,
+                    base_batch,
+                    pair_seed,
+                    pairing_metrics,
+                )
+
+        training_batches = p3_paired_batches()
+    else:
+        training_batches = (
+            (batch, None, None, {}) for batch in collector
+        )
+
+    for (
+        tensordict_data,
+        p3_base_tensordict,
+        p3_pair_seed,
+        p3_pairing_metrics,
+    ) in training_batches:
         rollout_finished_at = time.time()
         rollout_seconds = rollout_finished_at - iteration_cycle_start
         optimization_started_at = rollout_finished_at
@@ -1401,7 +1881,171 @@ def mappo_cavs(
         p2_mean_abs_delta_loc_sum = 0.0
         p2_control_gradient_norm_sum = 0.0
         p2_adapter_gradient_norm_sum = 0.0
+        p3_differential_prediction_mae_sum = 0.0
+        p3_safety_costs = None
+        p3_dual_metrics = {}
+        p3_differential_metrics = {}
         loss_update_count = 0
+
+        if is_psb_p33:
+            from utilities.psb_marl.p3_critic_training import (
+                paired_critic_samples,
+            )
+            from utilities.psb_marl.p3_differential import (
+                differential_advantage,
+            )
+            from utilities.psb_marl.p3_pairing import build_paired_batch
+
+            if (
+                p3_base_tensordict is None
+                or p3_differential_critic is None
+                or p3_dual_controller is None
+            ):
+                raise RuntimeError("P3.3 paired training state is incomplete.")
+            paired_batch = build_paired_batch(
+                tensordict_data, p3_base_tensordict
+            )
+            if not torch.equal(
+                paired_batch.candidate_done, paired_batch.base_done
+            ):
+                raise RuntimeError(
+                    "P3.3 requires exactly synchronized episode boundaries."
+                )
+            initial_observation_error = float(
+                (
+                    paired_batch.candidate_observation[:, 0]
+                    - paired_batch.base_observation[:, 0]
+                )
+                .abs()
+                .max()
+                .item()
+            )
+            if initial_observation_error > 1e-6:
+                raise RuntimeError(
+                    "P3.3 CRN collectors did not start from the same state: "
+                    f"max observation error={initial_observation_error}."
+                )
+            paired_samples = paired_critic_samples(
+                paired_batch,
+                gamma=float(parameters.gamma),
+                energy_coefficient=float(
+                    p2_training_config["energy_coefficient"]
+                ),
+                lane_safety_margin=float(
+                    psb_runtime_config["primal_dual"][
+                        "lane_safety_margin"
+                    ]
+                ),
+            )
+            target_channels = paired_samples.target.reshape(
+                *tensordict_data.batch_size,
+                parameters.n_agents,
+                -1,
+            ).to(parameters.device)
+            with torch.no_grad():
+                predicted_channels = p3_differential_critic(
+                    paired_batch.candidate_observation,
+                    paired_batch.base_observation,
+                    paired_batch.candidate_branch_state,
+                    paired_batch.candidate_edge_mask,
+                )
+                paired_advantage, differential_terms = (
+                    differential_advantage(
+                        target_channels,
+                        predicted_channels,
+                        vehicle_multiplier=(
+                            p3_dual_controller.vehicle_multiplier
+                        ),
+                        lane_multiplier=p3_dual_controller.lane_multiplier,
+                        vehicle_budget=p3_dual_controller.vehicle_budget,
+                        lane_budget=p3_dual_controller.lane_budget,
+                        normalize_constraints=(
+                            p3_dual_controller.normalize_constraints
+                        ),
+                        active_constraints=(
+                            p3_dual_controller.active_constraints
+                        ),
+                        normalize_advantage=bool(
+                            p3_differential_config["normalize_advantage"]
+                        ),
+                        advantage_scale_floor=float(
+                            p3_differential_config[
+                                "advantage_scale_floor"
+                            ]
+                        ),
+                    )
+                )
+            tensordict_data.set(
+                ("agents", "psb", "base_observation"),
+                paired_batch.base_observation.detach(),
+            )
+            tensordict_data.set(
+                ("agents", "psb", "paired_edge_mask"),
+                paired_batch.candidate_edge_mask.detach(),
+            )
+            tensordict_data.set(
+                ("agents", "psb", "delta_return_target"),
+                target_channels.detach(),
+            )
+            tensordict_data.set(
+                loss_module.tensor_keys.advantage,
+                paired_advantage.detach(),
+            )
+            p3_differential_metrics = {
+                **p3_pairing_metrics,
+                "paired_crn_seed": int(p3_pair_seed),
+                "paired_crn_initial_observation_max_abs_error": (
+                    initial_observation_error
+                ),
+                "paired_crn_initial_observation_exact": bool(
+                    initial_observation_error == 0.0
+                ),
+                "paired_delta_reward_step_mean": float(
+                    paired_batch.delta_reward.mean().item()
+                ),
+                "paired_delta_vehicle_risk_step_mean": float(
+                    (
+                        paired_batch.candidate_vehicle_risk
+                        - paired_batch.base_vehicle_risk
+                    )
+                    .mean()
+                    .item()
+                ),
+                "paired_delta_lane_clearance_step_mean": float(
+                    (
+                        paired_batch.candidate_lane_clearance
+                        - paired_batch.base_lane_clearance
+                    )
+                    .mean()
+                    .item()
+                ),
+                "paired_target_lagrangian_return_mean": float(
+                    differential_terms["target_lagrangian"].mean().item()
+                ),
+                "paired_predicted_lagrangian_return_mean": float(
+                    differential_terms["predicted_lagrangian"].mean().item()
+                ),
+                "paired_raw_advantage_mean": float(
+                    differential_terms["raw_advantage"].mean().item()
+                ),
+                "paired_raw_advantage_std": float(
+                    differential_terms["raw_advantage"]
+                    .std(unbiased=False)
+                    .item()
+                ),
+                "paired_training_advantage_mean": float(
+                    paired_advantage.mean().item()
+                ),
+                "paired_training_advantage_std": float(
+                    paired_advantage.std(unbiased=False).item()
+                ),
+                "paired_candidate_done_count": int(
+                    paired_batch.candidate_done.sum().item()
+                ),
+                "paired_base_done_count": int(
+                    paired_batch.base_done.sum().item()
+                ),
+            }
 
         tensordict_data.set(
             ("next", "agents", "done"),
@@ -1465,10 +2109,62 @@ def mappo_cavs(
                 float(p2_training_config["energy_coefficient"])
                 * rollout_control_energy.unsqueeze(-1).unsqueeze(-1)
             )
-            tensordict_data.set(
-                ("next", env.reward_key),
-                task_reward - reward_penalty.expand_as(task_reward),
+            augmented_reward = task_reward - reward_penalty.expand_as(
+                task_reward
             )
+            if is_psb_p32:
+                from utilities.psb_marl.p3_dual import continuous_safety_costs
+
+                p3_safety_costs = continuous_safety_costs(
+                    urgency=tensordict_data.get(
+                        ("next", "agents", "info", "urgency")
+                    ),
+                    confidence=tensordict_data.get(
+                        ("next", "agents", "info", "confidence")
+                    ),
+                    pair_mask=tensordict_data.get(
+                        ("next", "agents", "info", "pair_mask")
+                    ).bool(),
+                    distance_left=tensordict_data.get(
+                        ("next", "agents", "info", "distance_left_b")
+                    ),
+                    distance_right=tensordict_data.get(
+                        ("next", "agents", "info", "distance_right_b")
+                    ),
+                    vehicle_collision=tensordict_data.get(
+                        (
+                            "next",
+                            "agents",
+                            "info",
+                            "is_collision_with_agents",
+                        )
+                    ),
+                    lane_collision=tensordict_data.get(
+                        (
+                            "next",
+                            "agents",
+                            "info",
+                            "is_collision_with_lanelets",
+                        )
+                    ),
+                    lane_safety_margin=float(
+                        psb_runtime_config["primal_dual"][
+                            "lane_safety_margin"
+                        ]
+                    ),
+                )
+                augmented_reward = p3_dual_controller.lagrangian_reward(
+                    augmented_reward, p3_safety_costs
+                )
+                tensordict_data.set(
+                    ("next", "agents", "psb", "vehicle_safety_cost"),
+                    p3_safety_costs.vehicle.unsqueeze(-1),
+                )
+                tensordict_data.set(
+                    ("next", "agents", "psb", "lane_safety_cost"),
+                    p3_safety_costs.lane.unsqueeze(-1),
+                )
+            tensordict_data.set(("next", env.reward_key), augmented_reward)
 
             z_for_next_value = P2EdgeStateTracker.apply_resets(
                 tensordict_data.get(("agents", "psb", "z_next_dense")),
@@ -1483,11 +2179,12 @@ def mappo_cavs(
             )
 
         with torch.no_grad():
-            GAE(
-                tensordict_data,
-                params=loss_module.critic_params,
-                target_params=loss_module.target_critic_params,
-            )  # Compute GAE and add it to the data
+            if not is_psb_p33:
+                GAE(
+                    tensordict_data,
+                    params=loss_module.critic_params,
+                    target_params=loss_module.target_critic_params,
+                )  # Compute GAE and add it to the data
 
             if priority_module:
                 priority_module.GAE(
@@ -1556,10 +2253,72 @@ def mappo_cavs(
 
                 if is_psb_p2:
                     loss_vals = p2_sequence_loss(mini_batch_data)
-                    critic_batch = mini_batch_data.tensordict.reshape(-1)
-                    loss_vals["loss_critic"] = loss_module.loss_critic(
-                        critic_batch
-                    ).mean()
+                    if is_psb_p33:
+                        from utilities.psb_marl.p3_differential import (
+                            differential_critic_loss,
+                        )
+
+                        critic_td = mini_batch_data.tensordict
+                        differential_loss, differential_prediction = (
+                            differential_critic_loss(
+                                p3_differential_critic,
+                                candidate_observation=critic_td.get(
+                                    observation_key
+                                ),
+                                base_observation=critic_td.get(
+                                    (
+                                        "agents",
+                                        "psb",
+                                        "base_observation",
+                                    )
+                                ),
+                                candidate_z=critic_td.get(
+                                    (
+                                        "agents",
+                                        "psb",
+                                        "z_next_dense",
+                                    )
+                                ),
+                                edge_mask=critic_td.get(
+                                    (
+                                        "agents",
+                                        "psb",
+                                        "paired_edge_mask",
+                                    )
+                                ).bool(),
+                                target_channels=critic_td.get(
+                                    (
+                                        "agents",
+                                        "psb",
+                                        "delta_return_target",
+                                    )
+                                ),
+                                huber_delta=float(
+                                    p3_differential_config["huber_delta"]
+                                ),
+                            )
+                        )
+                        loss_vals["loss_critic"] = differential_loss
+                        p3_differential_prediction_mae_sum += float(
+                            (
+                                differential_prediction.detach()
+                                - critic_td.get(
+                                    (
+                                        "agents",
+                                        "psb",
+                                        "delta_return_target",
+                                    )
+                                )
+                            )
+                            .abs()
+                            .mean()
+                            .item()
+                        )
+                    else:
+                        critic_batch = mini_batch_data.tensordict.reshape(-1)
+                        loss_vals["loss_critic"] = loss_module.loss_critic(
+                            critic_batch
+                        ).mean()
                 elif is_sequence_evidence_training:
                     loss_vals = sequence_ppo_loss(mini_batch_data)
                     critic_batch = mini_batch_data.tensordict.reshape(-1)
@@ -1705,7 +2464,16 @@ def mappo_cavs(
                     clip_m9_gradients(optim, parameters.max_grad_norm)
                 else:
                     torch.nn.utils.clip_grad_norm_(
-                        optimization_parameters, parameters.max_grad_norm
+                        optimization_parameters,
+                        (
+                            float(
+                                p3_differential_config[
+                                    "gradient_clip_norm"
+                                ]
+                            )
+                            if is_psb_p33
+                            else parameters.max_grad_norm
+                        ),
                     )  # Optional
 
                 optim.step()
@@ -1734,6 +2502,16 @@ def mappo_cavs(
                     replay_buffer.update_tensordict_priority(mini_batch_data)
         optimization_seconds = time.time() - optimization_started_at
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
+        if is_psb_p33:
+            p3_differential_metrics[
+                "online_differential_critic_mae"
+            ] = p3_differential_prediction_mae_sum / max(
+                loss_update_count, 1
+            )
+        if is_psb_p32:
+            if p3_safety_costs is None or p3_dual_controller is None:
+                raise RuntimeError("P3.2 dual update is missing rollout costs.")
+            p3_dual_metrics = p3_dual_controller.update(p3_safety_costs)
 
         # Logging
         done = tensordict_data.get(("next", "agents", "done"))
@@ -1881,6 +2659,8 @@ def mappo_cavs(
                 ),
                 "base_actor_frozen": True,
                 **p2_rollout_diagnostics,
+                **p3_dual_metrics,
+                **p3_differential_metrics,
             }
             if str(
                 adapter_config.get("conditioning_mode", "general")
@@ -2108,7 +2888,8 @@ def mappo_cavs(
                                 next(
                                     group["lr"]
                                     for group in optim.param_groups
-                                    if group["group_name"] == "critic"
+                                    if group["group_name"]
+                                    in {"critic", "differential_critic"}
                                 )
                             ),
                         }
@@ -2281,6 +3062,9 @@ def mappo_cavs(
 
         iteration_cycle_start = time.time()
 
+    if p3_shadow_base_collector is not None:
+        p3_shadow_base_collector.shutdown()
+
     # P2 keeps the learned policy quarantined as a candidate.  The stable
     # final_* deployment pair remains byte-identical to Base until the manual
     # paired non-inferiority gate explicitly promotes the candidate.
@@ -2332,6 +3116,23 @@ def mappo_cavs(
             psb_tracker.snapshot(),
             parameters.where_to_save + "final_psb_state.pt",
         )
+        if is_psb_p32:
+            torch.save(
+                p3_dual_controller.state_dict(),
+                parameters.where_to_save + "p3_dual_state.pt",
+            )
+        if is_psb_p33:
+            from utilities.psb_marl.p3_differential import (
+                save_online_differential_critic,
+            )
+
+            save_online_differential_critic(
+                Path(parameters.where_to_save)
+                / "candidate_differential_critic.pth",
+                model=p3_differential_critic,
+                runtime_config=psb_runtime_config,
+                source_checkpoint=p3_differential_source,
+            )
     else:
         torch.save(
             policy.state_dict(), parameters.where_to_save + "final_policy.pth"

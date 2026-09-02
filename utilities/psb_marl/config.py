@@ -79,6 +79,26 @@ def _hidden_sizes(value: Any, location: str) -> tuple[int, ...]:
     )
 
 
+def _integer_tuple(
+    value: Any,
+    location: str,
+    *,
+    minimum_length: int = 1,
+    minimum_value: int = 0,
+) -> tuple[int, ...]:
+    if not isinstance(value, list) or len(value) < minimum_length:
+        raise PSBConfigError(
+            f"{location} must contain at least {minimum_length} integers."
+        )
+    result = tuple(
+        _integer(item, f"{location}[{index}]", minimum=minimum_value)
+        for index, item in enumerate(value)
+    )
+    if len(set(result)) != len(result):
+        raise PSBConfigError(f"{location} must not contain duplicate values.")
+    return result
+
+
 def _resolve_existing_path(
     value: Any,
     location: str,
@@ -632,6 +652,403 @@ class PSBPromotionConfig:
 
 
 @dataclass(frozen=True)
+class PSBP3PairedRolloutConfig:
+    """Read-only P3.0 paired Candidate/Base collection contract."""
+
+    common_random_numbers: bool
+    learning_enabled: bool
+    require_exact_source_equivalence: bool
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "PSBP3PairedRolloutConfig":
+        raw = _object(raw, "paired_rollout")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "paired_rollout")
+        result = cls(
+            common_random_numbers=_boolean(
+                raw["common_random_numbers"],
+                "paired_rollout.common_random_numbers",
+            ),
+            learning_enabled=_boolean(
+                raw["learning_enabled"], "paired_rollout.learning_enabled"
+            ),
+            require_exact_source_equivalence=_boolean(
+                raw["require_exact_source_equivalence"],
+                "paired_rollout.require_exact_source_equivalence",
+            ),
+        )
+        if not result.common_random_numbers:
+            raise PSBConfigError("P3.0 requires common_random_numbers=true.")
+        if result.learning_enabled:
+            raise PSBConfigError("P3.0 requires learning_enabled=false.")
+        if not result.require_exact_source_equivalence:
+            raise PSBConfigError(
+                "P3.0 requires require_exact_source_equivalence=true."
+            )
+        return result
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            name: getattr(self, name) for name in self.__dataclass_fields__
+        }
+
+
+@dataclass(frozen=True)
+class PSBP31DifferentialCriticConfig:
+    """Actor-frozen paired supervision for the P3.1 vector critic."""
+
+    actor_learning_enabled: bool
+    dual_learning_enabled: bool
+    collection_scenario: str
+    training_seeds: tuple[int, ...]
+    validation_seeds: tuple[int, ...]
+    max_steps: int
+    episodes: int
+    gamma: float
+    embedding_dim: int
+    hidden_sizes: tuple[int, ...]
+    learning_rate: float
+    weight_decay: float
+    epochs: int
+    minibatch_size: int
+    huber_delta: float
+    target_scale_floor: float
+    lane_safety_margin: float
+    gradient_clip_norm: float
+    early_stopping_patience: int
+    required_relative_improvement: float
+    minimum_target_std: float
+    minimum_channel_explained_variance: float
+
+    @classmethod
+    def from_dict(
+        cls, raw: Mapping[str, Any]
+    ) -> "PSBP31DifferentialCriticConfig":
+        raw = _object(raw, "differential_critic")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "differential_critic")
+        result = cls(
+            actor_learning_enabled=_boolean(
+                raw["actor_learning_enabled"],
+                "differential_critic.actor_learning_enabled",
+            ),
+            dual_learning_enabled=_boolean(
+                raw["dual_learning_enabled"],
+                "differential_critic.dual_learning_enabled",
+            ),
+            collection_scenario=_string(
+                raw["collection_scenario"],
+                "differential_critic.collection_scenario",
+            ),
+            training_seeds=_integer_tuple(
+                raw["training_seeds"],
+                "differential_critic.training_seeds",
+                minimum_length=2,
+            ),
+            validation_seeds=_integer_tuple(
+                raw["validation_seeds"],
+                "differential_critic.validation_seeds",
+                minimum_length=1,
+            ),
+            max_steps=_integer(
+                raw["max_steps"], "differential_critic.max_steps", minimum=2
+            ),
+            episodes=_integer(
+                raw["episodes"], "differential_critic.episodes"
+            ),
+            gamma=_number(
+                raw["gamma"],
+                "differential_critic.gamma",
+                strictly_positive=True,
+            ),
+            embedding_dim=_integer(
+                raw["embedding_dim"], "differential_critic.embedding_dim"
+            ),
+            hidden_sizes=_hidden_sizes(
+                raw["hidden_sizes"], "differential_critic.hidden_sizes"
+            ),
+            learning_rate=_number(
+                raw["learning_rate"],
+                "differential_critic.learning_rate",
+                strictly_positive=True,
+            ),
+            weight_decay=_number(
+                raw["weight_decay"], "differential_critic.weight_decay"
+            ),
+            epochs=_integer(raw["epochs"], "differential_critic.epochs"),
+            minibatch_size=_integer(
+                raw["minibatch_size"], "differential_critic.minibatch_size"
+            ),
+            huber_delta=_number(
+                raw["huber_delta"],
+                "differential_critic.huber_delta",
+                strictly_positive=True,
+            ),
+            target_scale_floor=_number(
+                raw["target_scale_floor"],
+                "differential_critic.target_scale_floor",
+                strictly_positive=True,
+            ),
+            lane_safety_margin=_number(
+                raw["lane_safety_margin"],
+                "differential_critic.lane_safety_margin",
+                strictly_positive=True,
+            ),
+            gradient_clip_norm=_number(
+                raw["gradient_clip_norm"],
+                "differential_critic.gradient_clip_norm",
+                strictly_positive=True,
+            ),
+            early_stopping_patience=_integer(
+                raw["early_stopping_patience"],
+                "differential_critic.early_stopping_patience",
+            ),
+            required_relative_improvement=_number(
+                raw["required_relative_improvement"],
+                "differential_critic.required_relative_improvement",
+            ),
+            minimum_target_std=_number(
+                raw["minimum_target_std"],
+                "differential_critic.minimum_target_std",
+            ),
+            minimum_channel_explained_variance=_number(
+                raw["minimum_channel_explained_variance"],
+                "differential_critic.minimum_channel_explained_variance",
+                minimum=-1.0,
+            ),
+        )
+        if result.actor_learning_enabled or result.dual_learning_enabled:
+            raise PSBConfigError(
+                "P3.1 requires actor_learning_enabled=false and "
+                "dual_learning_enabled=false."
+            )
+        if result.gamma > 1.0:
+            raise PSBConfigError("differential_critic.gamma must not exceed 1.")
+        if set(result.training_seeds) & set(result.validation_seeds):
+            raise PSBConfigError(
+                "P3.1 training_seeds and validation_seeds must be disjoint."
+            )
+        if result.required_relative_improvement >= 1.0:
+            raise PSBConfigError(
+                "required_relative_improvement must be smaller than 1."
+            )
+        if result.lane_safety_margin > 1.0:
+            raise PSBConfigError(
+                "lane_safety_margin must be a normalized value no greater than 1."
+            )
+        if result.minimum_channel_explained_variance >= 1.0:
+            raise PSBConfigError(
+                "minimum_channel_explained_variance must be smaller than 1."
+            )
+        return result
+
+    def to_dict(self) -> Dict[str, object]:
+        result = {
+            name: getattr(self, name) for name in self.__dataclass_fields__
+        }
+        result["training_seeds"] = list(self.training_seeds)
+        result["validation_seeds"] = list(self.validation_seeds)
+        result["hidden_sizes"] = list(self.hidden_sizes)
+        return result
+
+
+@dataclass(frozen=True)
+class PSBP32PrimalDualConfig:
+    """Locked projected-dual settings for P3.2 sequence PPO."""
+
+    iterations: int
+    vehicle_budget: float
+    lane_budget: float
+    vehicle_learning_rate: float
+    lane_learning_rate: float
+    maximum_multiplier: float
+    initial_vehicle_multiplier: float
+    initial_lane_multiplier: float
+    lane_safety_margin: float
+    normalize_constraints: bool = False
+    active_constraints: tuple[str, ...] = ("vehicle", "lane")
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "PSBP32PrimalDualConfig":
+        raw = _object(raw, "primal_dual")
+        optional = {"normalize_constraints", "active_constraints"}
+        required = set(cls.__dataclass_fields__) - optional
+        actual = set(raw)
+        if not required.issubset(actual) or not actual.issubset(
+            set(cls.__dataclass_fields__)
+        ):
+            raise PSBConfigError(
+                "primal_dual has invalid keys: "
+                f"missing={sorted(required - actual)}, "
+                f"extra={sorted(actual - set(cls.__dataclass_fields__))}."
+            )
+        active_constraints = raw.get(
+            "active_constraints", ["vehicle", "lane"]
+        )
+        if not isinstance(active_constraints, list):
+            raise PSBConfigError(
+                "primal_dual.active_constraints must be a list."
+            )
+        result = cls(
+            iterations=_integer(raw["iterations"], "primal_dual.iterations"),
+            vehicle_budget=_number(
+                raw["vehicle_budget"], "primal_dual.vehicle_budget"
+            ),
+            lane_budget=_number(raw["lane_budget"], "primal_dual.lane_budget"),
+            vehicle_learning_rate=_number(
+                raw["vehicle_learning_rate"],
+                "primal_dual.vehicle_learning_rate",
+                strictly_positive=True,
+            ),
+            lane_learning_rate=_number(
+                raw["lane_learning_rate"],
+                "primal_dual.lane_learning_rate",
+                strictly_positive=True,
+            ),
+            maximum_multiplier=_number(
+                raw["maximum_multiplier"],
+                "primal_dual.maximum_multiplier",
+                strictly_positive=True,
+            ),
+            initial_vehicle_multiplier=_number(
+                raw["initial_vehicle_multiplier"],
+                "primal_dual.initial_vehicle_multiplier",
+            ),
+            initial_lane_multiplier=_number(
+                raw["initial_lane_multiplier"],
+                "primal_dual.initial_lane_multiplier",
+            ),
+            lane_safety_margin=_number(
+                raw["lane_safety_margin"],
+                "primal_dual.lane_safety_margin",
+                strictly_positive=True,
+            ),
+            normalize_constraints=_boolean(
+                raw.get("normalize_constraints", False),
+                "primal_dual.normalize_constraints",
+            ),
+            active_constraints=tuple(
+                _string(item, f"primal_dual.active_constraints[{index}]")
+                for index, item in enumerate(active_constraints)
+            ),
+        )
+        if max(
+            result.initial_vehicle_multiplier,
+            result.initial_lane_multiplier,
+        ) > result.maximum_multiplier:
+            raise PSBConfigError(
+                "P3.2 initial multipliers exceed maximum_multiplier."
+            )
+        if result.lane_safety_margin > 1.0:
+            raise PSBConfigError("P3.2 lane_safety_margin must not exceed 1.")
+        if (
+            not result.active_constraints
+            or len(set(result.active_constraints))
+            != len(result.active_constraints)
+            or not set(result.active_constraints).issubset({"vehicle", "lane"})
+        ):
+            raise PSBConfigError(
+                "P3.2 active_constraints must be a non-empty unique subset "
+                "of vehicle and lane."
+            )
+        return result
+
+    def to_dict(self) -> Dict[str, object]:
+        result = {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+            if name not in {"normalize_constraints", "active_constraints"}
+        }
+        # Omitting the legacy false value preserves byte-compatible runtime
+        # dictionaries for already completed P3.2 runs.
+        if self.normalize_constraints:
+            result["normalize_constraints"] = True
+        if self.active_constraints != ("vehicle", "lane"):
+            result["active_constraints"] = list(self.active_constraints)
+        return result
+
+
+@dataclass(frozen=True)
+class PSBP33PairedDifferentialConfig:
+    """Online paired-control-variate settings for P3.3 sequence PPO."""
+
+    common_random_numbers: bool
+    reset_at_each_iteration: bool
+    synchronize_episode_boundaries: bool
+    online_critic_learning_enabled: bool
+    critic_learning_rate_scale: float
+    huber_delta: float
+    gradient_clip_norm: float
+    normalize_advantage: bool
+    advantage_scale_floor: float
+
+    @classmethod
+    def from_dict(
+        cls, raw: Mapping[str, Any]
+    ) -> "PSBP33PairedDifferentialConfig":
+        raw = _object(raw, "paired_differential")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "paired_differential")
+        result = cls(
+            common_random_numbers=_boolean(
+                raw["common_random_numbers"],
+                "paired_differential.common_random_numbers",
+            ),
+            reset_at_each_iteration=_boolean(
+                raw["reset_at_each_iteration"],
+                "paired_differential.reset_at_each_iteration",
+            ),
+            synchronize_episode_boundaries=_boolean(
+                raw["synchronize_episode_boundaries"],
+                "paired_differential.synchronize_episode_boundaries",
+            ),
+            online_critic_learning_enabled=_boolean(
+                raw["online_critic_learning_enabled"],
+                "paired_differential.online_critic_learning_enabled",
+            ),
+            critic_learning_rate_scale=_number(
+                raw["critic_learning_rate_scale"],
+                "paired_differential.critic_learning_rate_scale",
+                strictly_positive=True,
+            ),
+            huber_delta=_number(
+                raw["huber_delta"],
+                "paired_differential.huber_delta",
+                strictly_positive=True,
+            ),
+            gradient_clip_norm=_number(
+                raw["gradient_clip_norm"],
+                "paired_differential.gradient_clip_norm",
+                strictly_positive=True,
+            ),
+            normalize_advantage=_boolean(
+                raw["normalize_advantage"],
+                "paired_differential.normalize_advantage",
+            ),
+            advantage_scale_floor=_number(
+                raw["advantage_scale_floor"],
+                "paired_differential.advantage_scale_floor",
+                strictly_positive=True,
+            ),
+        )
+        if not result.common_random_numbers:
+            raise PSBConfigError("P3.3 requires common_random_numbers=true.")
+        if not result.reset_at_each_iteration:
+            raise PSBConfigError("P3.3 requires reset_at_each_iteration=true.")
+        if not result.synchronize_episode_boundaries:
+            raise PSBConfigError(
+                "P3.3 requires synchronize_episode_boundaries=true."
+            )
+        if not result.online_critic_learning_enabled:
+            raise PSBConfigError(
+                "P3.3 requires online_critic_learning_enabled=true."
+            )
+        return result
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            name: getattr(self, name) for name in self.__dataclass_fields__
+        }
+
+
+@dataclass(frozen=True)
 class PSBExperimentConfig:
     """Resolved PSB experiment plus its immutable JSON snapshots."""
 
@@ -651,6 +1068,12 @@ class PSBExperimentConfig:
     training: Optional[PSBP2TrainingConfig] = None
     promotion: Optional[PSBPromotionConfig] = None
     training_seed: Optional[int] = None
+    robustness_summary: Optional[Path] = None
+    paired_rollout: Optional[PSBP3PairedRolloutConfig] = None
+    differential_critic: Optional[PSBP31DifferentialCriticConfig] = None
+    primal_dual: Optional[PSBP32PrimalDualConfig] = None
+    paired_differential: Optional[PSBP33PairedDifferentialConfig] = None
+    source_p2_runtime: Optional[Dict[str, object]] = None
 
     @property
     def base_parameters(self):
@@ -707,6 +1130,124 @@ class PSBExperimentConfig:
         if self.training_seed is not None:
             result["training_seed"] = self.training_seed
         return result
+
+    def source_p2_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p3_paired_rollout_equivalence":
+            raise PSBConfigError(
+                "Source P2 runtime requested for a non-P3.0 stage."
+            )
+        assert self.proximal is not None
+        assert self.control is not None
+        assert self.branch_adapter is not None
+        assert self.training is not None
+        assert self.promotion is not None
+        assert self.training_seed is not None
+        return {
+            "stage": "p2_frozen_base_bifurcation",
+            "n_agents": int(self.base_run_config["n_agents"]),
+            "control_mode": "learned_antisymmetric",
+            "freeze_base_actor": True,
+            "base_policy_checkpoint": str(self.base.policy_checkpoint),
+            "base_critic_checkpoint": str(self.base.critic_checkpoint),
+            "proximal": self.proximal.to_runtime_dict(self.dt),
+            "control": self.control.to_dict(),
+            "branch_adapter": self.branch_adapter.to_dict(),
+            "training": self.training.to_dict(),
+            "promotion": self.promotion.to_dict(),
+            "training_seed": self.training_seed,
+        }
+
+    def p3_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p3_paired_rollout_equivalence":
+            raise PSBConfigError("P3 runtime requested for a non-P3.0 stage.")
+        assert self.parent_run is not None
+        assert self.robustness_summary is not None
+        assert self.paired_rollout is not None
+        return {
+            "stage": self.stage,
+            "source_p2_run": str(self.parent_run),
+            "robustness_summary": str(self.robustness_summary),
+            "paired_rollout": self.paired_rollout.to_dict(),
+            "source_p2_runtime": self.source_p2_runtime_config(),
+        }
+
+    def p31_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p3_differential_critic":
+            raise PSBConfigError("P3.1 runtime requested for a non-P3.1 stage.")
+        assert self.parent_run is not None
+        assert self.differential_critic is not None
+        assert self.source_p2_runtime is not None
+        assert self.training_seed is not None
+        return {
+            "stage": self.stage,
+            "training_seed": self.training_seed,
+            "source_p3_run": str(self.parent_run),
+            "source_p2_runtime": dict(self.source_p2_runtime),
+            "differential_critic": self.differential_critic.to_dict(),
+            "target_channels": [
+                "augmented_reward_return_delta",
+                "vehicle_conflict_risk_return_delta",
+                "lane_margin_violation_return_delta",
+            ],
+        }
+
+    def p32_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p3_primal_dual_ppo":
+            raise PSBConfigError("P3.2 runtime requested for a non-P3.2 stage.")
+        assert self.parent_run is not None
+        assert self.source_p2_runtime is not None
+        assert self.primal_dual is not None
+        runtime = dict(self.source_p2_runtime)
+        training = dict(runtime["training"])
+        training["iterations"] = self.primal_dual.iterations
+        runtime.update(
+            {
+                "training": training,
+                "training_seed": self.effective_training_seed,
+                "p3_stage": self.stage,
+                "primal_dual": self.primal_dual.to_dict(),
+                "initial_policy_checkpoint": str(
+                    self.parent_run / "candidate_policy.pth"
+                ),
+                "initial_scalar_critic_checkpoint": str(
+                    self.parent_run / "source_p2_critic.pth"
+                ),
+                "p3_differential_critic_checkpoint": str(
+                    self.parent_run / "candidate_critic.pth"
+                ),
+            }
+        )
+        return runtime
+
+    def p33_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p3_paired_differential_primal_dual_ppo":
+            raise PSBConfigError("P3.3 runtime requested for a non-P3.3 stage.")
+        assert self.parent_run is not None
+        assert self.source_p2_runtime is not None
+        assert self.primal_dual is not None
+        assert self.paired_differential is not None
+        runtime = dict(self.source_p2_runtime)
+        training = dict(runtime["training"])
+        training["iterations"] = self.primal_dual.iterations
+        runtime.update(
+            {
+                "training": training,
+                "training_seed": self.effective_training_seed,
+                "p3_stage": self.stage,
+                "primal_dual": self.primal_dual.to_dict(),
+                "paired_differential": self.paired_differential.to_dict(),
+                "initial_policy_checkpoint": str(
+                    self.parent_run / "candidate_policy.pth"
+                ),
+                "initial_scalar_critic_checkpoint": str(
+                    self.parent_run / "source_p2_critic.pth"
+                ),
+                "p3_differential_critic_checkpoint": str(
+                    self.parent_run / "candidate_critic.pth"
+                ),
+            }
+        )
+        return runtime
 
 
 def _validate_base_run(
@@ -871,6 +1412,328 @@ def _validate_p1_parent(parent_run: Path, base: PSBBaseSourceConfig) -> None:
         raise PSBConfigError("P2 parent P1 critic proof is invalid.")
 
 
+def _validate_p3_parent(experiment: PSBExperimentConfig) -> None:
+    """Require one P2.1-U candidate certified by the locked P2.2-R summary."""
+
+    from utilities.psb_marl.checkpoint import sha256_file
+
+    assert experiment.parent_run is not None
+    assert experiment.robustness_summary is not None
+    assert experiment.training is not None
+    assert experiment.training_seed is not None
+    parent = experiment.parent_run
+    required = {
+        "config_source.json",
+        "deployment_manifest.json",
+        "psb_config_resolved.json",
+        "training_status.json",
+        "candidate_policy.pth",
+        "candidate_critic.pth",
+        "base_fallback_policy.pth",
+        "base_fallback_critic.pth",
+    }
+    missing = sorted(name for name in required if not (parent / name).is_file())
+    if missing:
+        raise PSBConfigError(f"P3.0 parent_run is missing P2 artifacts: {missing}.")
+
+    def load(path: Path, label: str) -> Mapping[str, Any]:
+        with path.open("r", encoding="utf-8") as stream:
+            return _object(json.load(stream), label)
+
+    source = load(parent / "config_source.json", "P3.0 parent source")
+    resolved = load(parent / "psb_config_resolved.json", "P3.0 parent runtime")
+    manifest = load(parent / "deployment_manifest.json", "P3.0 parent manifest")
+    status = load(parent / "training_status.json", "P3.0 parent status")
+    expected_runtime = experiment.source_p2_runtime_config()
+    if (
+        source.get("method") != "psb_marl"
+        or source.get("stage") != "p2_frozen_base_bifurcation"
+    ):
+        raise PSBConfigError("P3.0 parent_run must be a PSB P2 run.")
+    if resolved.get("runtime_config") != expected_runtime:
+        raise PSBConfigError("P3.0 source P2 runtime does not match its parent run.")
+    if (
+        status.get("status") != "completed"
+        or status.get("iteration") != experiment.training.iterations
+    ):
+        raise PSBConfigError("P3.0 parent P2 training is incomplete.")
+
+    policy_hash = sha256_file(parent / "candidate_policy.pth")
+    critic_hash = sha256_file(parent / "candidate_critic.pth")
+    if manifest.get("candidate_policy_sha256") != policy_hash:
+        raise PSBConfigError("P3.0 parent candidate policy proof is invalid.")
+    if manifest.get("candidate_critic_sha256") != critic_hash:
+        raise PSBConfigError("P3.0 parent candidate critic proof is invalid.")
+    if sha256_file(parent / "base_fallback_policy.pth") != sha256_file(
+        experiment.base.policy_checkpoint
+    ):
+        raise PSBConfigError("P3.0 parent Base fallback policy is invalid.")
+    if sha256_file(parent / "base_fallback_critic.pth") != sha256_file(
+        experiment.base.critic_checkpoint
+    ):
+        raise PSBConfigError("P3.0 parent Base fallback critic is invalid.")
+
+    branch = expected_runtime["branch_adapter"]
+    if (
+        branch.get("conditioning_mode") != "supported_sector_q_gate"
+        or branch.get("action_projection") != "longitudinal_only"
+        or float(branch.get("max_delta_log_scale", -1.0)) != 0.0
+    ):
+        raise PSBConfigError("P3.0 requires the final P2.1-U actor contract.")
+
+    summary = load(experiment.robustness_summary, "P2.2-R robustness summary")
+    training_seed_count = summary.get("training_seed_count")
+    if (
+        summary.get("method") != "psb_marl_robustness"
+        or summary.get("protocol") != "p2_2_r_locked_holdout"
+        or summary.get("passed") is not True
+        or type(training_seed_count) is not int
+        or training_seed_count < 3
+    ):
+        raise PSBConfigError("P3.0 requires a passed P2.2-R robustness summary.")
+    run_results = summary.get("run_results")
+    if not isinstance(run_results, list):
+        raise PSBConfigError("P2.2-R summary is missing run_results.")
+    valid_results = [item for item in run_results if isinstance(item, Mapping)]
+    certified_seeds = [item.get("training_seed") for item in valid_results]
+    certified_hashes = [
+        item.get("candidate_policy_sha256") for item in valid_results
+    ]
+    if (
+        len(valid_results) != len(run_results)
+        or len(valid_results) != training_seed_count
+        or any(type(seed) is not int or seed < 0 for seed in certified_seeds)
+        or len(set(certified_seeds)) != training_seed_count
+        or any(
+            not isinstance(candidate_hash, str) or not candidate_hash
+            for candidate_hash in certified_hashes
+        )
+        or len(set(certified_hashes)) != training_seed_count
+        or any(item.get("passed") is not True for item in valid_results)
+    ):
+        raise PSBConfigError(
+            "P3.0 requires distinct, passed P2.2-R training-seed runs."
+        )
+    matches = [
+        item
+        for item in valid_results
+        if Path(str(item.get("run_directory", ""))).expanduser().resolve()
+        == parent
+    ]
+    if len(matches) != 1:
+        raise PSBConfigError("P3.0 parent is not uniquely certified by P2.2-R.")
+    certified = matches[0]
+    if (
+        certified.get("passed") is not True
+        or certified.get("training_seed") != experiment.training_seed
+        or certified.get("candidate_policy_sha256") != policy_hash
+    ):
+        raise PSBConfigError("P3.0 parent P2.2-R certification is invalid.")
+    scenarios = summary.get("scenario_summaries")
+    if not isinstance(scenarios, Mapping) or not scenarios or any(
+        not isinstance(item, Mapping)
+        or item.get("all_training_seeds_passed") is not True
+        for item in scenarios.values()
+    ):
+        raise PSBConfigError("P3.0 requires every locked P2.2-R scenario to pass.")
+
+
+def _validate_p31_parent(
+    parent: Path,
+    base: PSBBaseSourceConfig,
+) -> tuple[Dict[str, object], PSBConflictGraphConfig]:
+    """Validate the completed P3.0 bridge used by critic-only P3.1."""
+
+    from utilities.psb_marl.checkpoint import sha256_file
+
+    required = {
+        "config_source.json",
+        "deployment_manifest.json",
+        "p3_0_equivalence.json",
+        "p3_0_paired_equivalence.json",
+        "psb_config_resolved.json",
+        "training_status.json",
+        "candidate_policy.pth",
+        "candidate_critic.pth",
+        "base_fallback_policy.pth",
+        "base_fallback_critic.pth",
+        "final_policy.pth",
+        "final_critic.pth",
+    }
+    missing = sorted(name for name in required if not (parent / name).is_file())
+    if missing:
+        raise PSBConfigError(f"P3.1 parent_run is missing P3.0 artifacts: {missing}.")
+
+    def load(name: str) -> Mapping[str, Any]:
+        with (parent / name).open("r", encoding="utf-8") as stream:
+            return _object(json.load(stream), f"P3.1 parent {name}")
+
+    source = load("config_source.json")
+    manifest = load("deployment_manifest.json")
+    proof = load("p3_0_equivalence.json")
+    report = load("p3_0_paired_equivalence.json")
+    resolved = load("psb_config_resolved.json")
+    status = load("training_status.json")
+    if (
+        source.get("method") != "psb_marl"
+        or source.get("stage") != "p3_paired_rollout_equivalence"
+        or manifest.get("stage") != "p3_paired_rollout_equivalence"
+        or manifest.get("selected") != "base_fallback_p3_pairing_only"
+        or manifest.get("learning_enabled") is not False
+        or status.get("status") != "completed"
+        or status.get("iteration") != 0
+    ):
+        raise PSBConfigError("P3.1 parent_run is not a completed safe P3.0 run.")
+    artifact_checks = report.get("artifact_checks")
+    equivalence_items = report.get("source_equivalence")
+    paired_batches = report.get("paired_batches")
+    if (
+        report.get("passed") is not True
+        or report.get("source_equivalence_passed") is not True
+        or report.get("paired_contract_passed") is not True
+        or not isinstance(artifact_checks, Mapping)
+        or not artifact_checks
+        or any(value is not True for value in artifact_checks.values())
+        or not isinstance(equivalence_items, list)
+        or len(equivalence_items) < 2
+        or any(
+            not isinstance(item, Mapping)
+            or item.get("actions_exactly_equal") is not True
+            or item.get("rewards_exactly_equal") is not True
+            for item in equivalence_items
+        )
+        or not isinstance(paired_batches, list)
+        or len(paired_batches) != len(equivalence_items)
+        or any(
+            not isinstance(item, Mapping) or item.get("finite") is not True
+            for item in paired_batches
+        )
+    ):
+        raise PSBConfigError("P3.1 requires a passed P3.0 paired report.")
+
+    candidate_policy_hash = sha256_file(parent / "candidate_policy.pth")
+    candidate_critic_hash = sha256_file(parent / "candidate_critic.pth")
+    base_policy_hash = sha256_file(base.policy_checkpoint)
+    base_critic_hash = sha256_file(base.critic_checkpoint)
+    hash_checks = (
+        manifest.get("candidate_policy_sha256") == candidate_policy_hash,
+        manifest.get("candidate_critic_sha256") == candidate_critic_hash,
+        proof.get("candidate_policy_sha256") == candidate_policy_hash,
+        proof.get("candidate_critic_sha256") == candidate_critic_hash,
+        sha256_file(parent / "base_fallback_policy.pth") == base_policy_hash,
+        sha256_file(parent / "base_fallback_critic.pth") == base_critic_hash,
+        sha256_file(parent / "final_policy.pth") == base_policy_hash,
+        sha256_file(parent / "final_critic.pth") == base_critic_hash,
+    )
+    if not all(hash_checks):
+        raise PSBConfigError("P3.1 parent checkpoint integrity is invalid.")
+
+    runtime = resolved.get("runtime_config")
+    if not isinstance(runtime, Mapping):
+        raise PSBConfigError("P3.1 parent is missing its P3.0 runtime.")
+    source_p2_runtime = runtime.get("source_p2_runtime")
+    if not isinstance(source_p2_runtime, Mapping):
+        raise PSBConfigError("P3.1 parent is missing its source P2 runtime.")
+    source_p2_runtime = dict(source_p2_runtime)
+    branch = source_p2_runtime.get("branch_adapter")
+    if (
+        source_p2_runtime.get("stage") != "p2_frozen_base_bifurcation"
+        or source_p2_runtime.get("freeze_base_actor") is not True
+        or source_p2_runtime.get("base_policy_checkpoint")
+        != str(base.policy_checkpoint)
+        or source_p2_runtime.get("base_critic_checkpoint")
+        != str(base.critic_checkpoint)
+        or not isinstance(branch, Mapping)
+        or branch.get("conditioning_mode") != "supported_sector_q_gate"
+        or branch.get("action_projection") != "longitudinal_only"
+        or float(branch.get("max_delta_log_scale", -1.0)) != 0.0
+    ):
+        raise PSBConfigError("P3.1 source P2 runtime violates the P2.1-U contract.")
+    conflict_graph = PSBConflictGraphConfig.from_dict(source["conflict_graph"])
+    return source_p2_runtime, conflict_graph
+
+
+def _validate_p32_parent(
+    parent: Path,
+    base: PSBBaseSourceConfig,
+) -> tuple[Dict[str, object], PSBConflictGraphConfig]:
+    """Require a certified and manually validated P3.1 parent."""
+
+    from utilities.psb_marl.checkpoint import sha256_file
+
+    required = {
+        "config_source.json",
+        "deployment_manifest.json",
+        "psb_config_resolved.json",
+        "p3_1_certification.json",
+        "p3_1_manual_validation.json",
+        "training_status.json",
+        "candidate_policy.pth",
+        "candidate_critic.pth",
+        "source_p2_critic.pth",
+        "base_fallback_policy.pth",
+        "base_fallback_critic.pth",
+    }
+    missing = sorted(name for name in required if not (parent / name).is_file())
+    if missing:
+        raise PSBConfigError(f"P3.2 parent is missing artifacts: {missing}.")
+
+    def load(name: str) -> Mapping[str, Any]:
+        with (parent / name).open("r", encoding="utf-8") as stream:
+            return _object(json.load(stream), f"P3.2 parent {name}")
+
+    source = load("config_source.json")
+    manifest = load("deployment_manifest.json")
+    resolved = load("psb_config_resolved.json")
+    certification = load("p3_1_certification.json")
+    validation = load("p3_1_manual_validation.json")
+    status = load("training_status.json")
+    if (
+        source.get("stage") != "p3_differential_critic"
+        or manifest.get("stage") != "p3_differential_critic"
+        or manifest.get("selected") != "base_fallback_p3_critic_only"
+        or certification.get("passed") is not True
+        or validation.get("passed") is not True
+        or validation.get("critic_passed") is not True
+        or status.get("status") != "completed"
+    ):
+        raise PSBConfigError("P3.2 requires a passed P3.1 parent run.")
+    if (
+        manifest.get("candidate_policy_sha256")
+        != sha256_file(parent / "candidate_policy.pth")
+        or manifest.get("candidate_critic_sha256")
+        != sha256_file(parent / "candidate_critic.pth")
+        or manifest.get("source_p2_critic_sha256")
+        != sha256_file(parent / "source_p2_critic.pth")
+    ):
+        raise PSBConfigError("P3.2 parent learned artifact integrity failed.")
+    channel_quality = validation.get("critic_channel_quality")
+    if not isinstance(channel_quality, Mapping) or channel_quality.get(
+        "passed"
+    ) is not True:
+        raise PSBConfigError("P3.2 requires every P3.1 critic head to pass.")
+    runtime = resolved.get("runtime_config")
+    if not isinstance(runtime, Mapping) or not isinstance(
+        runtime.get("source_p2_runtime"), Mapping
+    ):
+        raise PSBConfigError("P3.2 parent is missing source P2 runtime.")
+    if sha256_file(parent / "base_fallback_policy.pth") != sha256_file(
+        base.policy_checkpoint
+    ) or sha256_file(parent / "base_fallback_critic.pth") != sha256_file(
+        base.critic_checkpoint
+    ):
+        raise PSBConfigError("P3.2 parent Base fallback integrity failed.")
+    p30_parent = Path(str(source["parent_run"])).expanduser().resolve()
+    with (p30_parent / "config_source.json").open(
+        "r", encoding="utf-8"
+    ) as stream:
+        p30_source = _object(json.load(stream), "P3.0 source")
+    conflict_graph = PSBConflictGraphConfig.from_dict(
+        p30_source["conflict_graph"]
+    )
+    return dict(runtime["source_p2_runtime"]), conflict_graph
+
+
 def load_psb_experiment(path: Path) -> PSBExperimentConfig:
     """Load and fully validate one PSB stage configuration."""
 
@@ -924,10 +1787,60 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
                 f"missing={sorted(required - actual)}, "
                 f"extra={sorted(actual - allowed)}."
             )
+    elif stage == "p3_paired_rollout_equivalence":
+        _exact_keys(
+            raw,
+            common_keys
+            | {
+                "parent_run",
+                "robustness_summary",
+                "training_seed",
+                "conflict_graph",
+                "proximal",
+                "control",
+                "branch_adapter",
+                "training",
+                "promotion",
+                "paired_rollout",
+            },
+            "root",
+        )
+    elif stage == "p3_differential_critic":
+        _exact_keys(
+            raw,
+            common_keys
+            | {
+                "parent_run",
+                "training_seed",
+                "differential_critic",
+            },
+            "root",
+        )
+    elif stage == "p3_primal_dual_ppo":
+        _exact_keys(
+            raw,
+            common_keys
+            | {"parent_run", "training_seed", "primal_dual"},
+            "root",
+        )
+    elif stage == "p3_paired_differential_primal_dual_ppo":
+        _exact_keys(
+            raw,
+            common_keys
+            | {
+                "parent_run",
+                "training_seed",
+                "primal_dual",
+                "paired_differential",
+            },
+            "root",
+        )
     else:
         raise PSBConfigError(
             "Supported PSB stages are P0 Base passthrough, P1 zero-control "
-            "equivalence, and P2 frozen-Base bifurcation."
+            "equivalence, P2 frozen-Base bifurcation, and P3.0 paired "
+            "rollout equivalence, P3.1 differential critic, P3.2 "
+            "primal-dual PPO, and P3.3 paired differential primal-dual PPO."
         )
     base_config_path = _resolve_existing_path(
         raw["base_config"], "base_config", config_path, kind="file"
@@ -943,16 +1856,76 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
     training = None
     promotion = None
     training_seed = None
+    robustness_summary = None
+    paired_rollout = None
+    differential_critic = None
+    primal_dual = None
+    paired_differential = None
+    source_p2_runtime = None
+    if stage in {
+        "p3_primal_dual_ppo",
+        "p3_paired_differential_primal_dual_ppo",
+    }:
+        parent_run = _resolve_existing_path(
+            raw["parent_run"], "parent_run", config_path, kind="directory"
+        )
+        source_p2_runtime, conflict_graph = _validate_p32_parent(
+            parent_run, base
+        )
+        training_seed = _integer(
+            raw["training_seed"], "training_seed", minimum=0
+        )
+        primal_dual = PSBP32PrimalDualConfig.from_dict(raw["primal_dual"])
+        if stage == "p3_paired_differential_primal_dual_ppo":
+            paired_differential = PSBP33PairedDifferentialConfig.from_dict(
+                raw["paired_differential"]
+            )
+        if conflict_graph.candidate_count != int(
+            base_resolved["n_nearing_agents_observed"]
+        ):
+            raise PSBConfigError(
+                f"{stage} conflict graph does not match the Base config."
+            )
+    if stage == "p3_differential_critic":
+        parent_run = _resolve_existing_path(
+            raw["parent_run"], "parent_run", config_path, kind="directory"
+        )
+        source_p2_runtime, conflict_graph = _validate_p31_parent(
+            parent_run, base
+        )
+        training_seed = _integer(
+            raw["training_seed"], "training_seed", minimum=0
+        )
+        differential_critic = PSBP31DifferentialCriticConfig.from_dict(
+            raw["differential_critic"]
+        )
+        from utilities.constants import SCENARIOS
+
+        if differential_critic.collection_scenario not in SCENARIOS:
+            raise PSBConfigError(
+                "P3.1 differential_critic.collection_scenario is unknown."
+            )
+        if conflict_graph.candidate_count != int(
+            base_resolved["n_nearing_agents_observed"]
+        ):
+            raise PSBConfigError(
+                "P3.1 parent conflict graph does not match the Base config."
+            )
+        if differential_critic.gamma != float(base_resolved["gamma"]):
+            raise PSBConfigError(
+                "P3.1 differential_critic.gamma must equal the Base gamma."
+            )
     if stage in {
         "p1_zero_control_equivalence",
         "p2_frozen_base_bifurcation",
+        "p3_paired_rollout_equivalence",
     }:
         parent_run = _resolve_existing_path(
             raw["parent_run"], "parent_run", config_path, kind="directory"
         )
         if stage == "p1_zero_control_equivalence":
             _validate_p0_parent(parent_run, base)
-        else:
+        elif stage == "p2_frozen_base_bifurcation":
             _validate_p1_parent(parent_run, base)
         conflict_graph = PSBConflictGraphConfig.from_dict(raw["conflict_graph"])
         proximal = PSBProximalConfig.from_dict(
@@ -972,7 +1945,10 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
                 f"{stage} violates proximal uniqueness: 1/h_z + kappa must be "
                 "greater than rho_max*nu*alpha."
             )
-        if stage == "p2_frozen_base_bifurcation":
+        if stage in {
+            "p2_frozen_base_bifurcation",
+            "p3_paired_rollout_equivalence",
+        }:
             if "training_seed" in raw:
                 training_seed = _integer(
                     raw["training_seed"], "training_seed", minimum=0
@@ -999,7 +1975,17 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
                 raise PSBConfigError(
                     "P2 does not support the separate MARL priority policy."
                 )
-    return PSBExperimentConfig(
+            if stage == "p3_paired_rollout_equivalence":
+                robustness_summary = _resolve_existing_path(
+                    raw["robustness_summary"],
+                    "robustness_summary",
+                    config_path,
+                    kind="file",
+                )
+                paired_rollout = PSBP3PairedRolloutConfig.from_dict(
+                    raw["paired_rollout"]
+                )
+    result = PSBExperimentConfig(
         config_path=config_path,
         source_config=dict(raw),
         base_config_path=base_config_path,
@@ -1016,4 +2002,13 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
         training=training,
         promotion=promotion,
         training_seed=training_seed,
+        robustness_summary=robustness_summary,
+        paired_rollout=paired_rollout,
+        differential_critic=differential_critic,
+        primal_dual=primal_dual,
+        paired_differential=paired_differential,
+        source_p2_runtime=source_p2_runtime,
     )
+    if stage == "p3_paired_rollout_equivalence":
+        _validate_p3_parent(result)
+    return result

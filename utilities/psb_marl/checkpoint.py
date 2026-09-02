@@ -113,3 +113,36 @@ def save_p1_training_checkpoint(
     temporary = path.with_name(f".{path.name}.saving")
     torch.save(payload, temporary)
     os.replace(temporary, path)
+
+
+def save_p3_pairing_checkpoint(
+    path: Path,
+    *,
+    policy_checkpoint: Path,
+    critic_checkpoint: Path,
+    policy_sha256: str,
+    critic_sha256: str,
+    parent_run: Path,
+    runtime_config: Dict[str, Any],
+    config_fingerprint: str,
+) -> None:
+    """Save the immutable P2 source used by the read-only P3.0 bridge."""
+
+    payload: Dict[str, Any] = {
+        "schema_version": 1,
+        "method": "psb_marl",
+        "stage": "p3_paired_rollout_equivalence",
+        "iteration": 0,
+        "learning_enabled": False,
+        "policy_state": torch.load(policy_checkpoint, map_location="cpu"),
+        "critic_state": torch.load(critic_checkpoint, map_location="cpu"),
+        "policy_sha256": policy_sha256,
+        "critic_sha256": critic_sha256,
+        "parent_run": str(Path(parent_run).resolve()),
+        "runtime_config": dict(runtime_config),
+        "config_fingerprint": config_fingerprint,
+    }
+    path = Path(path)
+    temporary = path.with_name(f".{path.name}.saving")
+    torch.save(payload, temporary)
+    os.replace(temporary, path)

@@ -687,6 +687,63 @@ def test_psb(
     """Verify the selected PSB stage, then run its manual road protocol."""
 
     experiment = load_psb_experiment(config_path)
+    if experiment.stage in {
+        "p3_primal_dual_ppo",
+        "p3_paired_differential_primal_dual_ppo",
+    }:
+        from utilities.psb_marl.p3_dual_evaluation import test_p32
+
+        return test_p32(
+            experiment,
+            run_directory=run_directory,
+            checkpoint_path=checkpoint_path,
+            scenario_type=scenario_type,
+            max_steps=max_steps,
+            episodes=episodes,
+            seeds=seeds,
+            render=render,
+            save_simulation_video=save_simulation_video,
+            compare_base=compare_base,
+            promote_if_noninferior=promote_if_noninferior,
+            psb_action_projection=psb_action_projection,
+            report_label=report_label,
+        )
+    if experiment.stage == "p3_differential_critic":
+        from utilities.psb_marl.p3_critic_training import test_p31
+
+        return test_p31(
+            experiment,
+            run_directory=run_directory,
+            checkpoint_path=checkpoint_path,
+            scenario_type=scenario_type,
+            max_steps=max_steps,
+            episodes=episodes,
+            seeds=seeds,
+            render=render,
+            save_simulation_video=save_simulation_video,
+            compare_base=compare_base,
+            promote_if_noninferior=promote_if_noninferior,
+            psb_action_projection=psb_action_projection,
+            report_label=report_label,
+        )
+    if experiment.stage == "p3_paired_rollout_equivalence":
+        from utilities.psb_marl.p3_pairing import test_p3_pairing
+
+        return test_p3_pairing(
+            experiment,
+            run_directory=run_directory,
+            checkpoint_path=checkpoint_path,
+            scenario_type=scenario_type,
+            max_steps=max_steps,
+            episodes=episodes,
+            seeds=seeds,
+            render=render,
+            save_simulation_video=save_simulation_video,
+            compare_base=compare_base,
+            promote_if_noninferior=promote_if_noninferior,
+            psb_action_projection=psb_action_projection,
+            report_label=report_label,
+        )
     if report_label is not None and re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", report_label
     ) is None:
