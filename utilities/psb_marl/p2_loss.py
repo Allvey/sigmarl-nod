@@ -11,6 +11,19 @@ from utilities.psb_marl.p2_buffer import P2SequenceMiniBatch
 from utilities.psb_marl.p2_state import P2EdgeStateTracker
 
 
+def ppo_approx_kl_from_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
+    """Return PPO's non-negative ``k3`` KL approximation.
+
+    A signed mean of ``-log_ratio`` can be negative even for a large policy
+    change, which makes it unsafe as an early-stop guard.
+    """
+
+    if not bool(torch.isfinite(log_ratio).all()):
+        raise ValueError("PPO log ratios must be finite.")
+    bounded_log_ratio = log_ratio.clamp(max=20.0)
+    return (bounded_log_ratio.expm1() - bounded_log_ratio).mean()
+
+
 class P2SequencePPOLoss(nn.Module):
     def __init__(
         self,
@@ -225,7 +238,7 @@ class P2SequencePPOLoss(nn.Module):
             state_error = (
                 recomputed["z_next_dense"] - collected_z
             ).abs().mean()
-            approx_kl = (old_log_prob - current_log_prob).mean()
+            approx_kl = ppo_approx_kl_from_log_ratio(log_ratio)
             clip_fraction = (
                 (ratio < 1.0 - self.clip_epsilon)
                 | (ratio > 1.0 + self.clip_epsilon)

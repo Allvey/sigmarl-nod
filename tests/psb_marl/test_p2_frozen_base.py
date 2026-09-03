@@ -25,6 +25,7 @@ from utilities.psb_marl.p2_diagnostics import (
 from utilities.psb_marl.p2_loss import (
     P2SequencePPOLoss,
     P2TransitionPPOLoss,
+    ppo_approx_kl_from_log_ratio,
 )
 from utilities.psb_marl.p2_network import (
     AntisymmetricBifurcationControl,
@@ -137,7 +138,60 @@ def pair_inputs(environments=2, n_agents=3):
     }
 
 
+class P2KLTests(unittest.TestCase):
+    def test_k3_approximate_kl_is_nonnegative_for_signed_policy_shifts(self):
+        negative_shift = ppo_approx_kl_from_log_ratio(
+            torch.tensor([-1.0, -0.5])
+        )
+        positive_shift = ppo_approx_kl_from_log_ratio(
+            torch.tensor([0.5, 1.0])
+        )
+        identity = ppo_approx_kl_from_log_ratio(torch.zeros(4))
+
+        self.assertGreater(float(negative_shift), 0.0)
+        self.assertGreater(float(positive_shift), 0.0)
+        self.assertEqual(float(identity), 0.0)
+
+
 class P2NetworkTests(unittest.TestCase):
+    def test_branch_activity_offset_bootstraps_sector_adapter_gradients(self):
+        adapter = BranchDistributionAdapter(
+            observation_dim=2,
+            context_dim=2,
+            action_dim=2,
+            hidden_sizes=(4,),
+            max_delta_loc=0.2,
+            max_delta_log_scale=0.0,
+            conditioning_mode="supported_sector_q_gate",
+        )
+        with torch.no_grad():
+            adapter.network[-1].bias.fill_(1.0)
+            adapter.causal_gate.weight.fill_(1.0)
+        observation = torch.zeros(1, 2)
+        context = torch.ones(1, 2)
+        base_loc = torch.zeros(1, 2)
+        base_scale = torch.ones(1, 2)
+        inactive = torch.zeros(1, 1)
+
+        _, _, delta_without_offset, _ = adapter(
+            observation,
+            context,
+            base_loc,
+            base_scale,
+            inactive,
+        )
+        adapter.set_branch_activity_offset(0.05)
+        _, _, delta_with_offset, _ = adapter(
+            observation,
+            context,
+            base_loc,
+            base_scale,
+            inactive,
+        )
+
+        self.assertTrue(torch.equal(delta_without_offset, torch.zeros(1, 2)))
+        self.assertGreater(float(delta_with_offset.abs().max()), 0.0)
+
     def test_swap_is_involution_and_control_is_exchange_antisymmetric(self):
         torch.manual_seed(2)
         control = make_bridge().control_net

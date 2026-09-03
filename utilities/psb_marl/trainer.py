@@ -470,12 +470,27 @@ def _train_p5(
         raise PSBConfigError(
             "P5 transition PPO minibatch_size must divide frames_per_batch."
         )
+    if (
+        experiment.joint_training.base_pretrain_iterations > 0
+        and parameters.frames_per_batch
+        % experiment.joint_training.base_pretrain_minibatch_size
+        != 0
+    ):
+        raise PSBConfigError(
+            "P5 scratch Base pretraining minibatch_size must divide "
+            "frames_per_batch."
+        )
     runtime = experiment.p5_runtime_config()
     runtime["training"] = {**runtime["training"], "iterations": iterations}
+    scratch_initialization = (
+        experiment.joint_training.initialization_mode == "scratch"
+    )
     run = train_base(
         parameters=parameters,
         source_config=experiment.source_config,
-        run_label="psb-p5-joint",
+        run_label=(
+            "psb-p5-scratch" if scratch_initialization else "psb-p5-joint"
+        ),
         supplementary_snapshots={
             "psb_config_resolved.json": {
                 **experiment.source_config,
@@ -492,6 +507,48 @@ def _train_p5(
             "deployment": "base_fallback",
             "candidate_checkpoint": "candidate_policy.pth",
             "candidate_backbone_trainable_from_iteration": 1,
+            "initialization_mode": (
+                experiment.joint_training.initialization_mode
+            ),
+            "candidate_actor_initialization": (
+                "random" if scratch_initialization else "parent_candidate"
+            ),
+            "candidate_absolute_critic_initialization": (
+                "random" if scratch_initialization else "parent_candidate"
+            ),
+            "candidate_differential_critic_initialization": (
+                "random" if scratch_initialization else "parent_candidate"
+            ),
+            "source_base_anchor_enabled": (
+                experiment.joint_training.base_anchor_coefficient > 0.0
+            ),
+            "base_pretrain_iterations": (
+                experiment.joint_training.base_pretrain_iterations
+            ),
+            "base_pretrain_ppo_epochs": (
+                experiment.joint_training.base_pretrain_ppo_epochs
+            ),
+            "base_pretrain_minibatch_size": (
+                experiment.joint_training.base_pretrain_minibatch_size
+            ),
+            "base_pretrain_target_kl": (
+                experiment.joint_training.base_pretrain_target_kl
+            ),
+            "absolute_advantage_warmup_iterations": (
+                experiment.joint_training.absolute_advantage_warmup_iterations
+            ),
+            "advantage_blend_iterations": (
+                experiment.joint_training.advantage_blend_iterations
+            ),
+            "dual_warmup_iterations": (
+                experiment.joint_training.dual_warmup_iterations
+            ),
+            "branch_bootstrap_iterations": (
+                experiment.joint_training.branch_bootstrap_iterations
+            ),
+            "branch_activity_bootstrap_offset": (
+                experiment.joint_training.branch_activity_bootstrap_offset
+            ),
             "ppo_mode": experiment.joint_training.ppo_mode,
             "temporal_backpropagation_enabled": False,
             "ppo_epochs": experiment.joint_training.ppo_epochs,
@@ -537,6 +594,48 @@ def _train_p5(
             "actor_learning_enabled": True,
             "candidate_backbone_trainable": True,
             "candidate_backbone_trainable_from_iteration": 1,
+            "initialization_mode": (
+                experiment.joint_training.initialization_mode
+            ),
+            "candidate_actor_initialization": (
+                "random" if scratch_initialization else "parent_candidate"
+            ),
+            "candidate_absolute_critic_initialization": (
+                "random" if scratch_initialization else "parent_candidate"
+            ),
+            "candidate_differential_critic_initialization": (
+                "random" if scratch_initialization else "parent_candidate"
+            ),
+            "source_base_anchor_enabled": (
+                experiment.joint_training.base_anchor_coefficient > 0.0
+            ),
+            "base_pretrain_iterations": (
+                experiment.joint_training.base_pretrain_iterations
+            ),
+            "base_pretrain_ppo_epochs": (
+                experiment.joint_training.base_pretrain_ppo_epochs
+            ),
+            "base_pretrain_minibatch_size": (
+                experiment.joint_training.base_pretrain_minibatch_size
+            ),
+            "base_pretrain_target_kl": (
+                experiment.joint_training.base_pretrain_target_kl
+            ),
+            "absolute_advantage_warmup_iterations": (
+                experiment.joint_training.absolute_advantage_warmup_iterations
+            ),
+            "advantage_blend_iterations": (
+                experiment.joint_training.advantage_blend_iterations
+            ),
+            "dual_warmup_iterations": (
+                experiment.joint_training.dual_warmup_iterations
+            ),
+            "branch_bootstrap_iterations": (
+                experiment.joint_training.branch_bootstrap_iterations
+            ),
+            "branch_activity_bootstrap_offset": (
+                experiment.joint_training.branch_activity_bootstrap_offset
+            ),
             "ppo_mode": experiment.joint_training.ppo_mode,
             "temporal_backpropagation_enabled": False,
             "ppo_epochs": experiment.joint_training.ppo_epochs,

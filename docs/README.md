@@ -20,7 +20,7 @@
 12. [`psb_marl/P3_1_DIFFERENTIAL_CRITIC.md`](psb_marl/P3_1_DIFFERENTIAL_CRITIC.md)
 13. [`psb_marl/P3_2_PRIMAL_DUAL_PPO.md`](psb_marl/P3_2_PRIMAL_DUAL_PPO.md)
 14. [`psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md`](psb_marl/P3_3_PAIRED_DIFFERENTIAL_PRIMAL_DUAL_PPO.md)
-15. [`psb_marl/P5_JOINT_PSB_MARL.md`](psb_marl/P5_JOINT_PSB_MARL.md)
+15. [`psb_marl/P5_JOINT_PSB_MARL.md`](psb_marl/P5_JOINT_PSB_MARL.md)：包含 warm-start 与 scratch 课程。
 
 P5 之后的候选研究设计（尚未实现，不属于当前训练合同）：
 

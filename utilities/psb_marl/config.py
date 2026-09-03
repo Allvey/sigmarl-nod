@@ -1056,6 +1056,16 @@ class PSBP5JointTrainingConfig:
     ppo_epochs: int
     minibatch_size: int
     target_kl: float
+    initialization_mode: str
+    base_pretrain_iterations: int
+    base_pretrain_ppo_epochs: int
+    base_pretrain_minibatch_size: int
+    base_pretrain_target_kl: float
+    absolute_advantage_warmup_iterations: int
+    advantage_blend_iterations: int
+    dual_warmup_iterations: int
+    branch_bootstrap_iterations: int
+    branch_activity_bootstrap_offset: float
     base_actor_learning_rate_scale: float
     absolute_critic_learning_rate_scale: float
     absolute_critic_loss_coefficient: float
@@ -1080,6 +1090,55 @@ class PSBP5JointTrainingConfig:
                 "joint_training.target_kl",
                 strictly_positive=True,
             ),
+            initialization_mode=_string(
+                raw["initialization_mode"],
+                "joint_training.initialization_mode",
+            ),
+            base_pretrain_iterations=_integer(
+                raw["base_pretrain_iterations"],
+                "joint_training.base_pretrain_iterations",
+                minimum=0,
+            ),
+            base_pretrain_ppo_epochs=_integer(
+                raw["base_pretrain_ppo_epochs"],
+                "joint_training.base_pretrain_ppo_epochs",
+                minimum=0,
+            ),
+            base_pretrain_minibatch_size=_integer(
+                raw["base_pretrain_minibatch_size"],
+                "joint_training.base_pretrain_minibatch_size",
+                minimum=0,
+            ),
+            base_pretrain_target_kl=_number(
+                raw["base_pretrain_target_kl"],
+                "joint_training.base_pretrain_target_kl",
+                minimum=0.0,
+            ),
+            absolute_advantage_warmup_iterations=_integer(
+                raw["absolute_advantage_warmup_iterations"],
+                "joint_training.absolute_advantage_warmup_iterations",
+                minimum=0,
+            ),
+            advantage_blend_iterations=_integer(
+                raw["advantage_blend_iterations"],
+                "joint_training.advantage_blend_iterations",
+                minimum=0,
+            ),
+            dual_warmup_iterations=_integer(
+                raw["dual_warmup_iterations"],
+                "joint_training.dual_warmup_iterations",
+                minimum=0,
+            ),
+            branch_bootstrap_iterations=_integer(
+                raw["branch_bootstrap_iterations"],
+                "joint_training.branch_bootstrap_iterations",
+                minimum=0,
+            ),
+            branch_activity_bootstrap_offset=_number(
+                raw["branch_activity_bootstrap_offset"],
+                "joint_training.branch_activity_bootstrap_offset",
+                minimum=0.0,
+            ),
             base_actor_learning_rate_scale=_number(
                 raw["base_actor_learning_rate_scale"],
                 "joint_training.base_actor_learning_rate_scale",
@@ -1103,6 +1162,83 @@ class PSBP5JointTrainingConfig:
         if result.ppo_mode != "transition":
             raise PSBConfigError(
                 "P5 requires ppo_mode='transition'; Sequence PPO is disabled."
+            )
+        if result.initialization_mode not in {"warm_start", "scratch"}:
+            raise PSBConfigError(
+                "P5 initialization_mode must be 'warm_start' or 'scratch'."
+            )
+        if result.initialization_mode == "scratch":
+            if result.absolute_advantage_warmup_iterations <= 0:
+                raise PSBConfigError(
+                    "P5 scratch training requires an absolute-advantage warmup."
+                )
+            if result.advantage_blend_iterations <= 0:
+                raise PSBConfigError(
+                    "P5 scratch training requires a nonzero advantage blend."
+                )
+            if result.dual_warmup_iterations < (
+                result.absolute_advantage_warmup_iterations
+            ):
+                raise PSBConfigError(
+                    "P5 scratch dual warmup must cover the absolute warmup."
+                )
+            if result.base_anchor_coefficient != 0.0:
+                raise PSBConfigError(
+                    "P5 scratch training must disable the Source Base KL anchor."
+                )
+            pretrain_update_values = (
+                result.base_pretrain_ppo_epochs,
+                result.base_pretrain_minibatch_size,
+            )
+            if result.base_pretrain_iterations == 0 and any(
+                (*pretrain_update_values, result.base_pretrain_target_kl)
+            ):
+                raise PSBConfigError(
+                    "P5 scratch Base pretraining settings require a positive "
+                    "base_pretrain_iterations."
+                )
+            if result.base_pretrain_iterations > 0 and any(
+                value <= 0 for value in pretrain_update_values
+            ):
+                raise PSBConfigError(
+                    "P5 scratch Base pretraining requires positive PPO epochs "
+                    "and minibatch size."
+                )
+            if result.branch_bootstrap_iterations > (
+                result.absolute_advantage_warmup_iterations
+            ):
+                raise PSBConfigError(
+                    "P5 branch bootstrap cannot outlast the absolute "
+                    "advantage warmup."
+                )
+            if (
+                result.branch_bootstrap_iterations == 0
+                and result.branch_activity_bootstrap_offset != 0.0
+            ):
+                raise PSBConfigError(
+                    "P5 branch activity offset requires a positive bootstrap "
+                    "duration."
+                )
+            if result.branch_activity_bootstrap_offset > 1.0:
+                raise PSBConfigError(
+                    "P5 branch activity bootstrap offset must not exceed 1."
+                )
+        elif any(
+            value != 0
+            for value in (
+                result.base_pretrain_iterations,
+                result.base_pretrain_ppo_epochs,
+                result.base_pretrain_minibatch_size,
+                result.base_pretrain_target_kl,
+                result.absolute_advantage_warmup_iterations,
+                result.advantage_blend_iterations,
+                result.dual_warmup_iterations,
+                result.branch_bootstrap_iterations,
+                result.branch_activity_bootstrap_offset,
+            )
+        ):
+            raise PSBConfigError(
+                "P5 warm-start training does not use the scratch curriculum."
             )
         if result.base_actor_learning_rate_scale > 1.0:
             raise PSBConfigError(
@@ -2090,6 +2226,24 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
         joint_training = PSBP5JointTrainingConfig.from_dict(
             raw["joint_training"]
         )
+        if joint_training.initialization_mode == "scratch":
+            if joint_training.base_pretrain_iterations > primal_dual.iterations:
+                raise PSBConfigError(
+                    "P5 scratch Base pretraining cannot outlast the run."
+                )
+            if (
+                joint_training.base_pretrain_iterations
+                < primal_dual.iterations
+                and joint_training.base_pretrain_iterations
+                + joint_training.absolute_advantage_warmup_iterations
+                + joint_training.advantage_blend_iterations
+                >= primal_dual.iterations
+            ):
+                raise PSBConfigError(
+                    "P5 scratch curriculum must leave at least one "
+                    "differential-only iteration unless the complete run is "
+                    "an explicit Base-only pretraining ablation."
+                )
         if conflict_graph.candidate_count != int(
             base_resolved["n_nearing_agents_observed"]
         ):

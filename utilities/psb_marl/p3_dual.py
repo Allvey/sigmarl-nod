@@ -158,7 +158,12 @@ class ProjectedDualController:
         return result
 
     @torch.no_grad()
-    def update(self, costs: P3SafetyCosts) -> Dict[str, float]:
+    def update(
+        self,
+        costs: P3SafetyCosts,
+        *,
+        enabled: bool = True,
+    ) -> Dict[str, object]:
         vehicle_mean = float(costs.vehicle.detach().mean().item())
         lane_mean = float(costs.lane.detach().mean().item())
         vehicle_raw_residual = vehicle_mean - self.vehicle_budget
@@ -169,7 +174,7 @@ class ProjectedDualController:
         else:
             vehicle_residual = vehicle_raw_residual
             lane_residual = lane_raw_residual
-        if "vehicle" in self.active_constraints:
+        if enabled and "vehicle" in self.active_constraints:
             self.vehicle_multiplier = min(
                 self.maximum_multiplier,
                 max(
@@ -178,7 +183,7 @@ class ProjectedDualController:
                     + self.vehicle_learning_rate * vehicle_residual,
                 ),
             )
-        if "lane" in self.active_constraints:
+        if enabled and "lane" in self.active_constraints:
             self.lane_multiplier = min(
                 self.maximum_multiplier,
                 max(
@@ -199,6 +204,7 @@ class ProjectedDualController:
                 "vehicle" in self.active_constraints
             ),
             "lane_constraint_dualized": "lane" in self.active_constraints,
+            "dual_update_enabled": bool(enabled),
             "vehicle_multiplier": self.vehicle_multiplier,
             "lane_multiplier": self.lane_multiplier,
         }

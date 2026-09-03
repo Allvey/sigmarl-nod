@@ -317,6 +317,15 @@ class BranchDistributionAdapter(nn.Module):
             torch.tensor(mask_values, dtype=torch.float32),
             persistent=False,
         )
+        # P5 scratch training can temporarily supply a small differentiable
+        # branch-activity offset after the Base-only pretraining phase.  It is
+        # deliberately non-persistent: production P2/P3 policies retain the
+        # exact zero-offset branch contract.
+        self.register_buffer(
+            "branch_activity_offset",
+            torch.zeros((), dtype=torch.float32),
+            persistent=False,
+        )
         self.causal_gate = (
             nn.Linear(context_dim, output_dim, bias=False)
             if conditioning_mode
@@ -327,6 +336,13 @@ class BranchDistributionAdapter(nn.Module):
             }
             else None
         )
+
+    def set_branch_activity_offset(self, value: float) -> None:
+        """Set the temporary P5 scratch bootstrap offset."""
+
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError("Branch activity offset must lie in [0, 1].")
+        self.branch_activity_offset.fill_(float(value))
 
     def forward(
         self,
@@ -368,7 +384,13 @@ class BranchDistributionAdapter(nn.Module):
             "sector_q_gate",
             "supported_sector_q_gate",
         }:
-            delta_loc = delta_loc * branch_activity.to(
+            effective_branch_activity = (
+                branch_activity + self.branch_activity_offset.to(
+                    dtype=branch_activity.dtype,
+                    device=branch_activity.device,
+                )
+            ).clamp_max(1.0)
+            delta_loc = delta_loc * effective_branch_activity.to(
                 dtype=delta_loc.dtype,
                 device=delta_loc.device,
             )
@@ -381,7 +403,7 @@ class BranchDistributionAdapter(nn.Module):
                 "sector_q_gate",
                 "supported_sector_q_gate",
             }:
-                delta_log_scale = delta_log_scale * branch_activity.to(
+                delta_log_scale = delta_log_scale * effective_branch_activity.to(
                     dtype=delta_log_scale.dtype,
                     device=delta_log_scale.device,
                 )

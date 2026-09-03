@@ -439,6 +439,50 @@ class P31DifferentialCriticTests(unittest.TestCase):
             self.assertEqual(manifest["selected"], "base_fallback_p3_critic_only")
             self.assertEqual(payload["model_config"], model.model_config())
 
+    def test_loader_can_reuse_architecture_without_source_weights(self):
+        source = BaseRelativeDifferentialCritic(
+            observation_dim=5,
+            embedding_dim=4,
+            hidden_sizes=(8,),
+        )
+        source.set_target_normalization(
+            torch.tensor([2.0, 3.0, 4.0]),
+            torch.tensor([5.0, 6.0, 7.0]),
+        )
+        with torch.no_grad():
+            source.head[-1].weight.fill_(1.0)
+            source.head[-1].bias.fill_(1.0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "differential.pth"
+            torch.save(
+                {
+                    "method": "psb_marl",
+                    "stage": "p3_differential_critic",
+                    "model_config": source.model_config(),
+                    "critic_state": source.state_dict(),
+                },
+                checkpoint,
+            )
+
+            fresh, _ = load_differential_critic(
+                checkpoint, load_weights=False
+            )
+            loaded, _ = load_differential_critic(checkpoint)
+
+        self.assertTrue(torch.equal(fresh.target_center, torch.zeros(3)))
+        self.assertTrue(torch.equal(fresh.target_scale, torch.ones(3)))
+        self.assertTrue(
+            torch.equal(
+                fresh.head[-1].weight,
+                torch.zeros_like(fresh.head[-1].weight),
+            )
+        )
+        self.assertTrue(torch.equal(loaded.target_center, source.target_center))
+        self.assertTrue(
+            torch.equal(loaded.head[-1].weight, source.head[-1].weight)
+        )
+
     def test_manual_validation_uses_unseen_seeds(self):
         experiment = load_psb_experiment(CONFIG)
         tiny_config = replace(

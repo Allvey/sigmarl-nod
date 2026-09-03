@@ -433,6 +433,14 @@ def mappo_cavs(
         if is_psb_p5
         else "sequence"
     )
+    p5_initialization_mode = (
+        str(joint_training_config.get("initialization_mode", "warm_start"))
+        if is_psb_p5
+        else "warm_start"
+    )
+    p5_initialize_from_scratch = bool(
+        is_psb_p5 and p5_initialization_mode == "scratch"
+    )
     if (
         is_psb_p5
         and not bool(parameters.is_testing_mode)
@@ -675,6 +683,7 @@ def mappo_cavs(
     base_actor_source_state = None
     p5_base_actor_source_state = None
     p5_source_base_anchor_net = None
+    p5_reference_base_policy = None
     psb_bridge = None
     psb_tracker = None
     if is_opinion_policy:
@@ -966,18 +975,38 @@ def mappo_cavs(
             base_actor_source_state = torch.load(
                 base_actor_checkpoint, map_location=parameters.device
             )
-            base_policy.load_state_dict(base_actor_source_state, strict=True)
             base_actor_source_state = copy.deepcopy(base_actor_source_state)
+            if p5_initialize_from_scratch:
+                p5_reference_base_policy = copy.deepcopy(base_policy).to(
+                    parameters.device
+                )
+                p5_reference_base_policy.load_state_dict(
+                    base_actor_source_state, strict=True
+                )
+                print(
+                    colored(
+                        "[INFO] Randomly initialized Candidate Base Actor for "
+                        "P5 scratch joint training.",
+                        "red",
+                    )
+                )
+            else:
+                base_policy.load_state_dict(base_actor_source_state, strict=True)
+                if is_psb_p5:
+                    p5_reference_base_policy = copy.deepcopy(base_policy).to(
+                        parameters.device
+                    )
             if is_psb_p5:
                 p5_base_actor_source_state = copy.deepcopy(
                     policy_net.state_dict()
                 )
-                p5_source_base_anchor_net = copy.deepcopy(policy_net).to(
-                    parameters.device
-                )
-                p5_source_base_anchor_net.eval()
-                for parameter in p5_source_base_anchor_net.parameters():
-                    parameter.requires_grad_(False)
+                if float(joint_training_config["base_anchor_coefficient"]) > 0.0:
+                    p5_source_base_anchor_net = copy.deepcopy(policy_net).to(
+                        parameters.device
+                    )
+                    p5_source_base_anchor_net.eval()
+                    for parameter in p5_source_base_anchor_net.parameters():
+                        parameter.requires_grad_(False)
             if artifact_logging_enabled:
                 torch.save(
                     base_actor_source_state,
@@ -1156,10 +1185,11 @@ def mappo_cavs(
             raise FileNotFoundError(
                 f"P2 Base Critic checkpoint not found: {base_critic_checkpoint}"
             )
-        critic.load_state_dict(
-            torch.load(base_critic_checkpoint, map_location=parameters.device),
-            strict=True,
-        )
+        if not p5_initialize_from_scratch:
+            critic.load_state_dict(
+                torch.load(base_critic_checkpoint, map_location=parameters.device),
+                strict=True,
+            )
         from utilities.psb_marl.p2_critic import AugmentedCentralCritic
 
         augmented_critic_net = AugmentedCentralCritic(
@@ -1182,7 +1212,11 @@ def mappo_cavs(
             out_keys=[("agents", "state_value")],
         )
 
-    if is_psb_p32 and not parameters.is_load_model:
+    if (
+        is_psb_p32
+        and not parameters.is_load_model
+        and not p5_initialize_from_scratch
+    ):
         initial_policy = Path(
             str(psb_runtime_config["initial_policy_checkpoint"])
         ).expanduser().resolve()
@@ -1217,13 +1251,21 @@ def mappo_cavs(
         p3_differential_critic, _ = load_differential_critic(
             p3_differential_source,
             device=torch.device(parameters.device),
+            load_weights=not p5_initialize_from_scratch,
         )
         p3_differential_critic.train()
         p3_shadow_base_env = _build_p3_shadow_base_environment(
             parameters,
             opinion_pair_info_config,
         )
-        p3_shadow_base_policy = copy.deepcopy(base_policy).to(
+        shadow_source_policy = (
+            p5_reference_base_policy
+            if p5_initialize_from_scratch
+            else base_policy
+        )
+        if shadow_source_policy is None:
+            raise RuntimeError("P5 Source Base reference policy is unavailable.")
+        p3_shadow_base_policy = copy.deepcopy(shadow_source_policy).to(
             parameters.device
         )
         p3_shadow_base_policy.eval()
@@ -1445,6 +1487,15 @@ def mappo_cavs(
     uses_sequence_buffer = is_sequence_buffer or (
         is_psb_p2 and not uses_psb_transition_ppo
     )
+    replay_buffer_batch_size = parameters.minibatch_size
+    if (
+        p5_initialize_from_scratch
+        and int(joint_training_config["base_pretrain_iterations"]) > 0
+    ):
+        # P5 scratch v2 samples 512 transitions during Base pretraining and
+        # 1024 afterwards.  Leave the constructor unspecified so TorchRL does
+        # not warn about the intentional per-phase batch-size change.
+        replay_buffer_batch_size = None
     if uses_sequence_buffer:
         replay_buffer = None
     elif parameters.is_prb:
@@ -1454,7 +1505,7 @@ def mappo_cavs(
             storage=LazyTensorStorage(
                 parameters.frames_per_batch, device=parameters.device
             ),
-            batch_size=parameters.minibatch_size,
+            batch_size=replay_buffer_batch_size,
             priority_key="td_error",
         )
     else:
@@ -1463,12 +1514,15 @@ def mappo_cavs(
                 parameters.frames_per_batch, device=parameters.device
             ),  # We store the frames_per_batch collected at each iteration
             sampler=SamplerWithoutReplacement(),
-            batch_size=parameters.minibatch_size,  # We will sample minibatches of this size
+            batch_size=replay_buffer_batch_size,
         )
 
     base_anchor_net = None
     if is_psb_p5:
-        if p5_source_base_anchor_net is None:
+        if (
+            float(joint_training_config["base_anchor_coefficient"]) > 0.0
+            and p5_source_base_anchor_net is None
+        ):
             raise RuntimeError("P5 Source Base Actor anchor is unavailable.")
         base_anchor_net = p5_source_base_anchor_net
     elif is_m9_trainer and float(
@@ -1924,12 +1978,67 @@ def mappo_cavs(
             float(item["episode_reward_mean"]) for item in artifact_iterations
         ]
 
+    def p5_scratch_phase_for_iteration(iteration: int):
+        if not p5_initialize_from_scratch:
+            return None
+        from utilities.psb_marl.p5_schedule import scratch_phase
+
+        return scratch_phase(
+            iteration,
+            base_pretrain_iterations=int(
+                joint_training_config["base_pretrain_iterations"]
+            ),
+            absolute_warmup_iterations=int(
+                joint_training_config["absolute_advantage_warmup_iterations"]
+            ),
+            advantage_blend_iterations=int(
+                joint_training_config["advantage_blend_iterations"]
+            ),
+            dual_warmup_iterations=int(
+                joint_training_config["dual_warmup_iterations"]
+            ),
+            branch_bootstrap_iterations=int(
+                joint_training_config["branch_bootstrap_iterations"]
+            ),
+            branch_activity_bootstrap_offset=float(
+                joint_training_config["branch_activity_bootstrap_offset"]
+            ),
+        )
+
+    def apply_p5_scratch_phase(phase) -> None:
+        """Apply the phase before collection so stored log-probs agree."""
+
+        if phase is None:
+            return
+        if psb_bridge is None:
+            raise RuntimeError("P5 scratch policy bridge is unavailable.")
+        for parameter in control_parameters + adapter_parameters:
+            parameter.requires_grad_(phase.psb_learning_enabled)
+        if p3_differential_critic is not None:
+            for parameter in p3_differential_critic.parameters():
+                parameter.requires_grad_(phase.paired_learning_enabled)
+        psb_bridge.adapter.set_branch_activity_offset(
+            phase.branch_activity_offset
+        )
+
     if is_psb_p33:
         from utilities.psb_marl.p3_differential import paired_iteration_seed
 
         def p3_paired_batches():
+            candidate_collector_iterator = iter(collector)
             for offset in range(parameters.n_iters - resume_start_iteration):
                 iteration = resume_start_iteration + offset
+                phase = p5_scratch_phase_for_iteration(iteration + 1)
+                apply_p5_scratch_phase(phase)
+                if phase is not None and not phase.paired_learning_enabled:
+                    yield (
+                        next(candidate_collector_iterator),
+                        None,
+                        None,
+                        {},
+                        phase,
+                    )
+                    continue
                 pair_seed = paired_iteration_seed(parameters.seed, iteration)
                 candidate_batch, base_batch, pairing_metrics = (
                     _collect_p3_synchronized_batch(
@@ -1943,12 +2052,13 @@ def mappo_cavs(
                     base_batch,
                     pair_seed,
                     pairing_metrics,
+                    phase,
                 )
 
         training_batches = p3_paired_batches()
     else:
         training_batches = (
-            (batch, None, None, {}) for batch in collector
+            (batch, None, None, {}, None) for batch in collector
         )
 
     for (
@@ -1956,7 +2066,18 @@ def mappo_cavs(
         p3_base_tensordict,
         p3_pair_seed,
         p3_pairing_metrics,
+        p5_scratch_phase,
     ) in training_batches:
+        current_training_iteration = int(pbar.n) + 1
+        if p5_initialize_from_scratch and p5_scratch_phase is None:
+            raise RuntimeError("P5 scratch collection did not provide a phase.")
+        p5_paired_learning_active = bool(
+            is_psb_p33
+            and (
+                p5_scratch_phase is None
+                or p5_scratch_phase.paired_learning_enabled
+            )
+        )
         rollout_finished_at = time.time()
         rollout_seconds = rollout_finished_at - iteration_cycle_start
         optimization_started_at = rollout_finished_at
@@ -1992,9 +2113,28 @@ def mappo_cavs(
         p3_dual_metrics = {}
         p3_differential_metrics = {}
         p5_actor_advantage = None
+        p5_advantage_metrics = {}
+        if p5_scratch_phase is not None:
+            p5_advantage_metrics = {
+                "scratch_training_phase": p5_scratch_phase.name,
+                "absolute_advantage_weight": (
+                    p5_scratch_phase.absolute_weight
+                ),
+                "differential_advantage_weight": (
+                    p5_scratch_phase.differential_weight
+                ),
+                "dual_update_enabled": p5_scratch_phase.dual_update_enabled,
+                "paired_learning_enabled": (
+                    p5_scratch_phase.paired_learning_enabled
+                ),
+                "psb_learning_enabled": p5_scratch_phase.psb_learning_enabled,
+                "branch_activity_bootstrap_offset": (
+                    p5_scratch_phase.branch_activity_offset
+                ),
+            }
         loss_update_count = 0
 
-        if is_psb_p33:
+        if p5_paired_learning_active:
             from utilities.psb_marl.p3_critic_training import (
                 paired_critic_samples,
             )
@@ -2294,14 +2434,63 @@ def mappo_cavs(
                     params=loss_module.critic_params,
                     target_params=loss_module.target_critic_params,
                 )  # Compute GAE and add it to the data
-                if is_psb_p5:
+                if is_psb_p5 and p5_paired_learning_active:
                     if p5_actor_advantage is None:
                         raise RuntimeError(
                             "P5 differential Actor advantage is unavailable."
                         )
+                    selected_actor_advantage = p5_actor_advantage
+                    if p5_initialize_from_scratch:
+                        if p5_scratch_phase is None:
+                            raise RuntimeError(
+                                "P5 scratch advantage schedule is unavailable."
+                            )
+                        from utilities.psb_marl.p5_schedule import (
+                            blend_actor_advantages,
+                        )
+
+                        absolute_advantage = tensordict_data.get(
+                            loss_module.tensor_keys.advantage
+                        ).detach()
+                        selected_actor_advantage, blend_metrics = (
+                            blend_actor_advantages(
+                                absolute_advantage,
+                                p5_actor_advantage,
+                                differential_weight=(
+                                    p5_scratch_phase.differential_weight
+                                ),
+                                scale_floor=float(
+                                    p3_differential_config[
+                                        "advantage_scale_floor"
+                                    ]
+                                ),
+                            )
+                        )
+                        p5_advantage_metrics.update(
+                            {
+                                "absolute_advantage_raw_mean": float(
+                                    absolute_advantage.mean().item()
+                                ),
+                                "absolute_advantage_raw_std": float(
+                                    absolute_advantage.std(
+                                        unbiased=False
+                                    ).item()
+                                ),
+                                "absolute_advantage_scale_mean": float(
+                                    blend_metrics["absolute_advantage_scale"]
+                                    .mean()
+                                    .item()
+                                ),
+                                "mixed_advantage_scale_mean": float(
+                                    blend_metrics["mixed_advantage_scale"]
+                                    .mean()
+                                    .item()
+                                ),
+                            }
+                        )
                     tensordict_data.set(
                         loss_module.tensor_keys.advantage,
-                        p5_actor_advantage,
+                        selected_actor_advantage,
                     )
 
             if priority_module:
@@ -2359,12 +2548,30 @@ def mappo_cavs(
 
         ppo_epochs_completed = 0
         ppo_early_stop_triggered = False
-        ppo_target_kl = (
-            float(joint_training_config["target_kl"])
-            if uses_psb_transition_ppo
-            else None
-        )
-        for epoch_index in range(parameters.num_epochs):
+        iteration_ppo_epochs = parameters.num_epochs
+        iteration_minibatch_size = parameters.minibatch_size
+        ppo_target_kl = None
+        if uses_psb_transition_ppo:
+            ppo_target_kl = float(joint_training_config["target_kl"])
+            if (
+                p5_scratch_phase is not None
+                and p5_scratch_phase.name == "base_actor_pretrain"
+            ):
+                iteration_ppo_epochs = int(
+                    joint_training_config["base_pretrain_ppo_epochs"]
+                )
+                iteration_minibatch_size = int(
+                    joint_training_config["base_pretrain_minibatch_size"]
+                )
+                base_pretrain_target_kl = float(
+                    joint_training_config["base_pretrain_target_kl"]
+                )
+                ppo_target_kl = (
+                    None
+                    if base_pretrain_target_kl == 0.0
+                    else base_pretrain_target_kl
+                )
+        for epoch_index in range(iteration_ppo_epochs):
             epoch_approx_kl_sum = 0.0
             epoch_approx_kl_count = 0
             if uses_sequence_buffer:
@@ -2379,10 +2586,12 @@ def mappo_cavs(
             else:
                 def replay_minibatches():
                     for _ in range(
-                        parameters.frames_per_batch
-                        // parameters.minibatch_size
+                        parameters.frames_per_batch // iteration_minibatch_size
                     ):
-                        mini_batch, _ = replay_buffer.sample(return_info=True)
+                        mini_batch, _ = replay_buffer.sample(
+                            batch_size=iteration_minibatch_size,
+                            return_info=True,
+                        )
                         yield mini_batch
 
                 mini_batches = replay_minibatches()
@@ -2401,7 +2610,7 @@ def mappo_cavs(
                             raise RuntimeError("P2 Sequence PPO loss is unavailable.")
                         loss_vals = p2_sequence_loss(mini_batch_data)
                         actor_critic_td = mini_batch_data.tensordict
-                    if is_psb_p33:
+                    if p5_paired_learning_active:
                         from utilities.psb_marl.p3_differential import (
                             differential_critic_loss,
                         )
@@ -2484,7 +2693,7 @@ def mappo_cavs(
                             .item()
                         )
                     else:
-                        critic_batch = mini_batch_data.tensordict.reshape(-1)
+                        critic_batch = actor_critic_td.reshape(-1)
                         loss_vals["loss_critic"] = loss_module.loss_critic(
                             critic_batch
                         ).mean()
@@ -2694,7 +2903,7 @@ def mappo_cavs(
                 break
         optimization_seconds = time.time() - optimization_started_at
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
-        if is_psb_p33:
+        if p5_paired_learning_active:
             p3_differential_metrics[
                 "online_differential_critic_mae"
             ] = p3_differential_prediction_mae_sum / max(
@@ -2703,7 +2912,14 @@ def mappo_cavs(
         if is_psb_p32:
             if p3_safety_costs is None or p3_dual_controller is None:
                 raise RuntimeError("P3.2 dual update is missing rollout costs.")
-            p3_dual_metrics = p3_dual_controller.update(p3_safety_costs)
+            p3_dual_metrics = p3_dual_controller.update(
+                p3_safety_costs,
+                enabled=(
+                    p5_scratch_phase.dual_update_enabled
+                    if p5_scratch_phase is not None
+                    else True
+                ),
+            )
 
         # Logging
         done = tensordict_data.get(("next", "agents", "done"))
@@ -2803,6 +3019,10 @@ def mappo_cavs(
                         drift_max_abs, float(difference.abs().max().item())
                     )
                 p5_backbone_metrics = {
+                    "initialization_mode": p5_initialization_mode,
+                    "source_base_anchor_enabled": bool(
+                        base_anchor_net is not None
+                    ),
                     "base_actor_trainable": True,
                     "base_actor_gradient_norm": (
                         base_actor_gradient_norm_sum / loss_update_count
@@ -2891,6 +3111,7 @@ def mappo_cavs(
                 **p2_rollout_diagnostics,
                 **p3_dual_metrics,
                 **p3_differential_metrics,
+                **p5_advantage_metrics,
             }
             if str(
                 adapter_config.get("conditioning_mode", "general")
@@ -3070,7 +3291,13 @@ def mappo_cavs(
                             "temporal_backpropagation_enabled": (
                                 not uses_psb_transition_ppo
                             ),
-                            "ppo_epochs_configured": int(parameters.num_epochs),
+                            "ppo_epochs_configured": int(
+                                iteration_ppo_epochs
+                            ),
+                            "ppo_minibatch_size": int(
+                                iteration_minibatch_size
+                            ),
+                            "ppo_kl_estimator": "k3_nonnegative",
                             "ppo_epochs_completed": int(ppo_epochs_completed),
                             "ppo_early_stop_triggered": bool(
                                 ppo_early_stop_triggered

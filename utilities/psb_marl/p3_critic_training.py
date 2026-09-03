@@ -420,6 +420,7 @@ def load_differential_critic(
     path: Path,
     *,
     device: torch.device = torch.device("cpu"),
+    load_weights: bool = True,
 ) -> tuple[BaseRelativeDifferentialCritic, Dict[str, object]]:
     payload = torch.load(Path(path), map_location=device)
     supported_stages = {
@@ -445,7 +446,8 @@ def load_differential_critic(
         embedding_dim=int(model_config["embedding_dim"]),
         hidden_sizes=tuple(model_config["hidden_sizes"]),
     ).to(device)
-    model.load_state_dict(payload["critic_state"], strict=True)
+    if load_weights:
+        model.load_state_dict(payload["critic_state"], strict=True)
     model.eval()
     return model, payload
 

@@ -126,6 +126,28 @@ class P32DualTests(unittest.TestCase):
         self.assertIsNone(costs.vehicle.grad)
         self.assertIsNone(costs.lane.grad)
 
+    def test_disabled_dual_update_is_diagnostic_only(self):
+        controller = ProjectedDualController(
+            vehicle_budget=0.2,
+            lane_budget=0.1,
+            vehicle_learning_rate=0.5,
+            lane_learning_rate=0.25,
+            maximum_multiplier=0.3,
+            initial_vehicle_multiplier=0.1,
+            initial_lane_multiplier=0.2,
+        )
+        costs = P3SafetyCosts(
+            vehicle=torch.tensor([[0.6, 0.4]]),
+            lane=torch.tensor([[0.0, 0.0]]),
+        )
+
+        metrics = controller.update(costs, enabled=False)
+
+        self.assertFalse(metrics["dual_update_enabled"])
+        self.assertEqual(controller.vehicle_multiplier, 0.1)
+        self.assertEqual(controller.lane_multiplier, 0.2)
+        self.assertAlmostEqual(metrics["vehicle_constraint_residual"], 0.3)
+
     def test_budget_normalization_equalizes_constraint_scales(self):
         controller = ProjectedDualController(
             vehicle_budget=0.5,
