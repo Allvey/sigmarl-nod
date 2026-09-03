@@ -50,6 +50,12 @@ def train_psb(
             resume_checkpoint=resume_checkpoint,
             iterations_override=iterations_override,
         )
+    if experiment.stage == "p2_core_absolute":
+        return _train_p2_core(
+            experiment,
+            resume_checkpoint=resume_checkpoint,
+            iterations_override=iterations_override,
+        )
     if experiment.stage == "p3_paired_differential_primal_dual_ppo":
         return _train_p33(
             experiment,
@@ -769,6 +775,111 @@ def _train_p2(
             "candidate_policy_sha256": sha256_file(candidate_policy),
             "candidate_critic_sha256": sha256_file(candidate_critic),
             "promotion_gate": runtime_config["promotion"],
+        },
+    )
+    write_artifact_manifest(run_directory)
+    mark_latest_completed_run(experiment.output_root, run_directory)
+    return run_directory
+
+
+def _train_p2_core(
+    experiment,
+    *,
+    resume_checkpoint: Optional[Path],
+    iterations_override: Optional[int],
+) -> Path:
+    """Train the frozen-Base PSB core without pairing, duals, or P3 critics."""
+
+    assert experiment.conflict_graph is not None
+    assert experiment.training is not None
+    assert experiment.transition_ppo is not None
+    assert experiment.core_initialization is not None
+    from main_training import train_base
+
+    parameters = experiment.base_parameters
+    parameters.seed = experiment.effective_training_seed
+    parameters.where_to_save = str(
+        Path(experiment.output_root).expanduser().resolve()
+    )
+    iterations = (
+        experiment.training.iterations
+        if iterations_override is None
+        else iterations_override
+    )
+    if type(iterations) is not int or iterations <= 0:
+        raise PSBConfigError("P2-Core --iterations must be a positive integer.")
+    parameters.n_iters = iterations
+    parameters.total_frames = parameters.frames_per_batch * iterations
+    parameters.num_epochs = experiment.transition_ppo.ppo_epochs
+    parameters.minibatch_size = experiment.transition_ppo.minibatch_size
+    runtime_config = experiment.p2_core_runtime_config()
+    runtime_config["training"] = {
+        **runtime_config["training"], "iterations": iterations
+    }
+    run_directory = train_base(
+        parameters=parameters,
+        source_config=experiment.source_config,
+        run_label="psb-p2-core",
+        supplementary_snapshots={
+            "psb_config_resolved.json": {
+                **experiment.source_config,
+                "resolved_base_config": str(experiment.base_config_path),
+                "resolved_base_run": str(experiment.base.run_directory),
+                "runtime_config": runtime_config,
+                "config_fingerprint": _fingerprint(experiment.source_config),
+            }
+        },
+        comparison_payload={
+            "schema_version": 1,
+            "reference": "base_only_best_checkpoint",
+            "status": "pending_manual_multi_seed_validation",
+            "deployment": "base_fallback",
+            "candidate_checkpoint": "candidate_policy.pth",
+            "base_actor_frozen": True,
+            "paired_differential_learning_enabled": False,
+            "dual_learning_enabled": False,
+        },
+        opinion_pair_info_config=experiment.conflict_graph.to_dict(),
+        psb_runtime_config=runtime_config,
+        artifact_method="psb_marl",
+        artifact_stage=experiment.stage,
+        resume_checkpoint=resume_checkpoint,
+    )
+    required = (
+        "candidate_policy.pth",
+        "candidate_critic.pth",
+        "base_fallback_policy.pth",
+        "base_fallback_critic.pth",
+        "final_policy.pth",
+        "final_critic.pth",
+    )
+    missing = [name for name in required if not (run_directory / name).is_file()]
+    if missing:
+        raise RuntimeError(f"P2-Core training is missing artifacts: {missing}.")
+    atomic_write_json(
+        run_directory / "deployment_manifest.json",
+        {
+            "schema_version": 1,
+            "method": "psb_marl",
+            "stage": experiment.stage,
+            "selected": "base_fallback_pending_validation",
+            "base_actor_frozen": True,
+            "paired_differential_learning_enabled": False,
+            "dual_learning_enabled": False,
+            "core_initial_policy": str(
+                experiment.core_initialization.policy_checkpoint
+            ),
+            "core_initial_critic": str(
+                experiment.core_initialization.critic_checkpoint
+            ),
+            "candidate_policy": "candidate_policy.pth",
+            "candidate_critic": "candidate_critic.pth",
+            "candidate_policy_sha256": sha256_file(
+                run_directory / "candidate_policy.pth"
+            ),
+            "candidate_critic_sha256": sha256_file(
+                run_directory / "candidate_critic.pth"
+            ),
         },
     )
     write_artifact_manifest(run_directory)

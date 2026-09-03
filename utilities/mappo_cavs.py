@@ -410,7 +410,8 @@ def mappo_cavs(
         str(psb_runtime_config.get("stage")) if psb_runtime_config else ""
     )
     is_psb_p1 = psb_stage == "p1_zero_control_equivalence"
-    is_psb_p2 = psb_stage == "p2_frozen_base_bifurcation"
+    is_psb_core = psb_stage == "p2_core_absolute"
+    is_psb_p2 = psb_stage == "p2_frozen_base_bifurcation" or is_psb_core
     is_psb_p32 = bool(
         is_psb_p2
         and isinstance(psb_runtime_config.get("primal_dual"), Mapping)
@@ -447,7 +448,9 @@ def mappo_cavs(
         and p5_ppo_mode != "transition"
     ):
         raise ValueError("P5 requires transition PPO; Sequence PPO is disabled.")
-    uses_psb_transition_ppo = bool(is_psb_p5 and p5_ppo_mode == "transition")
+    uses_psb_transition_ppo = bool(
+        (is_psb_p5 and p5_ppo_mode == "transition") or is_psb_core
+    )
     if is_psb_p33:
         paired_contract = psb_runtime_config["paired_differential"]
         required_paired_flags = (
@@ -1078,6 +1081,7 @@ def mappo_cavs(
                 max_delta_log_scale=float(
                     adapter_config["max_delta_log_scale"]
                 ),
+                delta_loc_gain=float(adapter_config.get("delta_loc_gain", 1.0)),
                 conditioning_mode=str(
                     adapter_config.get("conditioning_mode", "general")
                 ),
@@ -1227,6 +1231,19 @@ def mappo_cavs(
             raise FileNotFoundError(
                 "P3.2 initial policy or scalar critic checkpoint is missing."
             )
+        policy.load_state_dict(
+            torch.load(initial_policy, map_location=parameters.device),
+            strict=True,
+        )
+        critic.load_state_dict(
+            torch.load(initial_critic, map_location=parameters.device),
+            strict=True,
+        )
+
+    if is_psb_core and not parameters.is_load_model:
+        core_initialization = dict(psb_runtime_config["core_initialization"])
+        initial_policy = Path(core_initialization["policy_checkpoint"])
+        initial_critic = Path(core_initialization["critic_checkpoint"])
         policy.load_state_dict(
             torch.load(initial_policy, map_location=parameters.device),
             strict=True,
@@ -1628,6 +1645,17 @@ def mappo_cavs(
             ),
             saturation_fraction=float(
                 p2_training_config["saturation_fraction"]
+            ),
+            active_delta_target_ratio=float(
+                p2_training_config.get("active_delta_target_ratio", 0.0)
+            ),
+            active_delta_target_coefficient=float(
+                p2_training_config.get("active_delta_target_coefficient", 0.0)
+            ),
+            active_delta_activity_threshold=float(
+                p2_training_config.get(
+                    "active_delta_activity_threshold", 0.05
+                )
             ),
             base_anchor_net=base_anchor_net,
             base_anchor_coefficient=float(
@@ -2098,6 +2126,9 @@ def mappo_cavs(
         p2_control_energy_sum = 0.0
         p2_control_trust_sum = 0.0
         p2_saturation_penalty_sum = 0.0
+        p2_active_delta_shortfall_sum = 0.0
+        p2_active_delta_relative_abs_mean_sum = 0.0
+        p2_loss_active_delta_magnitude_sum = 0.0
         p2_max_root_residual = 0.0
         p2_min_root_denominator = float("inf")
         p2_mean_abs_b_sum = 0.0
@@ -2552,7 +2583,11 @@ def mappo_cavs(
         iteration_minibatch_size = parameters.minibatch_size
         ppo_target_kl = None
         if uses_psb_transition_ppo:
-            ppo_target_kl = float(joint_training_config["target_kl"])
+            ppo_target_kl = float(
+                joint_training_config["target_kl"]
+                if is_psb_p5
+                else psb_runtime_config["transition_ppo"]["target_kl"]
+            )
             if (
                 p5_scratch_phase is not None
                 and p5_scratch_phase.name == "base_actor_pretrain"
@@ -2767,6 +2802,15 @@ def mappo_cavs(
                     p2_saturation_penalty_sum += float(
                         loss_vals["saturation_penalty"].item()
                     )
+                    p2_active_delta_shortfall_sum += float(
+                        loss_vals["active_delta_shortfall"].item()
+                    )
+                    p2_active_delta_relative_abs_mean_sum += float(
+                        loss_vals["active_delta_relative_abs_mean"].item()
+                    )
+                    p2_loss_active_delta_magnitude_sum += float(
+                        loss_vals["loss_active_delta_magnitude"].item()
+                    )
                     p2_max_root_residual = max(
                         p2_max_root_residual,
                         float(loss_vals["max_root_residual"].item()),
@@ -2791,6 +2835,7 @@ def mappo_cavs(
                     + loss_vals["loss_critic"]
                     + loss_vals["loss_entropy"]
                     + loss_vals.get("loss_regularization", 0.0)
+                    + loss_vals.get("loss_active_delta_magnitude", 0.0)
                     + loss_vals.get("loss_base_anchor", 0.0)
                 )
 
@@ -3051,6 +3096,9 @@ def mappo_cavs(
             p2_collected_delta = tensordict_data.get(
                 ("agents", "psb", "delta_loc")
             )
+            p2_collected_base_loc = tensordict_data.get(
+                ("agents", "psb", "base_loc")
+            )
             p2_collected_activity = tensordict_data.get(
                 ("agents", "psb", "branch_activity")
             )
@@ -3067,6 +3115,10 @@ def mappo_cavs(
             p2_collected_denominator = tensordict_data.get(
                 ("agents", "psb", "root_denominator")
             )
+            p2_base_loc_abs = p2_collected_base_loc.abs()
+            p2_delta_loc_abs = p2_collected_delta.abs()
+            p2_base_loc_rms = p2_collected_base_loc.square().mean().sqrt()
+            p2_delta_loc_rms = p2_collected_delta.square().mean().sqrt()
             p2_iteration_metrics = {
                 "rollout_control_energy": float(
                     rollout_control_energy.mean().item()
@@ -3074,7 +3126,26 @@ def mappo_cavs(
                 "rollout_b_abs_mean": float(p2_collected_b.abs().mean().item()),
                 "rollout_z_abs_mean": float(p2_collected_z.abs().mean().item()),
                 "rollout_delta_loc_abs_mean": float(
-                    p2_collected_delta.abs().mean().item()
+                    p2_delta_loc_abs.mean().item()
+                ),
+                "rollout_delta_loc_abs_p95": float(
+                    torch.quantile(p2_delta_loc_abs, 0.95).item()
+                ),
+                "rollout_delta_loc_abs_max": float(
+                    p2_delta_loc_abs.max().item()
+                ),
+                "rollout_base_loc_abs_mean": float(
+                    p2_base_loc_abs.mean().item()
+                ),
+                "rollout_base_loc_abs_p95": float(
+                    torch.quantile(p2_base_loc_abs, 0.95).item()
+                ),
+                "rollout_base_loc_abs_max": float(
+                    p2_base_loc_abs.max().item()
+                ),
+                "rollout_delta_to_base_loc_rms_ratio": float(
+                    (p2_delta_loc_rms / p2_base_loc_rms.clamp_min(1e-8))
+                    .item()
                 ),
                 "rollout_branch_activity_mean": float(
                     p2_collected_activity.mean().item()
@@ -3133,8 +3204,19 @@ def mappo_cavs(
             if p2_collected_delta.shape[-1] == 2:
                 p2_speed_delta = p2_collected_delta[..., 0].abs()
                 p2_steering_delta = p2_collected_delta[..., 1].abs()
+                p2_base_speed = p2_collected_base_loc[..., 0].abs()
+                p2_base_steering = p2_collected_base_loc[..., 1].abs()
                 p2_iteration_metrics.update(
                     {
+                        "rollout_base_speed_loc_abs_mean": float(
+                            p2_base_speed.mean().item()
+                        ),
+                        "rollout_base_speed_loc_abs_p95": float(
+                            torch.quantile(p2_base_speed, 0.95).item()
+                        ),
+                        "rollout_base_speed_loc_abs_max": float(
+                            p2_base_speed.max().item()
+                        ),
                         "rollout_delta_speed_abs_mean": float(
                             p2_speed_delta.mean().item()
                         ),
@@ -3144,6 +3226,24 @@ def mappo_cavs(
                         "rollout_delta_speed_abs_max": float(
                             p2_speed_delta.max().item()
                         ),
+                        "rollout_delta_to_base_speed_loc_rms_ratio": float(
+                            (
+                                p2_speed_delta.square().mean().sqrt()
+                                / p2_base_speed.square()
+                                .mean()
+                                .sqrt()
+                                .clamp_min(1e-8)
+                            ).item()
+                        ),
+                        "rollout_base_steering_loc_abs_mean": float(
+                            p2_base_steering.mean().item()
+                        ),
+                        "rollout_base_steering_loc_abs_p95": float(
+                            torch.quantile(p2_base_steering, 0.95).item()
+                        ),
+                        "rollout_base_steering_loc_abs_max": float(
+                            p2_base_steering.max().item()
+                        ),
                         "rollout_delta_steering_abs_mean": float(
                             p2_steering_delta.mean().item()
                         ),
@@ -3152,6 +3252,15 @@ def mappo_cavs(
                         ),
                         "rollout_delta_steering_abs_max": float(
                             p2_steering_delta.max().item()
+                        ),
+                        "rollout_delta_to_base_steering_loc_rms_ratio": float(
+                            (
+                                p2_steering_delta.square().mean().sqrt()
+                                / p2_base_steering.square()
+                                .mean()
+                                .sqrt()
+                                .clamp_min(1e-8)
+                            ).item()
                         ),
                     }
                 )
@@ -3341,6 +3450,18 @@ def mappo_cavs(
                             ),
                             "saturation_penalty": (
                                 p2_saturation_penalty_sum / loss_update_count
+                            ),
+                            "active_delta_shortfall": (
+                                p2_active_delta_shortfall_sum
+                                / loss_update_count
+                            ),
+                            "active_delta_relative_abs_mean": (
+                                p2_active_delta_relative_abs_mean_sum
+                                / loss_update_count
+                            ),
+                            "loss_active_delta_magnitude": (
+                                p2_loss_active_delta_magnitude_sum
+                                / loss_update_count
                             ),
                             "max_root_residual": p2_max_root_residual,
                             "min_root_denominator": p2_min_root_denominator,

@@ -38,6 +38,15 @@ from utilities.psb_marl.p2_state import P2EdgeStateTracker
 from utilities.psb_marl.proximal import ProximalSaturatingBifurcation
 
 
+CORE_CONFIG = Path("configs/psb_marl/p2_core_absolute_from_base_only.json")
+CORE_NO_ACTIVITY_CONFIG = Path(
+    "configs/psb_marl/p2_core_absolute_no_activity.json"
+)
+CORE_HIGH_GAIN_CONFIG = Path(
+    "configs/psb_marl/p2_core_absolute_no_activity_high_gain.json"
+)
+
+
 class TinyBaseActor(nn.Module):
     def __init__(self, observation_dim: int = 4, action_dim: int = 2) -> None:
         super().__init__()
@@ -139,6 +148,37 @@ def pair_inputs(environments=2, n_agents=3):
 
 
 class P2KLTests(unittest.TestCase):
+    def test_core_absolute_config_uses_frozen_base_transition_ppo(self):
+        experiment = load_psb_experiment(CORE_CONFIG)
+        runtime = experiment.p2_core_runtime_config()
+
+        self.assertEqual(experiment.stage, "p2_core_absolute")
+        self.assertTrue(runtime["freeze_base_actor"])
+        self.assertEqual(runtime["transition_ppo"]["ppo_epochs"], 15)
+        self.assertEqual(runtime["transition_ppo"]["minibatch_size"], 1024)
+        self.assertNotIn("paired_differential", runtime)
+        self.assertNotIn("primal_dual", runtime)
+
+    def test_core_no_activity_ablation_retains_the_causal_zero_gate(self):
+        experiment = load_psb_experiment(CORE_NO_ACTIVITY_CONFIG)
+        branch = experiment.p2_core_runtime_config()["branch_adapter"]
+
+        self.assertEqual(branch["conditioning_mode"], "causal_q_gate")
+        self.assertEqual(branch["action_projection"], "longitudinal_only")
+
+    def test_core_high_gain_config_only_amplifies_branch_to_action_scale(self):
+        experiment = load_psb_experiment(CORE_HIGH_GAIN_CONFIG)
+        branch = experiment.p2_core_runtime_config()["branch_adapter"]
+
+        self.assertEqual(branch["conditioning_mode"], "causal_residual")
+        self.assertEqual(branch["z_scale"], 0.05)
+        self.assertEqual(branch["max_delta_loc"], 0.7)
+        self.assertEqual(branch["delta_loc_gain"], 100.0)
+        training = experiment.p2_core_runtime_config()["training"]
+        self.assertEqual(training["active_delta_target_ratio"], 0.2)
+        self.assertEqual(training["active_delta_target_coefficient"], 1.0)
+        self.assertEqual(training["active_delta_activity_threshold"], 0.05)
+
     def test_k3_approximate_kl_is_nonnegative_for_signed_policy_shifts(self):
         negative_shift = ppo_approx_kl_from_log_ratio(
             torch.tensor([-1.0, -0.5])
@@ -473,6 +513,26 @@ class P21CausalBranchTests(unittest.TestCase):
             ],
             0.0,
         )
+
+    def test_causal_residual_exactly_recovers_base_and_loads_gate_checkpoint(self):
+        torch.manual_seed(27)
+        source = make_bridge(conditioning_mode="causal_q_gate")
+        bridge = make_bridge(conditioning_mode="causal_residual")
+        bridge.load_state_dict(source.state_dict(), strict=True)
+        with torch.no_grad():
+            for parameter in bridge.control_net.parameters():
+                parameter.zero_()
+            for parameter in bridge.adapter.parameters():
+                parameter.normal_(mean=0.2, std=0.3)
+        inputs = pair_inputs()
+        output = bridge(**inputs)
+        base_loc, base_scale = bridge.base_policy_net(inputs["observation"])
+
+        self.assertEqual(float(output.branch_context.abs().max()), 0.0)
+        self.assertEqual(float(output.delta_loc.abs().max()), 0.0)
+        self.assertEqual(float(output.delta_log_scale.abs().max()), 0.0)
+        self.assertTrue(torch.equal(output.loc, base_loc))
+        self.assertTrue(torch.equal(output.scale, base_scale))
 
     def test_nonzero_branch_can_learn_complementary_action_changes(self):
         bridge = make_bridge(conditioning_mode="causal_q_gate")

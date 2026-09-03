@@ -40,6 +40,9 @@ class P2SequencePPOLoss(nn.Module):
         control_trust_region_coefficient: float,
         saturation_coefficient: float,
         saturation_fraction: float,
+        active_delta_target_ratio: float = 0.0,
+        active_delta_target_coefficient: float = 0.0,
+        active_delta_activity_threshold: float = 0.05,
         base_anchor_net: Optional[nn.Module] = None,
         base_anchor_coefficient: float = 0.0,
     ) -> None:
@@ -51,11 +54,19 @@ class P2SequencePPOLoss(nn.Module):
             energy_coefficient,
             control_trust_region_coefficient,
             saturation_coefficient,
+            active_delta_target_ratio,
+            active_delta_target_coefficient,
             base_anchor_coefficient,
         ) < 0.0:
             raise ValueError("P2 loss coefficients must be non-negative.")
         if not 0.0 < saturation_fraction <= 1.0:
             raise ValueError("saturation_fraction must lie in (0,1].")
+        if not 0.0 <= active_delta_target_ratio <= 1.0:
+            raise ValueError("active_delta_target_ratio must lie in [0,1].")
+        if not 0.0 <= active_delta_activity_threshold <= 1.0:
+            raise ValueError(
+                "active_delta_activity_threshold must lie in [0,1]."
+            )
         self.actor = actor
         self.bridge = bridge
         self.observation_key = observation_key
@@ -70,6 +81,13 @@ class P2SequencePPOLoss(nn.Module):
         )
         self.saturation_coefficient = float(saturation_coefficient)
         self.saturation_fraction = float(saturation_fraction)
+        self.active_delta_target_ratio = float(active_delta_target_ratio)
+        self.active_delta_target_coefficient = float(
+            active_delta_target_coefficient
+        )
+        self.active_delta_activity_threshold = float(
+            active_delta_activity_threshold
+        )
         self.base_anchor_net = base_anchor_net
         self.base_anchor_coefficient = float(base_anchor_coefficient)
 
@@ -208,6 +226,42 @@ class P2SequencePPOLoss(nn.Module):
             + self.saturation_coefficient * saturation
         )
 
+        active_delta_shortfall = torch.zeros(
+            (), dtype=recomputed["delta_loc"].dtype, device=action.device
+        )
+        active_delta_relative_abs_mean = active_delta_shortfall.detach()
+        if (
+            self.active_delta_target_ratio > 0.0
+            and self.active_delta_target_coefficient > 0.0
+        ):
+            collected_activity = td.get(
+                ("agents", "psb", "branch_activity")
+            ).detach()
+            active_weight = (
+                collected_activity >= self.active_delta_activity_threshold
+            ).to(dtype=recomputed["delta_loc"].dtype)
+            action_mask = self.bridge.adapter.mean_action_mask.to(
+                dtype=recomputed["delta_loc"].dtype,
+                device=recomputed["delta_loc"].device,
+            )
+            active_weight = active_weight * action_mask
+            base_abs = recomputed["base_loc"].detach().abs()
+            delta_abs = recomputed["delta_loc"].abs()
+            normalizer = active_weight.sum().clamp_min(1.0)
+            relative_delta = delta_abs / base_abs.clamp_min(1e-3)
+            relative_shortfall = torch.relu(
+                self.active_delta_target_ratio - relative_delta
+            )
+            active_delta_shortfall = (
+                active_weight * relative_shortfall.square()
+            ).sum() / normalizer
+            active_delta_relative_abs_mean = (
+                active_weight * relative_delta
+            ).sum() / normalizer
+        loss_active_delta_magnitude = (
+            self.active_delta_target_coefficient * active_delta_shortfall
+        )
+
         loss_base_anchor = torch.zeros(
             (), dtype=recomputed["base_loc"].dtype,
             device=recomputed["base_loc"].device,
@@ -248,6 +302,11 @@ class P2SequencePPOLoss(nn.Module):
             "loss_objective": loss_objective,
             "loss_entropy": loss_entropy,
             "loss_regularization": loss_regularization,
+            "loss_active_delta_magnitude": loss_active_delta_magnitude,
+            "active_delta_shortfall": active_delta_shortfall.detach(),
+            "active_delta_relative_abs_mean": (
+                active_delta_relative_abs_mean.detach()
+            ),
             "loss_base_anchor": loss_base_anchor,
             "base_output_anchor": base_output_anchor.detach(),
             "control_energy": control_energy.detach(),

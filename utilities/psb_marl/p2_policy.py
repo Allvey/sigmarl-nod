@@ -38,7 +38,10 @@ class P2BridgeOutput(NamedTuple):
 
 
 def validate_p2_runtime_contract(runtime_config, environment_n_agents: int) -> None:
-    if runtime_config.get("stage") != "p2_frozen_base_bifurcation":
+    if runtime_config.get("stage") not in {
+        "p2_frozen_base_bifurcation",
+        "p2_core_absolute",
+    }:
         raise ValueError("Unsupported P2 runtime stage.")
     if runtime_config.get("control_mode") != "learned_antisymmetric":
         raise ValueError("P2 requires learned antisymmetric control.")
@@ -69,6 +72,7 @@ def validate_p2_runtime_contract(runtime_config, environment_n_agents: int) -> N
     ) not in {
         "general",
         "causal_q_gate",
+        "causal_residual",
         "sector_q_gate",
         "supported_sector_q_gate",
     }:
@@ -88,6 +92,7 @@ def validate_p2_runtime_contract(runtime_config, environment_n_agents: int) -> N
         branch_adapter.get("conditioning_mode")
         not in {
             "causal_q_gate",
+            "causal_residual",
             "sector_q_gate",
             "supported_sector_q_gate",
         }

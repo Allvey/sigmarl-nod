@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "method": "psb_marl",
+  "stage": "p2_core_absolute",
+  "training_seed": 0,
+  "base_config": "config.json",
+  "output_root": "outputs/psb_marl/p2_core_absolute",
+  "base": {
+    "run_directory": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8",
+    "policy_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_policy.pth",
+    "critic_checkpoint": "outputs/base/runs/base-seed0-20260824T130107806913Z-ca0038b8/final_critic.pth"
+  },
+  "core_initialization": {
+    "policy_checkpoint": "outputs/psb_marl/p5_scratch_v2_base_only_250/runs/psb-p5-scratch-seed0-20260902T180905517874Z-d3303658/reward6.12_policy.pth",
+    "critic_checkpoint": "outputs/psb_marl/p5_scratch_v2_base_only_250/runs/psb-p5-scratch-seed0-20260902T180905517874Z-d3303658/reward6.12_critic.pth"
+  },
+  "transition_ppo": {
+    "ppo_epochs": 15,
+    "minibatch_size": 1024,
+    "target_kl": 0.03
+  },
+  "conflict_graph": {
+    "emit_pair_info": true,
+    "candidate_count": 2,
+    "pair_feature_dim": 10,
+    "prediction_horizon_seconds": 3.0,
+    "conflict_distance_meters": 2.0,
+    "sensing_distance_meters": 20.0,
+    "cpa_epsilon": 1e-06,
+    "urgency_time_scale_seconds": 3.0,
+    "urgency_distance_scale_meters": 2.0
+  },
+  "proximal": {
+    "kappa": 1.0,
+    "nu": 1.0,
+    "alpha": 1.0,
+    "rho_max": 2.0,
+    "tau_z": 0.2,
+    "b_max": 0.5,
+    "residual_tolerance": 1e-06,
+    "max_iterations": 64,
+    "zero_threshold": 1e-08
+  },
+  "control": {
+    "hidden_sizes": [64, 64],
+    "temperature": 1.0,
+    "support_power": 1.0,
+    "critical_gate_enabled": false,
+    "critical_width": 0.35,
+    "critical_floor": 0.25,
+    "final_layer_gain": 0.01
+  },
+  "branch_adapter": {
+    "pair_hidden_sizes": [64, 64],
+    "context_dim": 32,
+    "adapter_hidden_sizes": [128, 128],
+    "z_scale": 0.5,
+    "max_delta_loc": 0.35,
+    "max_delta_log_scale": 0.0,
+    "conditioning_mode": "supported_sector_q_gate",
+    "action_projection": "longitudinal_only"
+  },
+  "training": {
+    "iterations": 40,
+    "chunk_length": 16,
+    "control_learning_rate_scale": 0.5,
+    "adapter_learning_rate_scale": 0.5,
+    "critic_learning_rate_scale": 1.0,
+    "energy_coefficient": 0.001,
+    "control_trust_region_coefficient": 0.01,
+    "saturation_coefficient": 0.001,
+    "saturation_fraction": 0.8,
+    "checkpoint_interval": 10
+  },
+  "promotion": {
+    "minimum_paired_seeds": 10,
+    "confidence_z": 1.645,
+    "reward_margin": 0.002,
+    "collision_margin": 0.002,
+    "lane_collision_margin": 0.001
+  }
+}

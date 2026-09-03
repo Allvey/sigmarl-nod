@@ -412,13 +412,18 @@ class PSBBranchAdapterConfig:
     z_scale: float
     max_delta_loc: float
     max_delta_log_scale: float
+    delta_loc_gain: float = 1.0
     conditioning_mode: str = "general"
     action_projection: str = "full"
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "PSBBranchAdapterConfig":
         raw = _object(raw, "branch_adapter")
-        optional_keys = {"conditioning_mode", "action_projection"}
+        optional_keys = {
+            "delta_loc_gain",
+            "conditioning_mode",
+            "action_projection",
+        }
         required_keys = set(cls.__dataclass_fields__) - optional_keys
         actual_keys = set(raw)
         if not required_keys.issubset(actual_keys) or not actual_keys.issubset(
@@ -437,12 +442,13 @@ class PSBBranchAdapterConfig:
         if conditioning_mode not in {
             "general",
             "causal_q_gate",
+            "causal_residual",
             "sector_q_gate",
             "supported_sector_q_gate",
         }:
             raise PSBConfigError(
                 "branch_adapter.conditioning_mode must be 'general', "
-                "'causal_q_gate', 'sector_q_gate', or "
+                "'causal_q_gate', 'causal_residual', 'sector_q_gate', or "
                 "'supported_sector_q_gate'."
             )
         action_projection = _string(
@@ -477,6 +483,11 @@ class PSBBranchAdapterConfig:
                 raw["max_delta_log_scale"],
                 "branch_adapter.max_delta_log_scale",
             ),
+            delta_loc_gain=_number(
+                raw.get("delta_loc_gain", 1.0),
+                "branch_adapter.delta_loc_gain",
+                strictly_positive=True,
+            ),
             conditioning_mode=conditioning_mode,
             action_projection=action_projection,
         )
@@ -484,6 +495,7 @@ class PSBBranchAdapterConfig:
             result.conditioning_mode
             not in {
                 "causal_q_gate",
+                "causal_residual",
                 "sector_q_gate",
                 "supported_sector_q_gate",
             }
@@ -504,6 +516,8 @@ class PSBBranchAdapterConfig:
             "max_delta_loc": self.max_delta_loc,
             "max_delta_log_scale": self.max_delta_log_scale,
         }
+        if self.delta_loc_gain != 1.0:
+            result["delta_loc_gain"] = self.delta_loc_gain
         # Preserve the exact legacy runtime/checkpoint contract when the field
         # is omitted. P2.1-C/S write an explicit, semantically distinct mode.
         if self.conditioning_mode != "general":
@@ -527,11 +541,29 @@ class PSBP2TrainingConfig:
     saturation_coefficient: float
     saturation_fraction: float
     checkpoint_interval: int
+    active_delta_target_ratio: float = 0.0
+    active_delta_target_coefficient: float = 0.0
+    active_delta_activity_threshold: float = 0.05
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "PSBP2TrainingConfig":
         raw = _object(raw, "training")
-        _exact_keys(raw, set(cls.__dataclass_fields__), "training")
+        optional_keys = {
+            "active_delta_target_ratio",
+            "active_delta_target_coefficient",
+            "active_delta_activity_threshold",
+        }
+        required_keys = set(cls.__dataclass_fields__) - optional_keys
+        actual_keys = set(raw)
+        if not required_keys.issubset(actual_keys) or not actual_keys.issubset(
+            set(cls.__dataclass_fields__)
+        ):
+            missing = sorted(required_keys - actual_keys)
+            extra = sorted(actual_keys - set(cls.__dataclass_fields__))
+            raise PSBConfigError(
+                "training has invalid keys: "
+                f"missing={missing}, extra={extra}."
+            )
         result = cls(
             iterations=_integer(raw["iterations"], "training.iterations"),
             chunk_length=_integer(
@@ -571,10 +603,123 @@ class PSBP2TrainingConfig:
             checkpoint_interval=_integer(
                 raw["checkpoint_interval"], "training.checkpoint_interval"
             ),
+            active_delta_target_ratio=_number(
+                raw.get("active_delta_target_ratio", 0.0),
+                "training.active_delta_target_ratio",
+            ),
+            active_delta_target_coefficient=_number(
+                raw.get("active_delta_target_coefficient", 0.0),
+                "training.active_delta_target_coefficient",
+            ),
+            active_delta_activity_threshold=_number(
+                raw.get("active_delta_activity_threshold", 0.05),
+                "training.active_delta_activity_threshold",
+            ),
         )
         if result.saturation_fraction > 1.0:
             raise PSBConfigError("training.saturation_fraction must not exceed 1.")
+        if not 0.0 <= result.active_delta_target_ratio <= 1.0:
+            raise PSBConfigError(
+                "training.active_delta_target_ratio must lie in [0, 1]."
+            )
+        if result.active_delta_target_coefficient < 0.0:
+            raise PSBConfigError(
+                "training.active_delta_target_coefficient must be non-negative."
+            )
+        if not 0.0 <= result.active_delta_activity_threshold <= 1.0:
+            raise PSBConfigError(
+                "training.active_delta_activity_threshold must lie in [0, 1]."
+            )
         return result
+
+    def to_dict(self) -> Dict[str, object]:
+        result = {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+            if name
+            not in {
+                "active_delta_target_ratio",
+                "active_delta_target_coefficient",
+                "active_delta_activity_threshold",
+            }
+        }
+        if self.active_delta_target_ratio != 0.0:
+            result["active_delta_target_ratio"] = self.active_delta_target_ratio
+        if self.active_delta_target_coefficient != 0.0:
+            result[
+                "active_delta_target_coefficient"
+            ] = self.active_delta_target_coefficient
+        if (
+            self.active_delta_target_ratio != 0.0
+            or self.active_delta_target_coefficient != 0.0
+            or self.active_delta_activity_threshold != 0.05
+        ):
+            result[
+                "active_delta_activity_threshold"
+            ] = self.active_delta_activity_threshold
+        return result
+
+
+@dataclass(frozen=True)
+class PSBCoreInitializationConfig:
+    """Full PSB policy and augmented-critic checkpoint used by P2-Core."""
+
+    policy_checkpoint: Path
+    critic_checkpoint: Path
+
+    @classmethod
+    def from_dict(
+        cls, raw: Mapping[str, Any], config_path: Path
+    ) -> "PSBCoreInitializationConfig":
+        raw = _object(raw, "core_initialization")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "core_initialization")
+        return cls(
+            policy_checkpoint=_resolve_existing_path(
+                raw["policy_checkpoint"],
+                "core_initialization.policy_checkpoint",
+                config_path,
+                kind="file",
+            ),
+            critic_checkpoint=_resolve_existing_path(
+                raw["critic_checkpoint"],
+                "core_initialization.critic_checkpoint",
+                config_path,
+                kind="file",
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "policy_checkpoint": str(self.policy_checkpoint),
+            "critic_checkpoint": str(self.critic_checkpoint),
+        }
+
+
+@dataclass(frozen=True)
+class PSBCoreTransitionPPOConfig:
+    """Transition PPO settings for the standalone PSB-Core stage."""
+
+    ppo_epochs: int
+    minibatch_size: int
+    target_kl: float
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "PSBCoreTransitionPPOConfig":
+        raw = _object(raw, "transition_ppo")
+        _exact_keys(raw, set(cls.__dataclass_fields__), "transition_ppo")
+        return cls(
+            ppo_epochs=_integer(
+                raw["ppo_epochs"], "transition_ppo.ppo_epochs"
+            ),
+            minibatch_size=_integer(
+                raw["minibatch_size"], "transition_ppo.minibatch_size"
+            ),
+            target_kl=_number(
+                raw["target_kl"],
+                "transition_ppo.target_kl",
+                strictly_positive=True,
+            ),
+        )
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -1270,6 +1415,8 @@ class PSBExperimentConfig:
     control: Optional[PSBControlConfig] = None
     branch_adapter: Optional[PSBBranchAdapterConfig] = None
     training: Optional[PSBP2TrainingConfig] = None
+    core_initialization: Optional[PSBCoreInitializationConfig] = None
+    transition_ppo: Optional[PSBCoreTransitionPPOConfig] = None
     promotion: Optional[PSBPromotionConfig] = None
     training_seed: Optional[int] = None
     robustness_summary: Optional[Path] = None
@@ -1335,6 +1482,36 @@ class PSBExperimentConfig:
         if self.training_seed is not None:
             result["training_seed"] = self.training_seed
         return result
+
+    def p2_core_runtime_config(self) -> Dict[str, object]:
+        if self.stage != "p2_core_absolute":
+            raise PSBConfigError(
+                "P2-Core runtime config requested for a non-P2-Core stage."
+            )
+        assert self.conflict_graph is not None
+        assert self.proximal is not None
+        assert self.control is not None
+        assert self.branch_adapter is not None
+        assert self.training is not None
+        assert self.promotion is not None
+        assert self.core_initialization is not None
+        assert self.transition_ppo is not None
+        return {
+            "stage": self.stage,
+            "n_agents": int(self.base_run_config["n_agents"]),
+            "control_mode": "learned_antisymmetric",
+            "freeze_base_actor": True,
+            "base_policy_checkpoint": str(self.base.policy_checkpoint),
+            "base_critic_checkpoint": str(self.base.critic_checkpoint),
+            "core_initialization": self.core_initialization.to_dict(),
+            "transition_ppo": self.transition_ppo.to_dict(),
+            "proximal": self.proximal.to_runtime_dict(self.dt),
+            "control": self.control.to_dict(),
+            "branch_adapter": self.branch_adapter.to_dict(),
+            "training": self.training.to_dict(),
+            "promotion": self.promotion.to_dict(),
+            "training_seed": self.effective_training_seed,
+        }
 
     def source_p2_runtime_config(self) -> Dict[str, object]:
         if self.stage != "p3_paired_rollout_equivalence":
@@ -2095,6 +2272,23 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
                 f"missing={sorted(required - actual)}, "
                 f"extra={sorted(actual - allowed)}."
             )
+    elif stage == "p2_core_absolute":
+        _exact_keys(
+            raw,
+            common_keys
+            | {
+                "training_seed",
+                "core_initialization",
+                "transition_ppo",
+                "conflict_graph",
+                "proximal",
+                "control",
+                "branch_adapter",
+                "training",
+                "promotion",
+            },
+            "root",
+        )
     elif stage == "p3_paired_rollout_equivalence":
         _exact_keys(
             raw,
@@ -2176,6 +2370,8 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
     control = None
     branch_adapter = None
     training = None
+    core_initialization = None
+    transition_ppo = None
     promotion = None
     training_seed = None
     robustness_summary = None
@@ -2282,15 +2478,27 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
     if stage in {
         "p1_zero_control_equivalence",
         "p2_frozen_base_bifurcation",
+        "p2_core_absolute",
         "p3_paired_rollout_equivalence",
     }:
-        parent_run = _resolve_existing_path(
-            raw["parent_run"], "parent_run", config_path, kind="directory"
-        )
-        if stage == "p1_zero_control_equivalence":
-            _validate_p0_parent(parent_run, base)
-        elif stage == "p2_frozen_base_bifurcation":
-            _validate_p1_parent(parent_run, base)
+        if stage != "p2_core_absolute":
+            parent_run = _resolve_existing_path(
+                raw["parent_run"], "parent_run", config_path, kind="directory"
+            )
+            if stage == "p1_zero_control_equivalence":
+                _validate_p0_parent(parent_run, base)
+            elif stage == "p2_frozen_base_bifurcation":
+                _validate_p1_parent(parent_run, base)
+        if stage == "p2_core_absolute":
+            training_seed = _integer(
+                raw["training_seed"], "training_seed", minimum=0
+            )
+            core_initialization = PSBCoreInitializationConfig.from_dict(
+                raw["core_initialization"], config_path
+            )
+            transition_ppo = PSBCoreTransitionPPOConfig.from_dict(
+                raw["transition_ppo"]
+            )
         conflict_graph = PSBConflictGraphConfig.from_dict(raw["conflict_graph"])
         proximal = PSBProximalConfig.from_dict(
             raw["proximal"],
@@ -2311,9 +2519,10 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
             )
         if stage in {
             "p2_frozen_base_bifurcation",
+            "p2_core_absolute",
             "p3_paired_rollout_equivalence",
         }:
-            if "training_seed" in raw:
+            if "training_seed" in raw and stage != "p2_core_absolute":
                 training_seed = _integer(
                     raw["training_seed"], "training_seed", minimum=0
                 )
@@ -2338,6 +2547,15 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
             if bool(base_resolved.get("is_using_prioritized_marl", False)):
                 raise PSBConfigError(
                     "P2 does not support the separate MARL priority policy."
+                )
+            if stage == "p2_core_absolute" and (
+                int(base_resolved["frames_per_batch"])
+                % transition_ppo.minibatch_size
+                != 0
+            ):
+                raise PSBConfigError(
+                    "P2-Core transition PPO minibatch_size must divide "
+                    "frames_per_batch."
                 )
             if stage == "p3_paired_rollout_equivalence":
                 robustness_summary = _resolve_existing_path(
@@ -2364,6 +2582,8 @@ def load_psb_experiment(path: Path) -> PSBExperimentConfig:
         control=control,
         branch_adapter=branch_adapter,
         training=training,
+        core_initialization=core_initialization,
+        transition_ppo=transition_ppo,
         promotion=promotion,
         training_seed=training_seed,
         robustness_summary=robustness_summary,

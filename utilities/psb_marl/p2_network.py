@@ -187,6 +187,7 @@ class BranchContextEncoder(nn.Module):
         if conditioning_mode not in {
             "general",
             "causal_q_gate",
+            "causal_residual",
             "sector_q_gate",
             "supported_sector_q_gate",
         }:
@@ -209,6 +210,7 @@ class BranchContextEncoder(nn.Module):
         normalized_rho = (rho_candidates / self.rho_max).clamp(0.0, 1.0)
         causal_conditioning = self.conditioning_mode in {
             "causal_q_gate",
+            "causal_residual",
             "sector_q_gate",
             "supported_sector_q_gate",
         }
@@ -267,20 +269,26 @@ class BranchDistributionAdapter(nn.Module):
         hidden_sizes: Sequence[int],
         max_delta_loc: float,
         max_delta_log_scale: float,
+        delta_loc_gain: float = 1.0,
         conditioning_mode: str = "general",
         mean_action_mask: Optional[Sequence[float]] = None,
     ) -> None:
         super().__init__()
         if min(observation_dim, context_dim, action_dim) <= 0:
             raise ValueError("Adapter dimensions must be positive.")
-        if max_delta_loc <= 0.0 or max_delta_log_scale < 0.0:
+        if (
+            max_delta_loc <= 0.0
+            or max_delta_log_scale < 0.0
+            or delta_loc_gain <= 0.0
+        ):
             raise ValueError(
-                "max_delta_loc must be positive and max_delta_log_scale "
-                "must be non-negative."
+                "max_delta_loc and delta_loc_gain must be positive and "
+                "max_delta_log_scale must be non-negative."
             )
         if conditioning_mode not in {
             "general",
             "causal_q_gate",
+            "causal_residual",
             "sector_q_gate",
             "supported_sector_q_gate",
         }:
@@ -298,6 +306,7 @@ class BranchDistributionAdapter(nn.Module):
         self.action_dim = action_dim
         self.max_delta_loc = float(max_delta_loc)
         self.max_delta_log_scale = float(max_delta_log_scale)
+        self.delta_loc_gain = float(delta_loc_gain)
         self.conditioning_mode = conditioning_mode
         if mean_action_mask is None:
             mask_values = [1.0] * action_dim
@@ -331,6 +340,7 @@ class BranchDistributionAdapter(nn.Module):
             if conditioning_mode
             in {
                 "causal_q_gate",
+                "causal_residual",
                 "sector_q_gate",
                 "supported_sector_q_gate",
             }
@@ -369,7 +379,15 @@ class BranchDistributionAdapter(nn.Module):
             ):
                 raise ValueError("branch_activity must lie in [0, 1].")
         raw = self.network(torch.cat((observation, context, base_loc), dim=-1))
-        if self.causal_gate is not None:
+        if self.conditioning_mode == "causal_residual":
+            # Subtracting the zero-branch response makes the adapter exactly
+            # Base-preserving at context=0 without a second multiplicative
+            # q gate that would attenuate active branch corrections.
+            zero_context = torch.zeros_like(context)
+            raw = raw - self.network(
+                torch.cat((observation, zero_context, base_loc), dim=-1)
+            )
+        elif self.causal_gate is not None:
             raw = raw * torch.tanh(self.causal_gate(context))
         if self.adapts_log_scale:
             raw_loc, raw_log_scale = raw.split(self.action_dim, dim=-1)
@@ -377,7 +395,7 @@ class BranchDistributionAdapter(nn.Module):
             raw_loc = raw
         delta_loc = (
             self.max_delta_loc
-            * torch.tanh(raw_loc)
+            * torch.tanh(self.delta_loc_gain * raw_loc)
             * self.mean_action_mask.to(dtype=raw_loc.dtype)
         )
         if self.conditioning_mode in {
